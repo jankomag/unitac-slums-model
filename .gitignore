@@ -1,0 +1,6 @@
+lightning-demo/
+data/
+__pycache__
+notebooks/.ipynb_checkpoints
+train-demo/
+exploring.qgz

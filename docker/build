@@ -1,0 +1,54 @@
+#!/bin/bash
+
+set -e
+
+if [[ -n "${RASTER_VISION_DEBUG}" ]]; then
+    set -x
+fi
+
+function usage() {
+    echo -n \
+         "Usage: $(basename "$0") [<options>]
+
+Build Docker images.
+
+Options:
+--arm64   Build image for arm64 architecture.
+"
+}
+
+if [ "${BASH_SOURCE[0]}" = "${0}" ]
+then
+    if [ "${1:-}" = "--help" ]
+    then
+        usage
+        exit
+    fi
+
+    PLATFORM="amd64"
+    IMAGE_EXT=""
+    CUDA_VERSION="12.1.1"
+    UBUNTU_VERSION="22.04"
+
+    while [[ $# -gt 0 ]]
+    do
+        case "$1" in
+            --arm64)
+                PLATFORM="arm64"
+                IMAGE_EXT="-arm64"
+                shift
+                ;;
+            *)
+                echo "Unknown option: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    DOCKER_BUILDKIT=1 docker build \
+        --platform linux/${PLATFORM} \
+        --build-arg CUDA_VERSION="${CUDA_VERSION}" \
+        --build-arg UBUNTU_VERSION="${UBUNTU_VERSION}" \
+        -t raster-vision-pytorch${IMAGE_EXT} -f Dockerfile .
+fi
