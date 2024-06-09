@@ -1,0 +1,88 @@
+{
+    "os": "Linux-5.4.0-100-generic-x86_64-with-glibc2.31",
+    "python": "3.9.12",
+    "heartbeatAt": "2023-05-17T14:59:27.232063",
+    "startedAt": "2023-05-17T14:59:26.348393",
+    "docker": null,
+    "cuda": null,
+    "args": [
+        "--config",
+        "configs/kenya/kenya_wo_mathare.cfg"
+    ],
+    "state": "running",
+    "program": "/data/shared/deeplabsegm/src/deeplnafrica/train_multiple_images.py",
+    "codePath": "src/deeplnafrica/train_multiple_images.py",
+    "git": {
+        "remote": "git@renkulab.io:deeplnafrica/deeplabsegm.git",
+        "commit": "b5b3c17c2093041f927553f0f82b680636d73d3f"
+    },
+    "email": "steven.stalder@sdsc.ethz.ch",
+    "root": "/data/shared/deeplabsegm",
+    "host": "deeplnafrica",
+    "username": "steven",
+    "executable": "/data/users/steven/miniconda3/envs/deepln/bin/python",
+    "cpu_count": 8,
+    "cpu_count_logical": 8,
+    "cpu_freq": {
+        "current": 2099.9959999999996,
+        "min": 0.0,
+        "max": 0.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 2099.996,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2099.996,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2099.996,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2099.996,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2099.996,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2099.996,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2099.996,
+            "min": 0.0,
+            "max": 0.0
+        },
+        {
+            "current": 2099.996,
+            "min": 0.0,
+            "max": 0.0
+        }
+    ],
+    "disk": {
+        "total": 93.76504898071289,
+        "used": 39.97255325317383
+    },
+    "gpu": "Tesla P100-PCIE-12GB",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "Tesla P100-PCIE-12GB",
+            "memory_total": 12884901888
+        }
+    ],
+    "memory": {
+        "total": 43.12523651123047
+    }
+}

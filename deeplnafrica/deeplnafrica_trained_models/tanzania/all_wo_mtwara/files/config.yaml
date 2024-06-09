@@ -1,0 +1,134 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    cli_version: 0.14.0
+    framework: lightning
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    m:
+    - 1: trainer/global_step
+      6:
+      - 3
+    - 1: lr-AdamW
+      5: 1
+      6:
+      - 1
+    - 1: train_loss
+      5: 1
+      6:
+      - 1
+    - 1: epoch
+      5: 1
+      6:
+      - 1
+    - 1: val_loss
+      5: 1
+      6:
+      - 1
+    - 1: val_meanIOU
+      5: 1
+      6:
+      - 1
+    - 1: train_meanIOU
+      5: 1
+      6:
+      - 1
+    - 1: mean_weight_norm
+      5: 1
+      6:
+      - 1
+    - 1: test_loss
+      5: 1
+      6:
+      - 1
+    - 1: test_meanIOU
+      5: 1
+      6:
+      - 1
+    python_version: 3.9.12
+    start_time: 1681217852.024693
+    t:
+      1:
+      - 1
+      - 9
+      - 41
+      - 55
+      2:
+      - 1
+      - 9
+      - 41
+      - 55
+      3:
+      - 7
+      - 16
+      - 23
+      4: 3.9.12
+      5: 0.14.0
+      8:
+      - 5
+arg_log:
+  desc: null
+  value: false
+batch_size:
+  desc: null
+  value: 8
+config:
+  desc: null
+  value: configs/tanzania_wo_mtwara.cfg
+init_from_pretrained:
+  desc: null
+  value: true
+learning_rate:
+  desc: null
+  value: 0.0001
+model_checkpoint:
+  desc: null
+  value: null
+monitor_metric:
+  desc: null
+  value: val_loss
+num_bands:
+  desc: null
+  value: 4
+pos_weight:
+  desc: null
+  value: 1.0
+random_seed:
+  desc: null
+  value: 42
+test_cities:
+  desc: null
+  value:
+  - tanzania_mtwara
+test_split:
+  desc: null
+  value: 0.0
+tile_size:
+  desc: null
+  value: 512
+train_cities:
+  desc: null
+  value:
+  - tanzania_arusha
+  - tanzania_dodoma
+  - tanzania_kigoma
+  - tanzania_mbeya
+  - tanzania_mwanza
+  - tanzania_tanga
+train_model:
+  desc: null
+  value: true
+use_data_augmentation:
+  desc: null
+  value: false
+val_every_n_epochs:
+  desc: null
+  value: 1
+val_split_from_train:
+  desc: null
+  value: 0.1
+weight_decay:
+  desc: null
+  value: 0.01
