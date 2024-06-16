@@ -9,3 +9,4 @@ src/.DS_Store
 UNITAC-trained-models/
 deeplnafrica/deeplnafrica_trained_models/
 src/models/wandb/
+*.ckpt
