@@ -210,7 +210,7 @@ plt.show()
 # plt.show()
 
 # Fine-tune the model
-image_size = 256
+image_size = 144
 batch_size = 8
 
 # wandb.login()
@@ -263,48 +263,57 @@ trainer.fit(model, train_dl, val_dl)
 # Use best model for evaluation
 best_model_path = checkpoint_callback.best_model_path
 best_model = CustomDeeplabv3SegmentationModel.load_from_checkpoint(best_model_path)
+best_model.eval()
 
-learner = SemanticSegmentationLearner(
-    cfg=learner_cfg,
-    output_dir='./model_predictions/',
-    model=best_model,
-    train_ds=train_dataset,
-    valid_ds=val_dataset,
-    training=False,
-)
+class PredictionsIterator:
+    def __init__(self, model, dataset, device='cuda'):
+        self.model = model
+        self.dataset = dataset
+        self.device = device
+        
+        self.predictions = []
+        
+        with torch.no_grad():
+            for idx in range(len(dataset)):
+                image, label = dataset[idx]
+                image = image.unsqueeze(0).to(device)
 
-# Make predictions
-predictions = learner.predict_dataset(
-    sentinel_train_ds,
-    raw_out=True,
-    numpy_out=True,
-    predict_kw=dict(out_shape=(image_size, image_size)),
-    progress_bar=True)
+                output = self.model(image)
+                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                window = dataset.windows[idx]
+                self.predictions.append((window, probabilities))
 
+    def __iter__(self):
+        return iter(self.predictions)
+
+# Example usage:
+predictions_iterator = PredictionsIterator(best_model, full_dataset, device=device)
+windows, predictions = zip(*predictions_iterator)
+
+# Create SemanticSegmentationLabels from predictions
 pred_labels = SemanticSegmentationLabels.from_predictions(
-    sentinel_train_ds.windows,
+    windows,
     predictions,
-    smooth=True,
-    extent=sentinel_train_ds.scene.extent,
-    num_classes=len(class_config))
+    extent=full_dataset.scene.extent,
+    num_classes=len(class_config),
+    smooth=True)
 
 scores = pred_labels.get_score_arr(pred_labels.extent)
-
 scores_building = scores[0]
-scores_background = scores[1]
 
 fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-fig.tight_layout()
-image = ax.imshow(scores_building) #cmap='plasma')
+image = ax.imshow(scores_building)
 ax.axis('off')
-ax.set_title('infs')
+ax.set_title('Building Scores')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
 vo_config = CustomVectorOutputConfig(
     class_id=1,
     denoise=8,
-    threshold=0.05  # Adjust as needed
+    threshold=0.3  # Adjust as needed
 )
 
 image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
@@ -317,18 +326,3 @@ pred_labels.save(
     vector_outputs=[vo_config],
     save_as_rgb=False  # Disable RGB output if not needed
 )
-
-# Discrete labels
-pred_labels_dis = SemanticSegmentationLabels.from_predictions(
-    sentinel_train_ds.windows,
-    predictions,
-    smooth=False,
-    extent=sentinel_train_ds.scene.extent,
-    num_classes=len(class_config))
-
-scores_dis = pred_labels.get_class_mask(window=sentinel_train_ds.windows[1],class_id=1,threshold=0.015)
-
-fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-image = ax.imshow(scores_dis, cmap='plasma')
-ax.set_title('infs')
-plt.show()
