@@ -1,0 +1,166 @@
+2024-06-16 12:57:42,598 INFO    StreamThr :7241 [internal.py:wandb_internal():85] W&B internal server running at pid: 7241, started at: 2024-06-16 12:57:42.597869
+2024-06-16 12:57:42,599 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status
+2024-06-16 12:57:42,603 INFO    WriterThread:7241 [datastore.py:open_for_write():87] open: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/run-nenslmjs.wandb
+2024-06-16 12:57:42,603 DEBUG   SenderThread:7241 [sender.py:send():379] send: header
+2024-06-16 12:57:42,626 DEBUG   SenderThread:7241 [sender.py:send():379] send: run
+2024-06-16 12:57:42,926 INFO    SenderThread:7241 [dir_watcher.py:__init__():211] watching files in: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/files
+2024-06-16 12:57:42,926 INFO    SenderThread:7241 [sender.py:_start_run_threads():1188] run started: nenslmjs with start time 1718539062.59819
+2024-06-16 12:57:42,935 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: check_version
+2024-06-16 12:57:42,935 DEBUG   SenderThread:7241 [sender.py:send_request():406] send_request: check_version
+2024-06-16 12:57:42,975 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: run_start
+2024-06-16 12:57:42,979 DEBUG   HandlerThread:7241 [system_info.py:__init__():26] System info init
+2024-06-16 12:57:42,979 DEBUG   HandlerThread:7241 [system_info.py:__init__():41] System info init done
+2024-06-16 12:57:42,979 INFO    HandlerThread:7241 [system_monitor.py:start():194] Starting system monitor
+2024-06-16 12:57:42,979 INFO    SystemMonitor:7241 [system_monitor.py:_start():158] Starting system asset monitoring threads
+2024-06-16 12:57:42,979 INFO    HandlerThread:7241 [system_monitor.py:probe():214] Collecting system info
+2024-06-16 12:57:42,979 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started cpu monitoring
+2024-06-16 12:57:42,982 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started disk monitoring
+2024-06-16 12:57:42,983 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started gpuapple monitoring
+2024-06-16 12:57:42,983 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started memory monitoring
+2024-06-16 12:57:42,984 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started network monitoring
+2024-06-16 12:57:43,390 DEBUG   HandlerThread:7241 [system_info.py:probe():152] Probing system
+2024-06-16 12:57:43,393 DEBUG   HandlerThread:7241 [system_info.py:_probe_git():137] Probing git
+2024-06-16 12:57:43,408 DEBUG   HandlerThread:7241 [system_info.py:_probe_git():145] Probing git done
+2024-06-16 12:57:43,408 DEBUG   HandlerThread:7241 [system_info.py:probe():200] Probing system done
+2024-06-16 12:57:43,408 DEBUG   HandlerThread:7241 [system_monitor.py:probe():223] {'os': 'macOS-14.4.1-arm64-arm-64bit', 'python': '3.11.9', 'heartbeatAt': '2024-06-16T11:57:43.390537', 'startedAt': '2024-06-16T11:57:42.588893', 'docker': None, 'cuda': None, 'args': (), 'state': 'running', 'program': '/Users/janmagnuszewski/dev/slums-model-unitac/src/models/multi-modal.py', 'codePathLocal': 'multi-modal.py', 'codePath': 'src/models/multi-modal.py', 'git': {'remote': 'https://github.com/jankomag/slums-model-unitac.git', 'commit': 'ebc06a611f97a357b90354069d9e0d7c427d927e'}, 'email': None, 'root': '/Users/janmagnuszewski/dev/slums-model-unitac', 'host': 'eduroam-int-dhcp-97-10-38.ucl.ac.uk', 'username': 'janmagnuszewski', 'executable': '/opt/miniconda3/envs/rv/bin/python', 'cpu_count': 11, 'cpu_count_logical': 11, 'cpu_freq': {'current': 4056, 'min': 696, 'max': 4056}, 'cpu_freq_per_core': [{'current': 4056, 'min': 696, 'max': 4056}], 'disk': {'/': {'total': 926.3517189025879, 'used': 283.5808753967285}}, 'gpuapple': {'type': 'Apple M3 Pro', 'vendor': 'sppci_vendor_Apple'}, 'memory': {'total': 18.0}}
+2024-06-16 12:57:43,408 INFO    HandlerThread:7241 [system_monitor.py:probe():224] Finished collecting system info
+2024-06-16 12:57:43,408 INFO    HandlerThread:7241 [system_monitor.py:probe():227] Publishing system info
+2024-06-16 12:57:43,408 DEBUG   HandlerThread:7241 [system_info.py:_save_conda():209] Saving list of conda packages installed into the current environment
+2024-06-16 12:57:43,932 INFO    Thread-12 :7241 [dir_watcher.py:_on_file_created():271] file/dir created: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/files/conda-environment.yaml
+2024-06-16 12:57:45,070 DEBUG   HandlerThread:7241 [system_info.py:_save_conda():224] Saving conda packages done
+2024-06-16 12:57:45,071 INFO    HandlerThread:7241 [system_monitor.py:probe():229] Finished publishing system info
+2024-06-16 12:57:45,075 DEBUG   SenderThread:7241 [sender.py:send():379] send: files
+2024-06-16 12:57:45,075 INFO    SenderThread:7241 [sender.py:_save_file():1454] saving file wandb-metadata.json with policy now
+2024-06-16 12:57:45,156 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: python_packages
+2024-06-16 12:57:45,156 DEBUG   SenderThread:7241 [sender.py:send_request():406] send_request: python_packages
+2024-06-16 12:57:45,156 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-16 12:57:45,156 DEBUG   SenderThread:7241 [sender.py:send_request():406] send_request: stop_status
+2024-06-16 12:57:45,157 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:45,389 DEBUG   SenderThread:7241 [sender.py:send():379] send: telemetry
+2024-06-16 12:57:45,544 INFO    wandb-upload_0:7241 [upload_job.py:push():130] Uploaded file /var/folders/gk/qnd3k3r95k79msznmhs8kl4r0000gn/T/tmp39cjum_9wandb/dzq2xln6-wandb-metadata.json
+2024-06-16 12:57:45,938 INFO    Thread-12 :7241 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/files/conda-environment.yaml
+2024-06-16 12:57:45,938 INFO    Thread-12 :7241 [dir_watcher.py:_on_file_created():271] file/dir created: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/files/requirements.txt
+2024-06-16 12:57:45,938 INFO    Thread-12 :7241 [dir_watcher.py:_on_file_created():271] file/dir created: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/files/output.log
+2024-06-16 12:57:45,938 INFO    Thread-12 :7241 [dir_watcher.py:_on_file_created():271] file/dir created: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/files/wandb-metadata.json
+2024-06-16 12:57:46,081 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: pause
+2024-06-16 12:57:46,081 INFO    HandlerThread:7241 [handler.py:handle_request_pause():724] stopping system metrics thread
+2024-06-16 12:57:46,081 INFO    HandlerThread:7241 [system_monitor.py:finish():203] Stopping system monitor
+2024-06-16 12:57:46,081 DEBUG   SystemMonitor:7241 [system_monitor.py:_start():172] Starting system metrics aggregation loop
+2024-06-16 12:57:46,081 DEBUG   SystemMonitor:7241 [system_monitor.py:_start():179] Finished system metrics aggregation loop
+2024-06-16 12:57:46,081 DEBUG   SystemMonitor:7241 [system_monitor.py:_start():183] Publishing last batch of metrics
+2024-06-16 12:57:46,082 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined cpu monitor
+2024-06-16 12:57:46,082 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined disk monitor
+2024-06-16 12:57:46,082 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined gpuapple monitor
+2024-06-16 12:57:46,082 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined memory monitor
+2024-06-16 12:57:46,082 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined network monitor
+2024-06-16 12:57:46,082 DEBUG   SenderThread:7241 [sender.py:send():379] send: telemetry
+2024-06-16 12:57:46,082 DEBUG   SenderThread:7241 [sender.py:send():379] send: stats
+2024-06-16 12:57:46,161 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:47,167 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:47,945 INFO    Thread-12 :7241 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/files/output.log
+2024-06-16 12:57:48,093 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:57:48,169 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:49,173 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:50,174 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:51,176 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:52,181 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:53,170 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:57:53,186 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:54,190 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:55,191 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:56,191 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:57,196 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:58,174 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:57:58,201 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:57:59,203 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:00,162 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-16 12:58:00,162 DEBUG   SenderThread:7241 [sender.py:send_request():406] send_request: stop_status
+2024-06-16 12:58:00,207 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:01,212 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:02,218 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:03,218 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:03,368 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:58:04,223 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:05,227 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:06,229 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:07,234 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:08,236 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:09,185 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:58:09,239 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:10,240 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:11,242 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:12,244 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:13,248 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:14,196 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:58:14,251 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:15,053 INFO    Thread-12 :7241 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/files/config.yaml
+2024-06-16 12:58:15,164 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-16 12:58:15,165 DEBUG   SenderThread:7241 [sender.py:send_request():406] send_request: stop_status
+2024-06-16 12:58:15,253 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:16,256 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:17,261 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:18,262 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:19,266 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:19,356 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:58:20,268 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:21,273 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:22,278 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:23,278 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:24,282 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:25,187 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:58:25,285 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:26,290 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:27,295 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:28,298 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:29,302 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:30,169 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-16 12:58:30,169 DEBUG   SenderThread:7241 [sender.py:send_request():406] send_request: stop_status
+2024-06-16 12:58:30,307 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:30,351 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:58:31,308 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:32,308 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:33,310 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:34,312 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:35,312 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:36,196 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:58:36,314 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:37,327 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:38,331 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:39,334 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:40,339 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:41,204 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:58:41,341 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:42,066 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: resume
+2024-06-16 12:58:42,067 INFO    HandlerThread:7241 [handler.py:handle_request_resume():715] starting system metrics thread
+2024-06-16 12:58:42,067 INFO    HandlerThread:7241 [system_monitor.py:start():194] Starting system monitor
+2024-06-16 12:58:42,067 INFO    SystemMonitor:7241 [system_monitor.py:_start():158] Starting system asset monitoring threads
+2024-06-16 12:58:42,067 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started cpu monitoring
+2024-06-16 12:58:42,067 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started disk monitoring
+2024-06-16 12:58:42,068 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started gpuapple monitoring
+2024-06-16 12:58:42,069 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started memory monitoring
+2024-06-16 12:58:42,070 INFO    SystemMonitor:7241 [interfaces.py:start():188] Started network monitoring
+2024-06-16 12:58:42,071 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: pause
+2024-06-16 12:58:42,071 INFO    HandlerThread:7241 [handler.py:handle_request_pause():724] stopping system metrics thread
+2024-06-16 12:58:42,071 INFO    HandlerThread:7241 [system_monitor.py:finish():203] Stopping system monitor
+2024-06-16 12:58:42,071 DEBUG   SystemMonitor:7241 [system_monitor.py:_start():172] Starting system metrics aggregation loop
+2024-06-16 12:58:42,071 DEBUG   SystemMonitor:7241 [system_monitor.py:_start():179] Finished system metrics aggregation loop
+2024-06-16 12:58:42,071 DEBUG   SystemMonitor:7241 [system_monitor.py:_start():183] Publishing last batch of metrics
+2024-06-16 12:58:42,071 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined cpu monitor
+2024-06-16 12:58:42,071 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined disk monitor
+2024-06-16 12:58:42,447 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined gpuapple monitor
+2024-06-16 12:58:42,447 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined memory monitor
+2024-06-16 12:58:42,447 INFO    HandlerThread:7241 [interfaces.py:finish():200] Joined network monitor
+2024-06-16 12:58:42,447 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:42,448 DEBUG   SenderThread:7241 [sender.py:send():379] send: stats
+2024-06-16 12:58:43,351 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:44,158 INFO    Thread-12 :7241 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/models/wandb/run-20240616_125742-nenslmjs/files/output.log
+2024-06-16 12:58:44,353 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:45,173 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-16 12:58:45,174 DEBUG   SenderThread:7241 [sender.py:send_request():406] send_request: stop_status
+2024-06-16 12:58:45,357 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:46,363 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:46,397 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: status_report
+2024-06-16 12:58:47,363 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:48,369 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:49,373 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-16 12:58:50,377 DEBUG   HandlerThread:7241 [handler.py:handle_request():158] handle_request: internal_messages

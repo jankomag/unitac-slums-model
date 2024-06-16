@@ -1,0 +1,53 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    python_version: 3.11.9
+    cli_version: 0.17.1
+    framework: lightning
+    is_jupyter_run: true
+    is_kaggle_kernel: false
+    start_time: 1718539151
+    t:
+      1:
+      - 1
+      - 5
+      - 9
+      - 41
+      - 53
+      - 54
+      - 55
+      - 80
+      - 103
+      2:
+      - 1
+      - 5
+      - 9
+      - 41
+      - 53
+      - 54
+      - 55
+      - 80
+      - 103
+      3:
+      - 23
+      4: 3.11.9
+      5: 0.17.1
+      8:
+      - 1
+      - 4
+      - 5
+      13: darwin-arm64
+num_bands:
+  desc: null
+  value: 4
+learning_rate:
+  desc: null
+  value: 0.0001
+weight_decay:
+  desc: null
+  value: 0.01
+pos_weight:
+  desc: null
+  value: 1.0
