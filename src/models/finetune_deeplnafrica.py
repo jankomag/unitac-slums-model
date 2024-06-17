@@ -7,6 +7,7 @@ os.environ['GDAL_DATA'] = check_output('pip show rasterio | grep Location | awk 
 import sys
 from pathlib import Path
 from typing import Iterator, Optional
+from datetime import datetime
 
 import torch
 import torch.nn as nn
@@ -30,6 +31,7 @@ from rastervision.pipeline.file_system import (
     sync_to_dir, json_to_file, make_dir, zipdir, download_if_needed,
     download_or_copy, sync_from_dir, get_local_path, unzip, is_local,
     get_tmp_dir)
+from torch.utils.data import DataLoader
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -97,6 +99,29 @@ class CustomVectorOutputConfig(Config):
             uri = join(root, f'class-{self.class_id}.json')
         return uri
     
+class PredictionsIterator:
+    def __init__(self, model, dataset, device='cuda'):
+        self.model = model
+        self.dataset = dataset
+        self.device = device
+        
+        self.predictions = []
+        
+        with torch.no_grad():
+            for idx in range(len(dataset)):
+                image, label = dataset[idx]
+                image = image.unsqueeze(0).to(device)
+
+                output = self.model(image)
+                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                window = dataset.windows[idx]
+                self.predictions.append((window, probabilities))
+
+    def __iter__(self):
+        return iter(self.predictions)
+    
 # Define device
 if not torch.backends.mps.is_available():
     if not torch.backends.mps.is_built():
@@ -135,7 +160,7 @@ data_cfg = SemanticSegmentationGeoDataConfig(class_config=class_config, num_work
 solver_cfg = SolverConfig(batch_sz=4,lr=3e-2,class_loss_weights=[1., 1.])
 learner_cfg = SemanticSegmentationLearnerConfig(data=data_cfg, solver=solver_cfg)
 
-image_size = 512
+image_size = 144
 sentinel_dl, sentinel_train_ds, sentinel_val_ds = get_senitnel_dl_ds(batch_size=8, size=image_size, stride=int(image_size/2), out_size=image_size, padding=100)
 scene = eval_scene()
 
@@ -211,14 +236,21 @@ plt.show()
 
 # Fine-tune the model
 image_size = 144
-batch_size = 8
+batch_size = 6
 
-# wandb.login()
+run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+output_dir = f'../../UNITAC-trained-models/deeplnafrica_finetuned_sentinel_only/{run_id}/'
+os.makedirs(output_dir, exist_ok=True)
+
 wandb.init(project='UNITAC-finetune-sentinel-only')
 wandb_logger = WandbLogger(project='UNITAC-finetune-sentinel-only', log_model=True)
 
 # Getting training data
 full_dataset, train_dl, val_dl, train_dataset, val_dataset, test_dataset = get_training_sentinelOnly(batch_size=batch_size, imgsize=image_size, padding=100, seed=42)
+def create_full_image(source) -> np.ndarray:
+    extent = source.extent
+    chip = source._get_chip(extent)    
+    return chip
 
 img_full = create_full_image(full_dataset.scene.label_source)
 train_windows = train_dataset.windows
@@ -229,21 +261,19 @@ show_windows(img_full, train_windows + val_windows + test_windows, window_labels
 
 # Reinitialise the model with pretrained weights
 model = CustomDeeplabv3SegmentationModel.load_from_checkpoint(pretrained_checkpoint_path, pretrained_checkpoint=None)
+# model = CustomDeeplabv3SegmentationModel()
 model.to(device)
-
-output_dir = '../../UNITAC-trained-models/deeplnafrica_finetuned_sentinel_only/'
-# make_dir(output_dir)
 
 # Loggers and callbacks
 checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     dirpath=output_dir,
-    filename='finetuned_{epoch:02d}-{val_loss:.4f}',
+    filename='finetuned_{image_size:02d}-{batch_size:02d}-{epoch:02d}-{val_loss:.4f}',
     save_top_k=1,
     mode='min',
     )
 
-early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=20)
+early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=50)
 
 # Define trainer
 trainer = Trainer(
@@ -252,7 +282,7 @@ trainer = Trainer(
     log_every_n_steps=1,
     logger=[wandb_logger],
     min_epochs=1,
-    max_epochs=50,
+    max_epochs=120,
     num_sanity_val_steps=1
 )
 
@@ -260,33 +290,14 @@ trainer = Trainer(
 model.train()
 trainer.fit(model, train_dl, val_dl)
 
+trainer.validate(model, val_dl)
+test_dl = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+trainer.test(model, test_dl) 
+
 # Use best model for evaluation
 best_model_path = checkpoint_callback.best_model_path
 best_model = CustomDeeplabv3SegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
-
-class PredictionsIterator:
-    def __init__(self, model, dataset, device='cuda'):
-        self.model = model
-        self.dataset = dataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(dataset)):
-                image, label = dataset[idx]
-                image = image.unsqueeze(0).to(device)
-
-                output = self.model(image)
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = dataset.windows[idx]
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
 
 # Example usage:
 predictions_iterator = PredictionsIterator(best_model, full_dataset, device=device)
@@ -306,10 +317,12 @@ scores_building = scores[0]
 fig, ax = plt.subplots(1, 1, figsize=(10, 5))
 image = ax.imshow(scores_building)
 ax.axis('off')
-ax.set_title('Building Scores')
+ax.set_title('infs Scores')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
+
+# Save predictions to Geojson
 vo_config = CustomVectorOutputConfig(
     class_id=1,
     denoise=8,

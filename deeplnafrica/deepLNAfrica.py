@@ -18,13 +18,12 @@ def init_segm_model(num_bands: int = 4) -> torch.nn.Module:
 
     # for 1 band (buildings layer only)
     if num_bands == 1:
-        # Initialise the buildings channel dimension as for the red channel
+        # Change the input convolution to accept 1 channel instead of 4
         weight = segm_model.backbone.conv1.weight.clone()
-        segm_model.backbone.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        
+        segm_model.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         with torch.no_grad():
-            segm_model.backbone.conv1.weight[:, 0] = weight[:, 0]  # Copy the red channel weights to the single input channel
-            
+            segm_model.backbone.conv1.weight[:, 0] = weight.mean(dim=1, keepdim=True).squeeze(1)
+
     if num_bands == 4:
             # Initialise the new NIR dimension as for the red channel
             weight = segm_model.backbone.conv1.weight.clone()
@@ -187,28 +186,29 @@ class Deeplabv3SegmentationModel(pl.LightningModule):
 
         return [optimizer], [scheduler]
 
-
-    import wandb
-
 class CustomDeeplabv3SegmentationModel(pl.LightningModule):
     def __init__(self,
                  num_bands: int = 4,
                  learning_rate: float = 1e-4,
-                 weight_decay: float = 0,
-                 pos_weight: float = 1.0,
+                 weight_decay: float = 1e-4,
+                 pos_weight: torch.Tensor = torch.tensor([1.0, 5.0]),
                  pretrained_checkpoint: Optional[Path] = None) -> None:
         super().__init__()
 
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
-        self.pos_weight = pos_weight
+        
+        self.pos_weight = torch.tensor(pos_weight, device='mps')
+        # self.pos_weight = torch.tensor(pos_weight, device=self.device)
 
         self.segm_model = init_segm_model(num_bands)
 
         if pretrained_checkpoint:
-            pretrained_weights = torch.load(pretrained_checkpoint)["state_dict"]
-            missing_keys, _ = self.load_state_dict(pretrained_weights, strict=False)
-            assert len(missing_keys) == 0, f'Missing keys: {missing_keys}'
+            pretrained_dict = torch.load(pretrained_checkpoint, map_location='mps')['state_dict']
+            model_dict = self.state_dict()
+            pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+            model_dict.update(pretrained_dict)
+            self.load_state_dict(model_dict)
 
         self.save_hyperparameters(ignore='pretrained_checkpoint')
 
@@ -216,18 +216,29 @@ class CustomDeeplabv3SegmentationModel(pl.LightningModule):
         x = self.segm_model(x)['out']
         x = x.permute(0, 2, 3, 1)
         return x
+    
+    def compute_mean_iou(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        return iou.mean()
 
     def training_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
         img, groundtruth = batch
         segmentation = self(img)
         groundtruth = groundtruth.float()
 
-        loss_fn = torch.nn.BCEWithLogitsLoss()
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
         loss = loss_fn(segmentation, groundtruth)
 
-        self.log('train_loss', loss)  # Log loss directly
-        # Log other metrics if needed, e.g., IOU
-        # Example: wandb.log({'train_meanIOU': compute_mean_iou(segmentation, groundtruth)})
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, groundtruth)
+
+        self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
 
         return loss
 
@@ -236,23 +247,29 @@ class CustomDeeplabv3SegmentationModel(pl.LightningModule):
         groundtruth = groundtruth.float()
         segmentation = self(img)
 
-        loss_fn = torch.nn.BCEWithLogitsLoss()
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
         loss = loss_fn(segmentation, groundtruth)
 
-        self.log('val_loss', loss)  # Log validation loss directly
-        # Log other metrics if needed
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, groundtruth)
+
+        self.log('val_loss', loss)
+        self.log('val_mean_iou', mean_iou)
 
     def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         img, groundtruth = batch
         segmentation = self(img)
 
-        informal_gt = groundtruth[:, 0, :, :]
+        informal_gt = groundtruth[:, 0, :, :].float()
 
-        loss_fn = torch.nn.BCEWithLogitsLoss()
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
         loss = loss_fn(segmentation, informal_gt)
 
-        self.log('test_loss', loss)  # Log test loss directly
-        # Log other metrics if needed
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, informal_gt)
+
+        self.log('test_loss', loss)
+        self.log('test_mean_iou', mean_iou)
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         optimizer = AdamW(
@@ -264,65 +281,3 @@ class CustomDeeplabv3SegmentationModel(pl.LightningModule):
         scheduler = MultiStepLR(optimizer, milestones=[6, 12], gamma=0.3)
 
         return [optimizer], [scheduler]
-
-
-class CustomDeeplabv3SegmentationModel1Band(pl.LightningModule):
-    def __init__(self,
-                 num_bands: int = 1,
-                 learning_rate: float = 1e-4,
-                 weight_decay: float = 0,
-                 pos_weight: float = 1.0,
-                 pretrained_checkpoint: Optional[Path] = None,
-                 map_location: Optional[Union[str, torch.device]] = None) -> None:
-        super().__init__()
-
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.pos_weight = pos_weight
-
-        self.segm_model = init_segm_model(num_bands)
-
-        if pretrained_checkpoint:
-            # Load the checkpoint with map_location specified
-            checkpoint = torch.load(pretrained_checkpoint, map_location=map_location)
-            pretrained_weights = checkpoint["state_dict"]
-            
-            # Convert all parameters to float32 if not already
-            for param_name, param in pretrained_weights.items():
-                if isinstance(param, torch.Tensor) and param.dtype == torch.float64:
-                    pretrained_weights[param_name] = param.float()
-
-            # Load the state dict into the model
-            missing_keys, unexpected_keys = self.segm_model.load_state_dict(pretrained_weights, strict=False)
-            assert len(missing_keys) == 0, f'Missing keys: {missing_keys}'
-            assert len(unexpected_keys) == 0, f'Unexpected keys: {unexpected_keys}'
-
-        self.save_hyperparameters(ignore='pretrained_checkpoint')
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.segm_model(x)['out'].permute(0, 2, 3, 1)
-        return x
-
-    def training_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        img, groundtruth = batch
-        segmentation = self(img)
-        groundtruth = groundtruth.float()
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        loss = loss_fn(segmentation, groundtruth)
-
-        self.log('train_loss', loss, prog_bar=True)
-
-        return loss
-
-    # Define validation_step, test_step, and other methods as needed
-
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        optimizer = torch.optim.AdamW(
-            self.segm_model.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay
-        )
-
-        return optimizer
-
