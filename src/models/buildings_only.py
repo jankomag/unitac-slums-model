@@ -77,8 +77,12 @@ parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 from deeplnafrica.deepLNAfrica import init_segm_model
-from src.data.dataloaders import create_full_image, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
+import folium
 
+from src.data.dataloaders import (
+    create_datasets,
+    create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
+)
 from rastervision.core.data import (
     ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
     VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
@@ -243,90 +247,52 @@ class CustomRasterizedSource(RasterSource):
 ### Label source ###
 label_uri = "../../data/0/SantoDomingo3857.geojson"
 image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
+
+class_config = ClassConfig(names=['background', 'slums'], 
+                                colors=['lightgray', 'darkred'],
+                                null_class='background')
+
+rasterized_buildings_source, buildings_label_source = create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5)
 
 gdf = gpd.read_file(label_uri)
 gdf = gdf.to_crs('EPSG:3857')
 xmin, ymin, xmax, ymax = gdf.total_bounds
+pixel_polygon = Polygon([
+    (xmin, ymin),
+    (xmin, ymax),
+    (xmax, ymax),
+    (xmax, ymin),
+    (xmin, ymin)
+])
 
-class_config = ClassConfig(names=['background', 'slums'], 
-                           colors=['lightgray', 'darkred'],
-                           null_class='background')
+BuildingsScence = Scene(
+        id='santodomingo_buildings',
+        raster_source = rasterized_buildings_source,
+        label_source = buildings_label_source)
 
-crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-crs_transformer_buildings.transform
-
-resolution = 5
-affine_transform_buildings = Affine(resolution, 0, xmin,
-                          0, -resolution, ymin)
-
-crs_transformer_buildings.transform = affine_transform_buildings
-
-label_vector_source = GeoJSONVectorSource(label_uri,
-    crs_transformer_buildings,
-    vector_transformers=[
-        ClassInferenceTransformer(
-            default_class_id=class_config.get_class_id('slums'))])
-
-label_raster_source = CustomRasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-print(f"Loaded UNITAC CustomRasterizedSource: {label_raster_source.shape}")
-
-label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
-print(f"Loaded UNITAC SemanticSegmentationLabelSource: {label_raster_source.shape}")
-
-## Overture Buildings Data ###
-geojson_uri = '../../data/0/overture/santodomingo_buildings.geojson'
-
-buildings_vector_source = GeoJSONVectorSource(
-    geojson_uri,
-    crs_transformer_buildings,
-    vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-print("Loaded buildings data")
-
-rasterized_buildings_source = CustomRasterizedSource(
-    buildings_vector_source,
-    background_class_id=0)
-print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
+buildingsGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(BuildingsScence, imgsize=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 
 chip = rasterized_buildings_source[:, :]
 fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 ax.imshow(chip, cmap="gray")
 plt.show()
 
-# Set up semantic segmentation training of just buildings and labels
-buildings_only_SS_scene = Scene(
-    id='santo_domingo_buildings_only',
-    raster_source=rasterized_buildings_source,
-    label_source = label_source)
-
-# Creating training, validation, and testing datasets
-imgszie = 256
-batch_size = 6
-
-buildingsGeoDataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
-    scene=buildings_only_SS_scene,
-    size=imgszie,
-    stride=imgszie,
-    out_size=imgszie,
-    padding=0)
-
-# Splitting dataset into train, validation, and test
-train_ds, val_ds, test_ds = buildingsGeoDataset.split_train_val_test(val_ratio=0.2, test_ratio=0.1, seed=42)
-
 def create_full_image(source) -> np.ndarray:
     extent = source.extent
     chip = source.get_label_arr(extent)    
     return chip
 
-# Create the full image from the raster source
 img_full = create_full_image(buildingsGeoDataset.scene.label_source)
-train_windows = train_ds.windows
-val_windows = val_ds.windows
-test_windows = test_ds.windows
+train_windows = train_buildings_dataset.windows
+val_windows = val_buildings_dataset.windows
+test_windows = test_buildings_dataset.windows
 window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
 show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
-train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True) #, num_workers=3)
-val_dl = DataLoader(val_ds, batch_size=batch_size)#, num_workers=3)
+batch_size=6
+train_dl = DataLoader(train_buildings_dataset, batch_size=batch_size, shuffle=True) #, num_workers=3)
+val_dl = DataLoader(val_buildings_dataset, batch_size=batch_size)#, num_workers=3)
 
 # Fine-tune the model
 # Define device
@@ -538,7 +504,6 @@ pred_labels = SemanticSegmentationLabels.from_predictions(
     num_classes=len(class_config),
     smooth=True)
 
-pred_labels.extent
 # Show predictions
 scores = pred_labels.get_score_arr(pred_labels.extent)
 scores_building = scores[0]
@@ -566,9 +531,18 @@ pred_label_store.save(pred_labels)
 
 pred_labels.extent
 
+# Map predictions on folium
+geojson_path = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/vector_output/class-1-slums.json'
+geojson_data = gpd.read_file(geojson_path)
 
+# Create a folium map centered on the data
+m = folium.Map(zoom_start=12) #location=[geojson_data.geometry.centroid.y, geojson_data.geometry.centroid.x], 
 
+# Add the GeoJSON data to the map
+folium.GeoJson(geojson_data).add_to(m)
 
+# Display the map
+m
 
 
 ## Other dataset eval ###
