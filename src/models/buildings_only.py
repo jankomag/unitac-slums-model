@@ -241,7 +241,7 @@ class CustomRasterizedSource(RasterSource):
             raise ValueError('All label polygons must have a class_id.')
 
 ### Label source ###
-label_uri = "../../data/1/UNITAC_data/SantoDomingo_PS_3857.geojson"
+label_uri = "../../data/0/SantoDomingo3857.geojson"
 image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
 
 gdf = gpd.read_file(label_uri)
@@ -252,13 +252,13 @@ class_config = ClassConfig(names=['background', 'slums'],
                            colors=['lightgray', 'darkred'],
                            null_class='background')
 
-crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
-crs_transformer.transform
+crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
+crs_transformer_buildings.transform
+
 resolution = 5
 affine_transform_buildings = Affine(resolution, 0, xmin,
                           0, -resolution, ymin)
 
-crs_transformer_buildings = crs_transformer
 crs_transformer_buildings.transform = affine_transform_buildings
 
 label_vector_source = GeoJSONVectorSource(label_uri,
@@ -275,9 +275,6 @@ print(f"Loaded UNITAC SemanticSegmentationLabelSource: {label_raster_source.shap
 
 ## Overture Buildings Data ###
 geojson_uri = '../../data/0/overture/santodomingo_buildings.geojson'
-
-crs_transformer_buildings = crs_transformer
-crs_transformer_buildings.transform = affine_transform_buildings
 
 buildings_vector_source = GeoJSONVectorSource(
     geojson_uri,
@@ -310,7 +307,7 @@ buildingsGeoDataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
     size=imgszie,
     stride=imgszie,
     out_size=imgszie,
-    padding=100)
+    padding=0)
 
 # Splitting dataset into train, validation, and test
 train_ds, val_ds, test_ds = buildingsGeoDataset.split_train_val_test(val_ratio=0.2, test_ratio=0.1, seed=42)
@@ -541,6 +538,7 @@ pred_labels = SemanticSegmentationLabels.from_predictions(
     num_classes=len(class_config),
     smooth=True)
 
+pred_labels.extent
 # Show predictions
 scores = pred_labels.get_score_arr(pred_labels.extent)
 scores_building = scores[0]
@@ -566,23 +564,37 @@ pred_label_store = SemanticSegmentationLabelStore(
 
 pred_label_store.save(pred_labels)
 
+pred_labels.extent
+
+
+
+
 
 
 ## Other dataset eval ###
 geojson_uri = '../../data/0/overture/portauprincesmol.geojson'
+gdf = gpd.read_file(geojson_uri)
+gdf = gdf.to_crs('EPSG:3857')
+xmin, ymin, xmax, ymax = gdf.total_bounds
+crs_transformer_HT = RasterioCRSTransformer.from_uri(image_uri)
+resolution = 5
+affine_transform_buildingsHT = Affine(resolution, 0, xmin,
+                          0, -resolution, ymin)
 
-buildings_vector_source = GeoJSONVectorSource(
+crs_transformer_HT.transform = affine_transform_buildingsHT
+
+buildings_vector_sourceHT = GeoJSONVectorSource(
     geojson_uri,
-    crs_transformer_buildings,
+    crs_transformer_HT,
     vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
 print("Loaded buildings data")
 
-rasterized_buildings_source = CustomRasterizedSource(
-    buildings_vector_source,
+rasterized_buildings_sourceHT = CustomRasterizedSource(
+    buildings_vector_sourceHT,
     background_class_id=0)
-print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
+print(f"Loaded Rasterised buildings data of size {rasterized_buildings_sourceHT.shape}, and dtype: {rasterized_buildings_sourceHT.dtype}")
 
-chip = rasterized_buildings_source[:, :]
+chip = rasterized_buildings_sourceHT[:, :]
 fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 ax.imshow(chip, cmap="gray")
 plt.show()
@@ -590,7 +602,7 @@ plt.show()
 # Set up semantic segmentation training of just buildings and labels
 HT_eval_scene = Scene(
     id='HT_eval_scene',
-    raster_source=rasterized_buildings_source,
+    raster_source=rasterized_buildings_sourceHT,
     label_source = label_source)
 
 # Creating training, validation, and testing datasets
@@ -633,7 +645,7 @@ vector_output_config = CustomVectorOutputConfig(
 
 pred_label_store = SemanticSegmentationLabelStore(
     uri='../../vectorised_model_predictions/buildings_model_only/HT/',
-    crs_transformer = crs_transformer_buildings,
+    crs_transformer = crs_transformer_HT,
     class_config = class_config,
     vector_outputs = [vector_output_config],
     discrete_output = True)
