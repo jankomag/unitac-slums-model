@@ -321,7 +321,6 @@ ax.set_title('infs Scores')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
-
 # Save predictions to Geojson
 vo_config = CustomVectorOutputConfig(
     class_id=1,

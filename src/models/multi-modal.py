@@ -9,6 +9,8 @@ from rastervision.core.box import Box
 import stackstac
 from pathlib import Path
 import torch.nn as nn
+import cv2
+from os.path import join
 
 from typing import Any, Optional, Tuple, Union, Sequence
 from pyproj import Transformer
@@ -42,6 +44,8 @@ from rastervision.core.data import (ClassConfig, GeoJSONVectorSourceConfig, GeoJ
                                     SemanticSegmentationLabelSource)
 from rastervision.core.data.label_source.label_source import LabelSource
 from rastervision.core.data.label import SemanticSegmentationLabels
+from rastervision.core.data.label_store import SemanticSegmentationLabelStore
+
 from rastervision.core.data.utils import pad_to_window_size
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
@@ -75,6 +79,58 @@ sys.path.append(grandparent_dir)
 from deeplnafrica.deepLNAfrica import init_segm_model
 from src.data.dataloaders import create_full_image, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
 
+from rastervision.core.data import (
+    ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
+    VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
+)
+
+class CustomVectorOutputConfig(Config):
+    """Config for vectorized semantic segmentation predictions."""
+    class_id: int = Field(
+        ...,
+        description='The prediction class that is to be turned into vectors.'
+    )
+    denoise: int = Field(
+        8,
+        description='Diameter of the circular structural element used to '
+        'remove high-frequency signals from the image. Smaller values will '
+        'reduce less noise and make vectorization slower and more memory '
+        'intensive (especially for large images). Larger values will remove '
+        'more noise and make vectorization faster but might also remove '
+        'legitimate detections.'
+    )
+    threshold: Optional[float] = Field(
+        None,
+        description='Probability threshold for creating the binary mask for '
+        'the pixels of this class. Pixels will be considered to belong to '
+        'this class if their probability for this class is >= ``threshold``. '
+        'Defaults to ``None``, which is equivalent to (1 / num_classes).'
+    )
+
+    def vectorize(self, mask: np.ndarray) -> Iterator['Polygon']:
+        """Vectorize binary mask representing the target class into polygons."""
+        # Apply denoising if necessary
+        if self.denoise > 0:
+            kernel = np.ones((self.denoise, self.denoise), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+        # Find contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Convert contours to polygons
+        for contour in contours:
+            if contour.size >= 6:  # Minimum number of points for a valid polygon
+                yield Polygon(contour.squeeze())
+
+    def get_uri(self, root: str, class_config: Optional['ClassConfig'] = None) -> str:
+        """Get the URI for saving the vector output."""
+        if class_config is not None:
+            class_name = class_config.get_name(self.class_id)
+            uri = join(root, f'class-{self.class_id}-{class_name}.json')
+        else:
+            uri = join(root, f'class-{self.class_id}.json')
+        return uri
+    
 def customgeoms_to_raster(df: gpd.GeoDataFrame, window: 'Box',
                     background_class_id: int, all_touched: bool) -> np.ndarray:
     if len(df) == 0:
@@ -198,9 +254,9 @@ class_config = ClassConfig(names=['background', 'slums'],
 
 crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
 crs_transformer.transform
-
-affine_transform_buildings = Affine(2, 0, xmin,
-                          0, -2, ymin)
+resolution = 5
+affine_transform_buildings = Affine(resolution, 0, xmin,
+                          0, -resolution, ymin)
 
 crs_transformer_buildings = crs_transformer
 crs_transformer_buildings.transform = affine_transform_buildings
@@ -245,16 +301,16 @@ buildings_only_SS_scene = Scene(
     raster_source=rasterized_buildings_source,
     label_source = label_source)
 
-
 # Creating training, validation, and testing datasets
 imgszie = 256
-batch_size = 8
+batch_size = 6
+
 buildingsGeoDataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
     scene=buildings_only_SS_scene,
     size=imgszie,
     stride=imgszie,
     out_size=imgszie,
-    padding=50)
+    padding=100)
 
 # Splitting dataset into train, validation, and test
 train_ds, val_ds, test_ds = buildingsGeoDataset.split_train_val_test(val_ratio=0.2, test_ratio=0.1, seed=42)
@@ -274,7 +330,6 @@ show_windows(img_full, train_windows + val_windows + test_windows, window_labels
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True) #, num_workers=3)
 val_dl = DataLoader(val_ds, batch_size=batch_size)#, num_workers=3)
-train_dl.num_workers
 
 # Fine-tune the model
 # Define device
@@ -423,7 +478,6 @@ checkpoint_callback = ModelCheckpoint(
     filename='buildings_runid{run_id}_{image_size:02d}-{batch_size:02d}-{epoch:02d}-{val_loss:.4f}',
     save_top_k=1,
     mode='min')
-
 early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=10)
 
 # Define trainer
@@ -447,8 +501,8 @@ model.train()
 trainer.fit(model, train_dl, val_dl)
 
 # Use best model for evaluation
-best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/20240617_130750/buildings_image_size=00-batch_size=00-epoch=00-val_loss=0.5754.ckpt"
-best_model_path = checkpoint_callback.best_model_path
+best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=09-val_loss=0.1590.ckpt"
+# best_model_path = checkpoint_callback.best_model_path
 best_model = BuildingsOnlyDeeplabv3SegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
 
@@ -487,12 +541,101 @@ pred_labels = SemanticSegmentationLabels.from_predictions(
     num_classes=len(class_config),
     smooth=True)
 
+# Show predictions
 scores = pred_labels.get_score_arr(pred_labels.extent)
 scores_building = scores[0]
-
 fig, ax = plt.subplots(1, 1, figsize=(10, 5))
 image = ax.imshow(scores_building)
 ax.axis('off')
 ax.set_title('infs Scores')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
+
+# Saving predictions as GEOJSON
+vector_output_config = CustomVectorOutputConfig(
+    class_id=1,
+    denoise=8,
+    threshold=0.5)
+
+pred_label_store = SemanticSegmentationLabelStore(
+    uri='../../vectorised_model_predictions/buildings_model_only/',
+    crs_transformer = crs_transformer_buildings,
+    class_config = class_config,
+    vector_outputs = [vector_output_config],
+    discrete_output = True)
+
+pred_label_store.save(pred_labels)
+
+
+
+## Other dataset eval ###
+geojson_uri = '../../data/0/overture/portauprincesmol.geojson'
+
+buildings_vector_source = GeoJSONVectorSource(
+    geojson_uri,
+    crs_transformer_buildings,
+    vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+print("Loaded buildings data")
+
+rasterized_buildings_source = CustomRasterizedSource(
+    buildings_vector_source,
+    background_class_id=0)
+print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
+
+chip = rasterized_buildings_source[:, :]
+fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+ax.imshow(chip, cmap="gray")
+plt.show()
+
+# Set up semantic segmentation training of just buildings and labels
+HT_eval_scene = Scene(
+    id='HT_eval_scene',
+    raster_source=rasterized_buildings_source,
+    label_source = label_source)
+
+# Creating training, validation, and testing datasets
+imgszie = 256
+batch_size = 6
+
+HTGeoDataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
+    scene=HT_eval_scene,
+    size=imgszie,
+    stride=imgszie,
+    out_size=imgszie,
+    padding=100)
+
+predictions_iterator = PredictionsIterator(best_model, HTGeoDataset, device=device)
+windows, predictions = zip(*predictions_iterator)
+
+# Create SemanticSegmentationLabels from predictions
+pred_labels_HT = SemanticSegmentationLabels.from_predictions(
+    windows,
+    predictions,
+    extent=HTGeoDataset.scene.extent,
+    num_classes=len(class_config),
+    smooth=True)
+
+# Show predictions
+scores = pred_labels_HT.get_score_arr(pred_labels_HT.extent)
+scores_building = scores[0]
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+image = ax.imshow(scores_building)
+ax.axis('off')
+ax.set_title('infs Scores')
+cbar = fig.colorbar(image, ax=ax)
+plt.show()
+
+# Saving predictions as GEOJSON
+vector_output_config = CustomVectorOutputConfig(
+    class_id=1,
+    denoise=8,
+    threshold=0.5)
+
+pred_label_store = SemanticSegmentationLabelStore(
+    uri='../../vectorised_model_predictions/buildings_model_only/HT/',
+    crs_transformer = crs_transformer_buildings,
+    class_config = class_config,
+    vector_outputs = [vector_output_config],
+    discrete_output = True)
+
+pred_label_store.save(pred_labels_HT)

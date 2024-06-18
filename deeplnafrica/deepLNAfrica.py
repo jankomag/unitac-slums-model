@@ -10,6 +10,8 @@ from torch.optim.lr_scheduler import MultiStepLR
 import wandb
 from typing import (Union)
 import torch
+import torch.nn as nn
+
 from torchvision.models.segmentation import deeplabv3_resnet50, DeepLabV3_ResNet50_Weights
 from torchvision.models.segmentation.deeplabv3 import DeepLabHead
 
