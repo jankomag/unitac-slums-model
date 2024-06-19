@@ -7,6 +7,7 @@ from shapely.geometry import Polygon
 import multiprocessing
 multiprocessing.set_start_method('fork')
 
+import pytorch_lightning as pl
 import numpy as np
 import geopandas as gpd
 import cv2
@@ -154,30 +155,31 @@ BuildingsScence = Scene(
 
 buildingsGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(BuildingsScence, imgsize=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 sentinelGeoDataset, train_sentinel_dataset, val_sentinel_dataset, test_sentinel_dataset = create_datasets(SentinelScene, imgsize=144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+print(f"Loaded all dataset: {train_buildings_dataset}")
 
-def create_full_image(source) -> np.ndarray:
-    extent = source.extent
-    chip = source.get_label_arr(extent)    
-    return chip
+# def create_full_image(source) -> np.ndarray:
+#     extent = source.extent
+#     chip = source.get_label_arr(extent)    
+#     return chip
 
-img_full = create_full_image(buildingsGeoDataset.scene.label_source)
-train_windows = train_buildings_dataset.windows
-val_windows = val_buildings_dataset.windows
-test_windows = test_buildings_dataset.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+# img_full = create_full_image(buildingsGeoDataset.scene.label_source)
+# train_windows = train_buildings_dataset.windows
+# val_windows = val_buildings_dataset.windows
+# test_windows = test_buildings_dataset.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
-def create_full_imagesent(source) -> np.ndarray:
-    extent = source.extent
-    chip = source._get_chip(extent)    
-    return chip
+# def create_full_imagesent(source) -> np.ndarray:
+#     extent = source.extent
+#     chip = source._get_chip(extent)    
+#     return chip
 
-img_full = create_full_imagesent(SentinelScene.label_source)
-train_windows = train_sentinel_dataset.windows
-val_windows = val_sentinel_dataset.windows
-test_windows = test_sentinel_dataset.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+# img_full = create_full_imagesent(SentinelScene.label_source)
+# train_windows = train_sentinel_dataset.windows
+# val_windows = val_sentinel_dataset.windows
+# test_windows = test_sentinel_dataset.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 from pytorch_lightning import LightningDataModule
 
@@ -195,8 +197,8 @@ class MultiModalDataModule(LightningDataModule):
     def val_dataloader(self):
         return zip(self.val_sentinel_loader, self.val_buildings_loader)
 
-num_workers=4
-batch_size= 3
+num_workers=11
+batch_size= 4
 train_sentinel_loader = DataLoader(train_sentinel_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 train_buildings_loader = DataLoader(train_buildings_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 val_sentinel_loader = DataLoader(val_sentinel_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
@@ -205,27 +207,6 @@ val_buildings_loader = DataLoader(val_buildings_dataset, batch_size=batch_size, 
 assert len(train_sentinel_loader) == len(train_buildings_loader), "DataLoaders must have the same length"
 assert len(val_sentinel_loader) == len(val_buildings_loader), "DataLoaders must have the same length"
 
-data_module = MultiModalDataModule(train_sentinel_loader, train_buildings_loader, val_sentinel_loader, val_buildings_loader)
-
-# Testing train_dataloader()
-print("Testing train_dataloader():")
-for batch_idx, batch in enumerate(data_module.train_dataloader()):
-    
-    sentinel_batch, buildings_batch = batch
-    
-    buildings_data, buildings_labels = buildings_batch
-    
-    sentinel_data, _ = sentinel_batch
-    
-    print(f"Batch {batch_idx}:")
-    print(f"Sentinel data shape: {sentinel_data.shape}")
-    print(f"Buildings data shape: {buildings_data.shape}")
-    print(f"Buildings labels shape: {buildings_labels.shape}")
-    break  # Print only the first batch for brevity
-
-print()
-
-# Fine-tune the model
 if not torch.backends.mps.is_available():
     if not torch.backends.mps.is_built():
         print("MPS not available because the current PyTorch install was not built with MPS enabled.")
@@ -235,50 +216,136 @@ else:
     device = torch.device("mps")
     print("MPS is available.")
 
-output_dir = f'../../UNITAC-trained-models/multi_modal/'
-os.makedirs(output_dir, exist_ok=True)
+from torchvision.models.segmentation import deeplabv3_resnet50
+import torch.nn as nn
+import torch.nn.functional as F
 
-wandb.init(project='UNITAC-multi-modal')
-wandb_logger = WandbLogger(project='UNITAC-multi-modal', log_model=True)
+def init_segm_model(num_bands: int = 4) -> torch.nn.Module:
+    
+    segm_model = deeplabv3_resnet50(pretrained=False, progress=True, num_classes=1)
+    
+    # for 1 band (buildings layer only)
+    if num_bands == 1:
+        # Change the input convolution to accept 1 channel instead of 4
+        weight = segm_model.backbone.conv1.weight.clone()
+        segm_model.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        with torch.no_grad():
+            segm_model.backbone.conv1.weight[:, 0] = weight.mean(dim=1, keepdim=True).squeeze(1)
+            
+    if num_bands == 4:
+            # Initialise the new NIR dimension as for the red channel
+            weight = segm_model.backbone.conv1.weight.clone()
+            segm_model.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+            
+            with torch.no_grad(): # avoid tracking this operation in the autograd
+                segm_model.backbone.conv1.weight[:, 1:] = weight.clone()
+                segm_model.backbone.conv1.weight[:, 0] = weight[:, 0].clone()
 
-# Loggers and callbacks
-run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-checkpoint_callback = ModelCheckpoint(
-    monitor='val_loss',
-    dirpath=output_dir,
-    filename='multimodal_runid{run_id}_{image_size:02d}-{batch_size:02d}-{epoch:02d}-{val_loss:.4f}',
-    save_top_k=1,
-    mode='min')
-early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=10)
+    return segm_model
 
-# Define trainer
-trainer = Trainer(
-    accelerator='auto',
-    callbacks=[checkpoint_callback, early_stopping_callback],
-    log_every_n_steps=1,
-    logger=[wandb_logger],
-    min_epochs=1,
-    max_epochs=100,
-    num_sanity_val_steps=1
-)
+class SentinelEncoder(nn.Module):
+    def __init__(self, pretrained_checkpoint=None):
+        super().__init__()
+        
+        self.segm_model = init_segm_model(num_bands=4)
+        
+        if pretrained_checkpoint:
+            checkpoint = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
+            checkpoint = process_state_dict(checkpoint, "segm_model.", ["aux_classifier."])
+            checkpoint = {k: v.float() for k, v in checkpoint.items()}
+            
+            model_dict = self.segm_model.state_dict()
+            model_dict.update(checkpoint)
+            self.segm_model.load_state_dict(model_dict)
+        
+    def forward(self, x):
+        return self.segm_model.backbone(x)['out']
+    
+# Function to strip the prefix from the keys in the state dict and exclude certain keys
+def process_state_dict(state_dict, prefix, exclude_prefixes):
+    processed_state_dict = {}
+    for key in state_dict.keys():
+        if key.startswith(prefix):
+            new_key = key[len(prefix):]
+            if not any(new_key.startswith(exclude_prefix) for exclude_prefix in exclude_prefixes):
+                processed_state_dict[new_key] = state_dict[key]
+    return processed_state_dict
 
+# Function to adjust the weights of the first convolutional layer
+def adjust_first_conv_layer(state_dict, old_key, new_key):
+    weight = state_dict[old_key]
+    new_weight = weight.mean(dim=1, keepdim=True)  # Average across the channel dimension
+    state_dict[new_key] = new_weight
+    del state_dict[old_key]
+    return state_dict
+
+class BuildingsEncoder(nn.Module):
+    def __init__(self, pretrained_checkpoint=None):
+        super().__init__()
+        
+        self.segm_model = init_segm_model(num_bands=1)
+        
+        if pretrained_checkpoint:
+            checkpoint = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
+            checkpoint = process_state_dict(checkpoint, "segm_model.", ["aux_classifier."])
+            checkpoint = {k: v.float() for k, v in checkpoint.items()}
+            
+            # Adjust the first conv layer weights
+            checkpoint = adjust_first_conv_layer(checkpoint, 'backbone.conv1.weight', 'backbone.conv1.weight')
+            
+            # Remove classifier layer weights if they don't match
+            if 'classifier.4.weight' in checkpoint and 'classifier.4.bias' in checkpoint:
+                del checkpoint['classifier.4.weight']
+                del checkpoint['classifier.4.bias']
+            
+            model_dict = self.segm_model.state_dict()
+            model_dict.update(checkpoint)
+            self.segm_model.load_state_dict(model_dict)
+            
+        self.additional_conv = nn.Conv2d(2048, 2048, kernel_size=3, stride=2, padding=1)
+
+    def forward(self, x):
+        x = self.segm_model.backbone(x)['out']
+        return self.additional_conv(x)
+
+class JointEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.segm_model = deeplabv3_resnet50(pretrained=False, progress=True, num_classes=1)
+        
+    def forward(self, x):
+        # Assuming x is the combined features from sentinel and buildings encoders
+        x = self.segm_model.classifier(x)
+        x = F.interpolate(x, size=(288, 288), mode='bilinear', align_corners=False)
+        return x
+    
 # Train the model
 class MultiModalSegmentationModel(pl.LightningModule):
     def __init__(self):
         super().__init__()
         
-        self.sentinel_encoder = _
+        self.learning_rate = 1e-4
+        self.weight_decay = 0
+        self.segm_model = deeplabv3_resnet50(pretrained=False, progress=True, num_classes=1)
         
-        self.buildings_feature_extractor = _
-            
+        pretrained_checkpoint_path = "/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt"
+        self.sentinel_encoder = SentinelEncoder(pretrained_checkpoint=pretrained_checkpoint_path)
+        self.buildings_encoder = BuildingsEncoder(pretrained_checkpoint=pretrained_checkpoint_path)
+        self.joint_encoder = JointEncoder()
+             
     def forward(self, sentinel_data, buildings_data):
         sentinel_features = self.sentinel_encoder(sentinel_data)
-        buildings_features = self.buildings_feature_extractor(buildings_data)
+        buildings_features = self.buildings_encoder(buildings_data)
         
         # combine the features at same resolution
-        combined_features = torch.cat((sentinel_features, buildings_features), dim=1)
+        combined_features = sentinel_features + buildings_features
+
+        # combined_features = torch.cat((sentinel_features, buildings_features), dim=0)
         
-        return combined_features
+        # continue training until segmentation head
+        segmentation = self.joint_encoder(combined_features).squeeze(1)
+        
+        return segmentation
     
     def training_step(self, batch, batch_idx):
         
@@ -290,7 +357,7 @@ class MultiModalSegmentationModel(pl.LightningModule):
         assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
 
         loss_fn = torch.nn.BCEWithLogitsLoss()
-        loss = loss_fn(segmentation, buildings_labels)
+        loss = loss_fn(segmentation, buildings_labels.float())
         
         self.log('train_loss', loss)
                 
@@ -305,9 +372,10 @@ class MultiModalSegmentationModel(pl.LightningModule):
         assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
 
         loss_fn = torch.nn.BCEWithLogitsLoss()
-        val_loss = loss_fn(segmentation, buildings_labels)
+        val_loss = loss_fn(segmentation, buildings_labels.float())
         
         self.log('val_loss', val_loss, prog_bar=True)
+        wandb.log({'val_loss': val_loss.item(), 'epoch': self.current_epoch})
         
     def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         sentinel_batch, buildings_batch = batch
@@ -343,10 +411,56 @@ model = MultiModalSegmentationModel()
 model.to(device)
 model.train()
 
+data_module = MultiModalDataModule(train_sentinel_loader, train_buildings_loader, val_sentinel_loader, val_buildings_loader)
+
+output_dir = f'../../UNITAC-trained-models/multi_modal/'
+os.makedirs(output_dir, exist_ok=True)
+
+wandb.init(project='UNITAC-multi-modal')
+wandb_logger = WandbLogger(project='UNITAC-multi-modal', log_model=True)
+
+# Loggers and callbacks
+run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+checkpoint_callback = ModelCheckpoint(
+    monitor='val_loss',
+    dirpath=output_dir,
+    filename='multimodal_runid{run_id}_{image_size:02d}-{batch_size:02d}-{epoch:02d}-{val_loss:.4f}',
+    save_top_k=1,
+    mode='min')
+early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=15)
+
+# Define trainer
+trainer = Trainer(
+    accelerator='auto',
+    callbacks=[checkpoint_callback, early_stopping_callback],
+    log_every_n_steps=1,
+    logger=[wandb_logger],
+    min_epochs=1,
+    max_epochs=100,
+    num_sanity_val_steps=1
+)
 # Train the model
 trainer.fit(model, datamodule=data_module)
 
+# for batch_idx, batch in enumerate(data_module.train_dataloader()):
+#     sentinel_batch, buildings_batch = batch
+#     buildings_data, buildings_labels = buildings_batch
+#     sentinel_data, _ = sentinel_batch
+    
+#     # Print shapes for verification
+#     sentinel_data = sentinel_data.to(device)
+#     buildings_data = buildings_data.to(device)
 
+#     print(f"Batch {batch_idx}:")
+#     print(f"Sentinel data shape: {sentinel_data.shape}")
+#     print(f"Buildings data shape: {buildings_data.shape}")
+#     print(f"Buildings labels shape: {buildings_labels.shape}")
+    
+#     # Pass the data through the model
+#     segmentation = model(sentinel_data, buildings_data)
+#     print(f"Segmentation output shape: {segmentation.shape}")
+    
+#     break  # Exit after the first batch for brevity
 
 
 
@@ -356,9 +470,6 @@ trainer.fit(model, datamodule=data_module)
 
 
 # Extra Classes to accommodate multi-modal data
-import math
-import random
-
 class MultiSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset):
 
     def __init__(self, scene, size, stride, out_size=None, padding=None, window_sizes=None):

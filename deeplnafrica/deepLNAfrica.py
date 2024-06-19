@@ -200,8 +200,7 @@ class CustomDeeplabv3SegmentationModel(pl.LightningModule):
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         
-        self.pos_weight = torch.tensor(pos_weight, device='mps')
-        # self.pos_weight = torch.tensor(pos_weight, device=self.device)
+        self.pos_weight = torch.tensor(pos_weight, device='mps')#device=self.device)
 
         self.segm_model = init_segm_model(num_bands)
 

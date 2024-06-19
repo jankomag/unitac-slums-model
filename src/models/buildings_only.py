@@ -336,12 +336,6 @@ class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
                 with torch.no_grad():
                     self.segm_model.backbone.conv1.weight[:, 0] = new_weight.squeeze(1)
 
-        # if pretrained_checkpoint:
-        #     pretrained_dict = torch.load(pretrained_checkpoint, map_location='mps')['state_dict']
-        #     model_dict = self.state_dict()
-        #     pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-        #     model_dict.update(pretrained_dict)
-        #     self.load_state_dict(model_dict)
         self.save_hyperparameters(ignore='pretrained_checkpoint')
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -366,7 +360,7 @@ class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
         groundtruth = groundtruth.float()
         assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
 
-        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
+        loss_fn = torch.nn.BCEWithLogitsLoss()
         loss = loss_fn(segmentation, groundtruth)
 
         preds = torch.sigmoid(segmentation) > 0.5
