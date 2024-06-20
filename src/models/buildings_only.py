@@ -12,6 +12,10 @@ import torch.nn as nn
 import cv2
 from os.path import join
 
+import json
+from shapely.geometry import shape, mapping
+from shapely.affinity import translate
+
 from typing import Any, Optional, Tuple, Union, Sequence
 from pyproj import Transformer
 from rasterio.transform import rowcol, xy
@@ -83,6 +87,7 @@ from src.data.dataloaders import (
     create_datasets,
     create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
 )
+
 from rastervision.core.data import (
     ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
     VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
@@ -187,84 +192,98 @@ def geoms_to_raster(df: gpd.GeoDataFrame, window: 'Box',
 
     return raster
 
-class CustomRasterizedSource(RasterSource):
-    def __init__(self,
-                 vector_source: 'VectorSource',
-                 background_class_id: int,
-                 bbox: Optional['Box'] = None,
-                 all_touched: bool = False,
-                 raster_transformers: List['RasterTransformer'] = []):
-        self.vector_source = vector_source
-        self.background_class_id = background_class_id
-        self.all_touched = all_touched
+def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5):
+    gdf = gpd.read_file(buildings_uri)
+    gdf = gdf.to_crs('EPSG:3857')
+    xmin, ymin, xmax, ymax = gdf.total_bounds
+    
+    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
+    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymin)
+    crs_transformer_buildings.transform = affine_transform_buildings
 
-        self.df = self.vector_source.get_dataframe()
-        self.validate_labels(self.df)
+    buildings_vector_source = GeoJSONVectorSource(
+        buildings_uri,
+        crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+    
+    rasterized_buildings_source = RasterizedSource(
+        buildings_vector_source,
+        background_class_id=0)
 
-        if bbox is None:
-            bbox = self.vector_source.extent
+    print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
 
-        super().__init__(
-            channel_order=[0],
-            num_channels_raw=1,
-            bbox=bbox,
-            raster_transformers=raster_transformers)
+    label_vector_source = GeoJSONVectorSource(label_uri,
+        crs_transformer_buildings,
+        vector_transformers=[
+            ClassInferenceTransformer(
+                default_class_id=class_config.get_class_id('slums'))])
 
-    @property
-    def dtype(self) -> np.dtype:
-        return np.uint8
+    label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
+    buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
 
-    @property
-    def crs_transformer(self):
-        return self.vector_source.crs_transformer
+    return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
 
-    def _get_chip(self,
-                  window: 'Box',
-                  out_shape: Optional[Tuple[int, int]] = None) -> np.ndarray:
-        window = window.to_global_coords(self.bbox)
-        chip = geoms_to_raster(
-            self.df,
-            window,
-            background_class_id=self.background_class_id,
-            all_touched=self.all_touched)
+import rasterio
+image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
 
-        if out_shape is not None:
-            chip = self.resize(chip, out_shape)
+# Open the GeoTIFF file
+with rasterio.open(image_uri) as dataset:
+    # Retrieve the EPSG code
+    epsg_code = dataset.crs.to_epsg()
 
-        return np.expand_dims(chip, 2)
+    # Alternatively, you can also get the CRS directly
+    crs = dataset.crs
 
-    def validate_labels(self, df: gpd.GeoDataFrame) -> None:
-        geom_types = set(df.geom_type)
-        if 'Point' in geom_types or 'LineString' in geom_types:
-            raise ValueError('LineStrings and Points are not supported '
-                             'in RasterizedSource. Use BufferTransformer '
-                             'to buffer them into Polygons. '
-                             f'Geom types found in data: {geom_types}')
+print(f"EPSG code: {epsg_code}")
+print(f"CRS: {crs}")
 
-        if len(df) > 0 and 'class_id' not in df.columns:
-            raise ValueError('All label polygons must have a class_id.')
 
 ### Label source ###
 label_uri = "../../data/0/SantoDomingo3857.geojson"
 image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
 buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
-
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
-rasterized_buildings_source, buildings_label_source = create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5)
-
-gdf = gpd.read_file(label_uri)
+gdf = gpd.read_file(buildings_uri)
 gdf = gdf.to_crs('EPSG:3857')
+
 xmin, ymin, xmax, ymax = gdf.total_bounds
-pixel_polygon = Polygon([
-    (xmin, ymin),
-    (xmin, ymax),
-    (xmax, ymax),
-    (xmax, ymin),
-    (xmin, ymin)
-])
+resolution=5
+crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
+affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymin)
+crs_transformer_buildings.transform = affine_transform_buildings
+
+buildings_vector_source = GeoJSONVectorSource(
+    buildings_uri,
+    crs_transformer_buildings,
+    vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+
+rasterized_buildings_source = RasterizedSource(
+    buildings_vector_source,
+    background_class_id=0)
+
+label_vector_source = GeoJSONVectorSource(label_uri,
+    crs_transformer_buildings,
+    vector_transformers=[
+        ClassInferenceTransformer(
+            default_class_id=class_config.get_class_id('slums'))])
+
+label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
+buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
+
+
+# gdf = gpd.read_file(label_uri)
+# gdf = gdf.to_crs('EPSG:3857')
+# xmin, ymin, xmax, ymax = gdf.total_bounds
+# pixel_polygon = Polygon([
+#     (xmin, ymin),
+#     (xmin, ymax),
+#     (xmax, ymax),
+#     (xmax, ymin),
+#     (xmin, ymin)
+# ])
 
 BuildingsScence = Scene(
         id='santodomingo_buildings',
@@ -462,7 +481,14 @@ best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-
 # best_model_path = checkpoint_callback.best_model_path
 best_model = BuildingsOnlyDeeplabv3SegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
+  
 
+
+
+
+
+
+#  Original code for making predictions that works 
 class PredictionsIterator:
     def __init__(self, model, dataset, device='cuda'):
         self.model = model
@@ -486,7 +512,6 @@ class PredictionsIterator:
     def __iter__(self):
         return iter(self.predictions)
     
-# Example usage:
 predictions_iterator = PredictionsIterator(best_model, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 
@@ -515,7 +540,7 @@ vector_output_config = CustomVectorOutputConfig(
     threshold=0.5)
 
 pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/buildings_model_only/',
+    uri='../../vectorised_model_predictions/buildings_model_only/2/',
     crs_transformer = crs_transformer_buildings,
     class_config = class_config,
     vector_outputs = [vector_output_config],
@@ -523,18 +548,34 @@ pred_label_store = SemanticSegmentationLabelStore(
 
 pred_label_store.save(pred_labels)
 
-pred_labels.extent
+predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/2/vector_output/class-1-slums.json'
+predspathshuift = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/2/vector_output/class-1-slumsshift.json'
+
+def shift_north(geojson_data, shift_distance):
+    for feature in geojson_data['features']:
+        geom = shape(feature['geometry'])
+        shifted_geom = translate(geom, xoff=0, yoff=shift_distance)
+        feature['geometry'] = mapping(shifted_geom)
+    return geojson_data
+
+# Load your predictions as a GeoJSON object
+with open(predspath, 'r') as f:
+    predictions_geojson = json.load(f)
+
+# Apply the shift north
+shift_distance = 0.096
+shifted_geojson = shift_north(predictions_geojson, shift_distance)
+
+# Save the shifted GeoJSON
+with open(predspathshuift, 'w') as f:
+    json.dump(shifted_geojson, f)
 
 
 
 
 
-
-
-### MAKING PREDICTIONS ON OTHER DATASETS ###
+### MAKING PREDICTIONS ON FULL DATASET ###
 import duckdb
-from tqdm import tqdm
-import pandas as pd
 
 con = duckdb.connect("../../data/0/data.db")
 con.install_extension('httpfs')
@@ -544,6 +585,7 @@ con.load_extension('spatial')
 con.execute("SET s3_region='us-west-2'")
 con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
 
+# implements merging logc class CustomGeoJSONVectorSource
 class CustomGeoJSONVectorSource(VectorSource):
     """A :class:`.VectorSource` for reading GeoJSON data."""
 
@@ -589,37 +631,6 @@ class CustomGeoJSONVectorSource(VectorSource):
         gdf = gdf.to_crs('epsg:4326')
         geojson = gdf.__geo_interface__
         return geojson
-
-def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5):
-    gdf = gpd.read_file(buildings_uri)
-    gdf = gdf.to_crs('EPSG:3857')
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-    
-    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymin)
-    crs_transformer_buildings.transform = affine_transform_buildings
-
-    buildings_vector_source = CustomGeoJSONVectorSource(
-        buildings_uri,
-        crs_transformer_buildings,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-    
-    rasterized_buildings_source = CustomRasterizedSource(
-        buildings_vector_source,
-        background_class_id=0)
-
-    print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
-
-    label_vector_source = GeoJSONVectorSource(label_uri,
-        crs_transformer_buildings,
-        vector_transformers=[
-            ClassInferenceTransformer(
-                default_class_id=class_config.get_class_id('slums'))])
-
-    label_raster_source = CustomRasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-    buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
-
-    return rasterized_buildings_source, buildings_label_source
 
 def query_buildings_data(row, con):
     city_name = row['city_ascii']
@@ -690,7 +701,8 @@ sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.
 gdf = gpd.read_parquet(sica_cities)
 gdf = gdf.head(2)
 
-image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+
+image_uri = '../../data/0/sentinel_Gee/HTI_Tabarre_2023.tif'
 label_uri = "../../data/0/SantoDomingo3857.geojson"
 crs_transformer_common = RasterioCRSTransformer.from_uri(image_uri)
 resolution = 5
@@ -715,15 +727,49 @@ for index, row in gdf.iterrows():
 
 
 # Creating training, validation, and testing datasets
-imgszie = 256
-batch_size = 6
+def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5):
+    gdf = gpd.read_file(buildings_uri)
+    gdf = gdf.to_crs('EPSG:3857')
+    xmin, ymin, xmax, ymax = gdf.total_bounds
+    
+    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
+    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymin)
+    crs_transformer_buildings.transform = affine_transform_buildings
 
-HTGeoDataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
-    scene=HT_eval_scene,
-    size=imgszie,
-    stride=imgszie,
-    out_size=imgszie,
-    padding=100)
+    buildings_vector_source = GeoJSONVectorSource(
+        buildings_uri,
+        crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+    
+    rasterized_buildings_source = RasterizedSource(
+        buildings_vector_source,
+        background_class_id=0)
+
+    print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
+
+    label_vector_source = GeoJSONVectorSource(label_uri,
+        crs_transformer_buildings,
+        vector_transformers=[
+            ClassInferenceTransformer(
+                default_class_id=class_config.get_class_id('slums'))])
+
+    label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
+    buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
+
+    return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
+
+image_uri = '../../data/0/sentinel_Gee/HTI_Tabarre_2023.tif'
+label_uri = "../../data/0/SantoDomingo3857.geojson"
+buildings_uri = '../../data/0/overture/portauprince.geojson'
+
+rasterized_buildings_source, buildings_label_source, crs_transformer_HT = create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5)
+
+HT_eval_scene = Scene(
+        id='portauprince_buildings',
+        raster_source = rasterized_buildings_source,
+        label_source = buildings_label_source)
+
+HTGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(HT_eval_scene, imgsize=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 
 predictions_iterator = PredictionsIterator(best_model, HTGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
@@ -737,11 +783,6 @@ pred_labels_HT = SemanticSegmentationLabels.from_predictions(
     smooth=True)
 
 # Saving predictions as GEOJSON
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
-
 pred_label_store = SemanticSegmentationLabelStore(
     uri='../../vectorised_model_predictions/buildings_model_only/HT/',
     crs_transformer = crs_transformer_HT,
@@ -750,30 +791,6 @@ pred_label_store = SemanticSegmentationLabelStore(
     discrete_output = True)
 
 pred_label_store.save(pred_labels_HT)
-
-
-
-# Creating training, validation, and testing datasets
-imgszie = 256
-batch_size = 6
-
-HTGeoDataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
-    scene=HT_eval_scene,
-    size=imgszie,
-    stride=imgszie,
-    out_size=imgszie,
-    padding=100)
-
-predictions_iterator = PredictionsIterator(best_model, HTGeoDataset, device=device)
-windows, predictions = zip(*predictions_iterator)
-
-# Create SemanticSegmentationLabels from predictions
-pred_labels_HT = SemanticSegmentationLabels.from_predictions(
-    windows,
-    predictions,
-    extent=HTGeoDataset.scene.extent,
-    num_classes=len(class_config),
-    smooth=True)
 
 # Show predictions
 scores = pred_labels_HT.get_score_arr(pred_labels_HT.extent)
@@ -791,11 +808,24 @@ vector_output_config = CustomVectorOutputConfig(
     denoise=8,
     threshold=0.5)
 
-pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/buildings_model_only/HT/',
-    crs_transformer = crs_transformer_HT,
-    class_config = class_config,
-    vector_outputs = [vector_output_config],
-    discrete_output = True)
+predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/HT/vector_output/class-1-slums.json'
+predspathshuift = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/HT/vector_output/class-1-slumsshift.json'
 
-pred_label_store.save(pred_labels_HT)
+def shift_north(geojson_data, shift_distance):
+    for feature in geojson_data['features']:
+        geom = shape(feature['geometry'])
+        shifted_geom = translate(geom, xoff=0, yoff=shift_distance)
+        feature['geometry'] = mapping(shifted_geom)
+    return geojson_data
+
+# Load your predictions as a GeoJSON object
+with open(predspath, 'r') as f:
+    predictions_geojson = json.load(f)
+
+# Apply the shift north
+shift_distance = 0.2215
+shifted_geojson = shift_north(predictions_geojson, shift_distance)
+
+# Save the shifted GeoJSON
+with open(predspathshuift, 'w') as f:
+    json.dump(shifted_geojson, f)

@@ -25,6 +25,9 @@ from typing import TYPE_CHECKING
 from pydantic import conint
 from xarray import DataArray
 import wandb
+from torchvision.models.segmentation import deeplabv3_resnet50
+import torch.nn as nn
+import torch.nn.functional as F
 
 from typing import Self
 from pytorch_lightning.loggers.wandb import WandbLogger
@@ -32,6 +35,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pystac import Item
 from torch.utils.data import DataLoader, Dataset
+from pytorch_lightning import LightningDataModule
 
 from rastervision.core.box import Box
 from rastervision.core.data import (
@@ -142,6 +146,15 @@ pixel_polygon = Polygon([
     (xmin, ymin)
 ])
 
+if not torch.backends.mps.is_available():
+    if not torch.backends.mps.is_built():
+        print("MPS not available because the current PyTorch install was not built with MPS enabled.")
+    else:
+        print("MPS not available.")
+else:
+    device = torch.device("mps")
+    print("MPS is available.")
+
 SentinelScene = Scene(
         id='santodomingo_sentinel',
         raster_source = sentinel_source_normalized,
@@ -156,32 +169,6 @@ BuildingsScence = Scene(
 buildingsGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(BuildingsScence, imgsize=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 sentinelGeoDataset, train_sentinel_dataset, val_sentinel_dataset, test_sentinel_dataset = create_datasets(SentinelScene, imgsize=144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 print(f"Loaded all dataset: {train_buildings_dataset}")
-
-# def create_full_image(source) -> np.ndarray:
-#     extent = source.extent
-#     chip = source.get_label_arr(extent)    
-#     return chip
-
-# img_full = create_full_image(buildingsGeoDataset.scene.label_source)
-# train_windows = train_buildings_dataset.windows
-# val_windows = val_buildings_dataset.windows
-# test_windows = test_buildings_dataset.windows
-# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
-
-# def create_full_imagesent(source) -> np.ndarray:
-#     extent = source.extent
-#     chip = source._get_chip(extent)    
-#     return chip
-
-# img_full = create_full_imagesent(SentinelScene.label_source)
-# train_windows = train_sentinel_dataset.windows
-# val_windows = val_sentinel_dataset.windows
-# test_windows = test_sentinel_dataset.windows
-# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
-
-from pytorch_lightning import LightningDataModule
 
 class MultiModalDataModule(LightningDataModule):
     def __init__(self, train_sentinel_loader, train_buildings_loader, val_sentinel_loader, val_buildings_loader):
@@ -207,18 +194,82 @@ val_buildings_loader = DataLoader(val_buildings_dataset, batch_size=batch_size, 
 assert len(train_sentinel_loader) == len(train_buildings_loader), "DataLoaders must have the same length"
 assert len(val_sentinel_loader) == len(val_buildings_loader), "DataLoaders must have the same length"
 
-if not torch.backends.mps.is_available():
-    if not torch.backends.mps.is_built():
-        print("MPS not available because the current PyTorch install was not built with MPS enabled.")
-    else:
-        print("MPS not available.")
-else:
-    device = torch.device("mps")
-    print("MPS is available.")
+# Other approach for dataloading # Concatenate datasets
+class ConcatDataset(Dataset):
+    def __init__(self, *datasets):
+        self.datasets = datasets
 
-from torchvision.models.segmentation import deeplabv3_resnet50
-import torch.nn as nn
-import torch.nn.functional as F
+    def __getitem__(self, i):
+        return tuple(d[i] for d in self.datasets)
+
+    def __len__(self):
+        return min(len(d) for d in self.datasets)
+
+train_dataset = ConcatDataset(train_sentinel_dataset, train_buildings_dataset)
+val_dataset = ConcatDataset(val_sentinel_dataset, val_buildings_dataset)
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+
+# Data module for PyTorch Lightning
+class MultiModalDataModule(LightningDataModule):
+    def __init__(self, train_loader, val_loader):
+        super().__init__()
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+
+    def train_dataloader(self):
+        return self.train_loader
+
+    def val_dataloader(self):
+        return self.val_loader
+
+# Initialize the data module
+data_module = MultiModalDataModule(train_loader, val_loader)
+
+for batch_idx, batch in enumerate(data_module.train_dataloader()):
+    sentinel_batch, buildings_batch = batch
+    buildings_data, buildings_labels = buildings_batch
+    sentinel_data, _ = sentinel_batch
+    
+    # Print shapes for verification
+    sentinel_data = sentinel_data.to(device)
+    buildings_data = buildings_data.to(device)
+
+    print(f"Batch {batch_idx}:")
+    print(f"Sentinel data shape: {sentinel_data.shape}")
+    print(f"Buildings data shape: {buildings_data.shape}")
+    print(f"Buildings labels shape: {buildings_labels.shape}")
+    
+    # Pass the data through the model
+    segmentation = model(sentinel_data, buildings_data)
+    print(f"Segmentation output shape: {segmentation.shape}")
+    
+    break  # Exit after the first batch for brevity
+
+# def create_full_image(source) -> np.ndarray:
+#     extent = source.extent
+#     chip = source.get_label_arr(extent)    
+#     return chip
+
+# img_full = create_full_image(buildingsGeoDataset.scene.label_source)
+# train_windows = train_buildings_dataset.windows
+# val_windows = val_buildings_dataset.windows
+# test_windows = test_buildings_dataset.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+
+# def create_full_imagesent(source) -> np.ndarray:
+#     extent = source.extent
+#     chip = source._get_chip(extent)    
+#     return chip
+
+# img_full = create_full_imagesent(SentinelScene.label_source)
+# train_windows = train_sentinel_dataset.windows
+# val_windows = val_sentinel_dataset.windows
+# test_windows = test_sentinel_dataset.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 def init_segm_model(num_bands: int = 4) -> torch.nn.Module:
     
@@ -329,8 +380,8 @@ class MultiModalSegmentationModel(pl.LightningModule):
         self.segm_model = deeplabv3_resnet50(pretrained=False, progress=True, num_classes=1)
         
         pretrained_checkpoint_path = "/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt"
-        self.sentinel_encoder = SentinelEncoder(pretrained_checkpoint=pretrained_checkpoint_path)
-        self.buildings_encoder = BuildingsEncoder(pretrained_checkpoint=pretrained_checkpoint_path)
+        self.sentinel_encoder = SentinelEncoder()#pretrained_checkpoint=pretrained_checkpoint_path)
+        self.buildings_encoder = BuildingsEncoder()#pretrained_checkpoint=pretrained_checkpoint_path)
         self.joint_encoder = JointEncoder()
              
     def forward(self, sentinel_data, buildings_data):
@@ -411,7 +462,9 @@ model = MultiModalSegmentationModel()
 model.to(device)
 model.train()
 
-data_module = MultiModalDataModule(train_sentinel_loader, train_buildings_loader, val_sentinel_loader, val_buildings_loader)
+data_module = MultiModalDataModule(train_loader, val_loader)
+
+# data_module = MultiModalDataModule(train_sentinel_loader, train_buildings_loader, val_sentinel_loader, val_buildings_loader)
 
 output_dir = f'../../UNITAC-trained-models/multi_modal/'
 os.makedirs(output_dir, exist_ok=True)
@@ -427,7 +480,7 @@ checkpoint_callback = ModelCheckpoint(
     filename='multimodal_runid{run_id}_{image_size:02d}-{batch_size:02d}-{epoch:02d}-{val_loss:.4f}',
     save_top_k=1,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=15)
+early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=5)
 
 # Define trainer
 trainer = Trainer(
@@ -435,12 +488,105 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=1,
-    max_epochs=100,
-    num_sanity_val_steps=1
+    min_epochs=5,
+    max_epochs=50,
+    num_sanity_val_steps=2
 )
 # Train the model
 trainer.fit(model, datamodule=data_module)
+
+# Use best model for evaluation
+best_model_path = checkpoint_callback.best_model_path
+best_model = MultiModalSegmentationModel.load_from_checkpoint(best_model_path)
+best_model.eval()
+
+class PredictionsIterator:
+    def __init__(self, model, dataloader, device='cuda'):
+        self.model = model
+        self.dataloader = dataloader
+        self.device = device
+        
+        self.predictions = []
+        self.windows = []
+        
+        self.model.to(device)
+        self.model.eval()
+        
+        with torch.no_grad():
+            for batch in dataloader:
+                sentinel_batch, buildings_batch = batch
+                buildings_data, buildings_labels = buildings_batch
+                sentinel_data, _ = sentinel_batch
+
+                sentinel_data = sentinel_data.to(device)
+                buildings_data = buildings_data.to(device)
+
+                output = self.model(sentinel_data, buildings_data)
+                probabilities = torch.sigmoid(output).cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                self.predictions.extend(probabilities)
+                self.windows.extend([Box.from_tensor(window) for window in buildings_labels])  # Ensure windows are Box objects
+
+    def __iter__(self):
+        return iter(zip(self.windows, self.predictions))
+
+
+
+predictions_iterator = PredictionsIterator(best_model, train_loader, device=device)
+windows, predictions = zip(*predictions_iterator)
+
+# Ensure windows are Box instances
+windows = [Box(*window.tolist()) if isinstance(window, torch.Tensor) else window for window in windows]
+
+# Create SemanticSegmentationLabels from predictions
+pred_labels = SemanticSegmentationLabels.from_predictions(
+    windows,
+    predictions,
+    extent=SentinelScene.extent,
+    num_classes=len(class_config),
+    smooth=True
+)
+
+# Show predictions
+scores = pred_labels.get_score_arr(pred_labels.extent)
+scores_building = scores[0]
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+image = ax.imshow(scores_building)
+ax.axis('off')
+ax.set_title('infs Scores')
+cbar = fig.colorbar(image, ax=ax)
+plt.show()
+
+
+# Show predictions
+scores = pred_labels.get_score_arr(pred_labels.extent)
+scores_building = scores[0]
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+image = ax.imshow(scores_building)
+ax.axis('off')
+ax.set_title('infs Scores')
+cbar = fig.colorbar(image, ax=ax)
+plt.show()
+
+# Saving predictions as GEOJSON
+vector_output_config = CustomVectorOutputConfig(
+    class_id=1,
+    denoise=8,
+    threshold=0.5)
+
+pred_label_store = SemanticSegmentationLabelStore(
+    uri='../../vectorised_model_predictions/buildings_model_only/',
+    crs_transformer = crs_transformer_buildings,
+    class_config = class_config,
+    vector_outputs = [vector_output_config],
+    discrete_output = True)
+
+pred_label_store.save(pred_labels)
+
+pred_labels.extent
+
+
 
 # for batch_idx, batch in enumerate(data_module.train_dataloader()):
 #     sentinel_batch, buildings_batch = batch

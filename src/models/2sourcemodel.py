@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torchvision.models.segmentation import deeplabv3_resnet50
 import torch.nn.functional as F
+from collections import OrderedDict
 
 torch.set_default_dtype(torch.float32)
 
@@ -84,34 +85,97 @@ class SentinelEncoder(nn.Module):
         
         self.segm_model = init_segm_model(num_bands=4)
         
-        if pretrained_checkpoint:
-            checkpoint = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
-            checkpoint = process_state_dict(checkpoint, "segm_model.", ["aux_classifier."])
+        self.backbone = segm_model.backbone
+
+        new_layers = OrderedDict()
+        for name, layer in backbone.named_children():
+            if name == 'layer4':
+                break
+            new_layers[name] = layer
+
+        self.backbone = nn.Sequential(new_layers)
+        
+        # if pretrained_checkpoint:
+        #     checkpoint = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
+        #     checkpoint = process_state_dict(checkpoint, "segm_model.", ["aux_classifier."])
             
-            for key in checkpoint:
-                checkpoint[key] = checkpoint[key].to(dtype=torch.float32)
+        #     for key in checkpoint:
+        #         checkpoint[key] = checkpoint[key].to(dtype=torch.float32)
             
-            model_dict = self.segm_model.state_dict()
-            model_dict.update(checkpoint)
-            self.segm_model.load_state_dict(model_dict)
+        #     model_dict = self.segm_model.state_dict()
+        #     model_dict.update(checkpoint)
+        #     self.segm_model.load_state_dict(model_dict)
         
     def forward(self, x):
-        return self.segm_model.backbone(x)['out']
+        return self.backbone(x)
 
 # Define the path to the pretrained checkpoint
 pretrained_checkpoint_path = "/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt"
-BuildingsEncodermodel = BuildingsEncoder(pretrained_checkpoint=pretrained_checkpoint_path)
-SentinelEncodermodel = SentinelEncoder(pretrained_checkpoint=pretrained_checkpoint_path)
+BuildingsEncodermodel = BuildingsEncoder()
+SentinelEncodermodel = SentinelEncoder()
 
 # Random input
 build_input = torch.randn(3, 1, 288, 288)
 build_output = BuildingsEncodermodel(build_input)
+build_output.shape
+
+segm_model = init_segm_model(num_bands=1)
+backbone = segm_model.backbone
+out_conv = backbone.conv1(build_input) #['out']
+out_conv = backbone.maxpool(out_conv) #['out']
+out_conv = backbone.layer1(out_conv) #['out']
+out_conv = backbone.layer2(out_conv) #['out']
+out_conv = backbone.layer3(out_conv) #['out']
+backbone.layer4[2]
+# out_conv = backbone.layer4(out_conv) #['out']
+
+out_conv.shape
+
+
 
 sent_input= torch.randn(3, 4, 144, 144)
 sent_output= SentinelEncodermodel(sent_input)
+sent_output.shape
+
+segm_model = init_segm_model(num_bands=4)
+backbone = segm_model.backbone
+out_conv = backbone.conv1(sent_input) #['out']
+out_conv = backbone.maxpool(out_conv) #['out']
+out_conv = backbone.layer1(out_conv) #['out']
+out_conv = backbone.layer2(out_conv) #['out']
+out_conv = backbone.layer3(out_conv) #['out']
+
+out_conv.shape
+
+# Assuming `segm_model` is your model with the backbone you described
+backbone = segm_model.backbone
+
+# Create an ordered dictionary of layers up to `layer3`
+new_layers = OrderedDict()
+for name, layer in backbone.named_children():
+    if name == 'layer4':
+        break
+    new_layers[name] = layer
+
+# Create a new IntermediateLayerGetter with the modified layers
+new_backbone = nn.Sequential(new_layers)
+
+sent_input= torch.randn(3, 4, 144, 144)
+out_conv = new_backbone(sent_input)
+out_conv.shape
+
+
+
 
 print(f"Shape of build_output: {build_output.shape}")
 print(f"Shape of sent_output: {sent_output.shape}")
+
+
+
+
+
+
+
 
 # combine the features at same resolution
 combined_features = build_output + sent_output
