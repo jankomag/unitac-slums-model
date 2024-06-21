@@ -195,10 +195,10 @@ def geoms_to_raster(df: gpd.GeoDataFrame, window: 'Box',
 def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5):
     gdf = gpd.read_file(buildings_uri)
     gdf = gdf.to_crs('EPSG:3857')
-    xmin, ymin, xmax, ymax = gdf.total_bounds
+    xmin, _, _, ymax = gdf.total_bounds
     
     crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymin)
+    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymax)
     crs_transformer_buildings.transform = affine_transform_buildings
 
     buildings_vector_source = GeoJSONVectorSource(
@@ -223,56 +223,33 @@ def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_co
 
     return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
 
-import rasterio
-image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-
-# Open the GeoTIFF file
-with rasterio.open(image_uri) as dataset:
-    # Retrieve the EPSG code
-    epsg_code = dataset.crs.to_epsg()
-
-    # Alternatively, you can also get the CRS directly
-    crs = dataset.crs
-
-print(f"EPSG code: {epsg_code}")
-print(f"CRS: {crs}")
-
-
 ### Label source ###
-label_uri = "../../data/0/SantoDomingo3857.geojson"
-image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
+label_uri_SD = "../../data/0/SantoDomingo3857.geojson"
+image_uri_SD = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+buildings_uri_SD = '../../data/0/overture/santodomingo_buildings.geojson'
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
-gdf = gpd.read_file(buildings_uri)
-gdf = gdf.to_crs('EPSG:3857')
+rasterized_buildings_sourceSD, buildings_label_sourceSD, crs_transformer_SD = create_buildings_raster_source(label_uri_SD, image_uri_SD, label_uri_SD, class_config, resolution=5)
 
-xmin, ymin, xmax, ymax = gdf.total_bounds
-resolution=5
-crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymin)
-crs_transformer_buildings.transform = affine_transform_buildings
+label_uri_GC = "../../data/SHP/Guatemala_PS.shp"
+image_uri_GC = '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
+buildings_uri_GC = '../../data/0/overture/GT_buildings3857.geojson'
+gpd.read_file(buildings_uri_GC)
+rasterized_buildings_sourceGC, buildings_label_sourceGC, crs_transformer_GC = create_buildings_raster_source(buildings_uri_GC, image_uri_GC, label_uri_GC, class_config, resolution=5)
 
-buildings_vector_source = GeoJSONVectorSource(
-    buildings_uri,
-    crs_transformer_buildings,
-    vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+chip = buildings_label_sourceGC[:, :]
+chip.shape
+fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+ax.imshow(chip)
+plt.show()
 
-rasterized_buildings_source = RasterizedSource(
-    buildings_vector_source,
-    background_class_id=0)
-
-label_vector_source = GeoJSONVectorSource(label_uri,
-    crs_transformer_buildings,
-    vector_transformers=[
-        ClassInferenceTransformer(
-            default_class_id=class_config.get_class_id('slums'))])
-
-label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
-
+chip = rasterized_buildings_sourceGC[:, :]
+chip.shape
+fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+ax.imshow(chip)
+plt.show()
 
 # gdf = gpd.read_file(label_uri)
 # gdf = gdf.to_crs('EPSG:3857')
@@ -285,33 +262,44 @@ buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, cl
 #     (xmin, ymin)
 # ])
 
-BuildingsScence = Scene(
+BuildingsScenceSD = Scene(
         id='santodomingo_buildings',
-        raster_source = rasterized_buildings_source,
-        label_source = buildings_label_source)
+        raster_source = rasterized_buildings_sourceSD,
+        label_source = buildings_label_sourceSD)
 
-buildingsGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(BuildingsScence, imgsize=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+BuildingsScenceGC = Scene(
+        id='guatemalacity_buildings',
+        raster_source = rasterized_buildings_sourceGC,
+        label_source = buildings_label_sourceGC)
 
-chip = rasterized_buildings_source[:, :]
-fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-ax.imshow(chip, cmap="gray")
-plt.show()
+buildingsGeoDatasetSD, train_buildings_datasetSD, val_buildings_datasetSD, test_buildings_datasetSD = create_datasets(
+    BuildingsScenceSD, imgsize=288, stride = 288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+buildingsGeoDatasetGC, train_buildings_datasetGC, val_buildings_datasetGC, test_buildings_datasetGC = create_datasets(
+    BuildingsScenceSD, imgsize=288, stride = 288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+from torch.utils.data import ConcatDataset
+
+combined_train_dataset = ConcatDataset([train_buildings_datasetSD, train_buildings_datasetGC])
+combined_val_dataset = ConcatDataset([val_buildings_datasetSD, val_buildings_datasetGC])
+combined_test_dataset = ConcatDataset([test_buildings_datasetSD, test_buildings_datasetGC])
 
 def create_full_image(source) -> np.ndarray:
     extent = source.extent
     chip = source.get_label_arr(extent)    
     return chip
 
-img_full = create_full_image(buildingsGeoDataset.scene.label_source)
-train_windows = train_buildings_dataset.windows
-val_windows = val_buildings_dataset.windows
-test_windows = test_buildings_dataset.windows
+img_full = create_full_image(buildingsGeoDatasetGC.scene.label_source)
+train_windows = train_buildings_datasetGC.windows
+val_windows = val_buildings_datasetGC.windows
+test_windows = test_buildings_datasetGC.windows
 window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
 show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 batch_size=6
-train_dl = DataLoader(train_buildings_dataset, batch_size=batch_size, shuffle=True) #, num_workers=3)
-val_dl = DataLoader(val_buildings_dataset, batch_size=batch_size)#, num_workers=3)
+train_loader = DataLoader(combined_train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(combined_val_dataset, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(combined_test_dataset, batch_size=batch_size, shuffle=False)
 
 # Fine-tune the model
 # Define device
@@ -474,19 +462,13 @@ model.to(device)
 model.train()
 
 # Train the model
-trainer.fit(model, train_dl, val_dl)
+# trainer.fit(model, train_dl, val_dl)
 
 # Use best model for evaluation
 best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=09-val_loss=0.1590.ckpt"
 # best_model_path = checkpoint_callback.best_model_path
 best_model = BuildingsOnlyDeeplabv3SegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
-  
-
-
-
-
-
 
 #  Original code for making predictions that works 
 class PredictionsIterator:
@@ -499,7 +481,7 @@ class PredictionsIterator:
         
         with torch.no_grad():
             for idx in range(len(dataset)):
-                image, label = dataset[idx]
+                image, _ = dataset[idx]
                 image = image.unsqueeze(0).to(device)
 
                 output = self.model(image)
@@ -512,6 +494,26 @@ class PredictionsIterator:
     def __iter__(self):
         return iter(self.predictions)
     
+def create_datasets(scene, imgsize=256, stride = 256, padding=50, val_ratio=0.2, test_ratio=0.1, seed=42):
+    
+    full_dataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
+        scene=scene,
+        size=imgsize,
+        stride=stride,
+        out_size=imgsize,
+        padding=padding)
+
+    # Splitting dataset into train, validation, and test
+    train_dataset, val_dataset, test_dataset = full_dataset.split_train_val_test(
+        val_ratio=val_ratio, test_ratio=test_ratio, seed=seed)
+
+    print(f"Train dataset length: {len(train_dataset)}")
+    print(f"Validation dataset length: {len(val_dataset)}")
+    print(f"Test (hold-out) dataset length: {len(test_dataset)}")
+    
+    return full_dataset, train_dataset, val_dataset, test_dataset
+
+buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScence, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 predictions_iterator = PredictionsIterator(best_model, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 
@@ -551,213 +553,19 @@ pred_label_store.save(pred_labels)
 predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/2/vector_output/class-1-slums.json'
 predspathshuift = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/2/vector_output/class-1-slumsshift.json'
 
-def shift_north(geojson_data, shift_distance):
-    for feature in geojson_data['features']:
-        geom = shape(feature['geometry'])
-        shifted_geom = translate(geom, xoff=0, yoff=shift_distance)
-        feature['geometry'] = mapping(shifted_geom)
-    return geojson_data
-
-# Load your predictions as a GeoJSON object
-with open(predspath, 'r') as f:
-    predictions_geojson = json.load(f)
-
-# Apply the shift north
-shift_distance = 0.096
-shifted_geojson = shift_north(predictions_geojson, shift_distance)
-
-# Save the shifted GeoJSON
-with open(predspathshuift, 'w') as f:
-    json.dump(shifted_geojson, f)
-
-
-
-
-
-### MAKING PREDICTIONS ON FULL DATASET ###
-import duckdb
-
-con = duckdb.connect("../../data/0/data.db")
-con.install_extension('httpfs')
-con.install_extension('spatial')
-con.load_extension('httpfs')
-con.load_extension('spatial')
-con.execute("SET s3_region='us-west-2'")
-con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
-
-# implements merging logc class CustomGeoJSONVectorSource
-class CustomGeoJSONVectorSource(VectorSource):
-    """A :class:`.VectorSource` for reading GeoJSON data."""
-
-    def __init__(self,
-                 data: Union[gpd.GeoDataFrame, List[gpd.GeoDataFrame]],
-                 crs_transformer: 'CRSTransformer',
-                 vector_transformers: List['VectorTransformer'] = [],
-                 bbox: Optional[Box] = None):
-        """Constructor.
-
-        Args:
-            data (Union[gpd.GeoDataFrame, List[gpd.GeoDataFrame]]): Input GeoDataFrame(s).
-            crs_transformer: A ``CRSTransformer`` to convert
-                between map and pixel coords. Normally this is obtained from a
-                :class:`.RasterSource`.
-            vector_transformers: ``VectorTransformers`` for transforming
-                geometries. Defaults to ``[]``.
-            bbox (Optional[Box]): User-specified crop of the extent. If None,
-                the full extent available in the source file is used.
-        """
-        self.data = data if isinstance(data, list) else [data]
-        super().__init__(
-            crs_transformer,
-            vector_transformers=vector_transformers,
-            bbox=bbox)
-
-    def _get_geojson(self) -> dict:
-        geojsons = [self._get_geojson_single(gdf) for gdf in self.data]
-        geojson = self.merge_geojsons(geojsons)
-        return geojson
-
-    @staticmethod
-    def merge_geojsons(geojsons: List[dict]) -> dict:
-        # Implement your merging logic here if needed
-        # For simplicity, let's assume a basic merge
-        merged_geojson = {"type": "FeatureCollection", "features": []}
-        for geojson in geojsons:
-            merged_geojson["features"].extend(geojson["features"])
-        return merged_geojson
-
-    @staticmethod
-    def _get_geojson_single(gdf: gpd.GeoDataFrame) -> dict:
-        gdf = gdf.to_crs('epsg:4326')
-        geojson = gdf.__geo_interface__
-        return geojson
-
-def query_buildings_data(row, con):
-    city_name = row['city_ascii']
-    xmin, ymin, xmax, ymax = row['geometry'].bounds
-
-    query = f"""
-        SELECT *
-        FROM buildings
-        WHERE bbox.xmin > {xmin}
-          AND bbox.xmax < {xmax}
-          AND bbox.ymin > {ymin}
-          AND bbox.ymax < {ymax};
-    """
-    buildings = pd.read_sql(query, con=con)
-
-    if not buildings.empty:
-        buildings = gpd.GeoDataFrame(buildings, geometry=gpd.GeoSeries.from_wkb(buildings.geometry.apply(bytes)), crs='EPSG:4326')
-        buildings = buildings[['id', 'geometry']]
-        buildings = buildings.to_crs("EPSG:3857")
-
-    return buildings
-
-def predict_and_save(buildings, image_uri, label_uri, class_config, crs_transformer_common, iso3_country_code, city_name, best_model, device):
-    resolution = 5
-    rasterized_buildings_source, buildings_label_source = create_buildings_raster_source(buildings, image_uri, label_uri, class_config, resolution=5)
-    
-    affine_transform_own = Affine(resolution, 0, xmin, 0, -resolution, ymin)
-    crs_transformer_common.transform = affine_transform_own
-    
-    HT_eval_scene = Scene(
-        id='HT_eval_scene',
-        raster_source=rasterized_buildings_source,
-        label_source=buildings_label_source)
-    
-    HTGeoDataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
-        scene=HT_eval_scene,
-        size=256,
-        stride=256,
-        out_size=256,
-        padding=100)
-    
-    predictions_iterator = PredictionsIterator(best_model, HTGeoDataset, device=device)
-    windows, predictions = zip(*predictions_iterator)
-
-    pred_labels_HT = SemanticSegmentationLabels.from_predictions(
-        windows,
-        predictions,
-        extent=HTGeoDataset.scene.extent,
-        num_classes=len(class_config),
-        smooth=True)
-
-    vector_output_config = CustomVectorOutputConfig(
-        class_id=1,
-        denoise=8,
-        threshold=0.5)
-    
-    pred_label_store = SemanticSegmentationLabelStore(
-        uri=f'../../vectorised_model_predictions/buildings_model_only/{iso3_country_code}/{city_name}_{iso3_country_code}',
-        crs_transformer=crs_transformer_common,
-        class_config=class_config,
-        vector_outputs=[vector_output_config],
-        discrete_output=True)
-
-    pred_label_store.save(pred_labels_HT)
-    print(f"Saved buildings data for {city_name}")
-
-sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
-gdf = gpd.read_parquet(sica_cities)
-gdf = gdf.head(2)
-
-
-image_uri = '../../data/0/sentinel_Gee/HTI_Tabarre_2023.tif'
+# Read the GeoJSON file
 label_uri = "../../data/0/SantoDomingo3857.geojson"
-crs_transformer_common = RasterioCRSTransformer.from_uri(image_uri)
-resolution = 5
+extent_gdf = gpd.read_file(label_uri)
+extent_bounds = extent_gdf.total_bounds
 
-for index, row in gdf.iterrows():
-    buildings = query_buildings_data(row, con)
-    if buildings is not None:
-        predict_and_save(buildings, image_uri, label_uri, class_config, crs_transformer_common, row['iso3'], row['city_ascii'], best_model, device)
-
-
-
+gdf = gpd.read_file(predspath)
+m = folium.Map(location=[gdf.geometry[0].centroid.y, gdf.geometry[0].centroid.x], zoom_start=12)
+folium.GeoJson(gdf).add_to(m) 
+folium.GeoJson(extent_gdf, style_function=lambda x: {'color':'red'}).add_to(m)
+m
 
 
-
-
-
-
-
-
-
-
-
-
-# Creating training, validation, and testing datasets
-def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5):
-    gdf = gpd.read_file(buildings_uri)
-    gdf = gdf.to_crs('EPSG:3857')
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-    
-    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymin)
-    crs_transformer_buildings.transform = affine_transform_buildings
-
-    buildings_vector_source = GeoJSONVectorSource(
-        buildings_uri,
-        crs_transformer_buildings,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-    
-    rasterized_buildings_source = RasterizedSource(
-        buildings_vector_source,
-        background_class_id=0)
-
-    print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
-
-    label_vector_source = GeoJSONVectorSource(label_uri,
-        crs_transformer_buildings,
-        vector_transformers=[
-            ClassInferenceTransformer(
-                default_class_id=class_config.get_class_id('slums'))])
-
-    label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-    buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
-
-    return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
-
+### Make predictions on another city ###
 image_uri = '../../data/0/sentinel_Gee/HTI_Tabarre_2023.tif'
 label_uri = "../../data/0/SantoDomingo3857.geojson"
 buildings_uri = '../../data/0/overture/portauprince.geojson'
@@ -769,7 +577,7 @@ HT_eval_scene = Scene(
         raster_source = rasterized_buildings_source,
         label_source = buildings_label_source)
 
-HTGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(HT_eval_scene, imgsize=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+HTGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(HT_eval_scene, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 
 predictions_iterator = PredictionsIterator(best_model, HTGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
@@ -784,7 +592,7 @@ pred_labels_HT = SemanticSegmentationLabels.from_predictions(
 
 # Saving predictions as GEOJSON
 pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/buildings_model_only/HT/',
+    uri='../../vectorised_model_predictions/buildings_model_only/HT/stridehalf/',
     crs_transformer = crs_transformer_HT,
     class_config = class_config,
     vector_outputs = [vector_output_config],
@@ -801,31 +609,3 @@ ax.axis('off')
 ax.set_title('infs Scores')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
-
-# Saving predictions as GEOJSON
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
-
-predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/HT/vector_output/class-1-slums.json'
-predspathshuift = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/HT/vector_output/class-1-slumsshift.json'
-
-def shift_north(geojson_data, shift_distance):
-    for feature in geojson_data['features']:
-        geom = shape(feature['geometry'])
-        shifted_geom = translate(geom, xoff=0, yoff=shift_distance)
-        feature['geometry'] = mapping(shifted_geom)
-    return geojson_data
-
-# Load your predictions as a GeoJSON object
-with open(predspath, 'r') as f:
-    predictions_geojson = json.load(f)
-
-# Apply the shift north
-shift_distance = 0.2215
-shifted_geojson = shift_north(predictions_geojson, shift_distance)
-
-# Save the shifted GeoJSON
-with open(predspathshuift, 'w') as f:
-    json.dump(shifted_geojson, f)

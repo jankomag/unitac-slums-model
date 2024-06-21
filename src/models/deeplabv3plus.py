@@ -12,6 +12,10 @@ import tempfile
 import wandb
 from torchgeo.models import ResNet50_Weights as TorchGeo_ResNet50_Weights
 from torchgeo.models import resnet50 as torchgeo_resnet50
+import pytorch_lightning as pl
+
+device = torch.device('mps' if torch.has_mps else 'cpu')
+device
 
 # Assuming you have defined your make_dir function somewhere
 def make_dir(directory):
@@ -23,21 +27,6 @@ make_dir(output_dir)
 fast_dev_run = False
 
 wandb_logger = WandbLogger(project='UNITAC-buildings-only', log_model=True)
-
-class CustomSegmentationHead(nn.Module):
-    def __init__(self, in_channels, num_classes):
-        super(CustomSegmentationHead, self).__init__()
-        self.conv = nn.Conv2d(in_channels, num_classes, kernel_size=1, stride=1)
-        self.sigmoid = nn.Sigmoid()  # Sigmoid activation for probability output
-        self.upsample = nn.UpsamplingBilinear2d(scale_factor=4.0)
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.sigmoid(x)  # Apply sigmoid activation
-        x = self.upsample(x)
-        return x
-    
-import pytorch_lightning as pl
 
 class SemanticSegmentationPL(pl.LightningModule):
     def __init__(self, deeplab, lr=1e-4):
@@ -85,62 +74,57 @@ class CustomResNet(nn.Module):
     def output_stride(self, value):
         self._output_stride = value
 
-# Weights transformation in first layer
-torchgeo_model = CustomResNet(weights=TorchGeo_ResNet50_Weights.SENTINEL2_ALL_MOCO)
-torchgeo_weights = torchgeo_model.state_dict()
-torchgeo_conv1_weights = torchgeo_weights['model.conv1.weight']
+# Initialize the ResNet50 model with weights pretrained on Sentinel-2 data
+resnet_encoder_pretrainedsentinel = torchgeo_resnet50(weights=TorchGeo_ResNet50_Weights.SENTINEL2_ALL_MOCO)
+resnet_encoder_pretrainedsentinel.conv1 = torch.nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+torchgeo_weights = resnet_encoder_pretrainedsentinel.state_dict()
+torchgeo_conv1_weights = torchgeo_weights['conv1.weight']
 
 # Initialize empty weights tensor for custom convolution
-new_weights = torch.zeros(64, 1, 7, 7, device=torchgeo_conv1_weights.device)
+new_weights = torch.zeros(64, 1, 7, 7, device='mps')
 
-# Fill with existing weights per channel
+# Fill with existing weights
 new_weights[:, 0, :, :] = torchgeo_conv1_weights.mean(dim=1)  # Average all weights from 13 channels to initialize weights for buildings channel
+resnet_encoder_pretrainedsentinel.conv1.weight.data = new_weights
+resnet_encoder_pretrainedsentinel.to(device='mps')
 
-# Create a new backbone and load the ResNet50_Weights.SENTINEL2_ALL_MOCO weights into it
-backbone = CustomResNet(weights=TorchGeo_ResNet50_Weights.SENTINEL2_ALL_MOCO)
-backbone.model.conv1 = torch.nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-backbone.model.conv1.weight.data = new_weights
+modules = list(resnet_encoder_pretrainedsentinel.children())[:-2]  # Remove last two layers
+resnet_encoder_modified = nn.Sequential(*modules)
 
-# Initialize your custom segmentation head
-segmentation_head = CustomSegmentationHead(2048, 2)  # Assuming the output channels from ResNet50 are 2048
+resnet_encoder_modified = resnet_encoder_modified.to(device)
 
+# Create an input tensor and move it to the same device
+input_tensor = torch.randn(4, 1, 288, 288).to(device)
+
+# Define a function to get outputs at each stage from your custom encoder
+def get_custom_encoder_outputs(encoder, x):
+    outputs = []
+    for module in encoder:
+        x = module(x)
+        outputs.append(x)
+    return outputs
+
+# Get the output shapes of the custom encoder
+with torch.no_grad():
+    custom_encoder_outputs = get_custom_encoder_outputs(resnet_encoder_modified, input_tensor)
+    for i, output in enumerate(custom_encoder_outputs):
+        print(f'Custom ResNet50 encoder output shape at stage {i}: {output.shape}')
+        
 # Initialize DeepLabV3Plus with custom encoder and segmentation head
 deeplabv3plus = smp.DeepLabV3Plus(
     encoder_name='resnet50',
     encoder_weights=None,
     in_channels=1,
     classes=2,
-    activation=None  # No activation in the final layer of DeepLabV3Plus
+    activation=None
 )
 
-# Assign the custom encoder and segmentation head to the DeepLabV3Plus model
-deeplabv3plus.encoder = backbone
-deeplabv3plus.segmentation_head = segmentation_head
+# Move the DeepLabV3Plus model to the specified device
+deeplabv3plus = deeplabv3plus.to(device)
 
-# Initialize your Semantic Segmentation model
-model = SemanticSegmentationPL(deeplabv3plus, lr=0.001)
-
-# Checking if weights have been successfully loaded 
-print((backbone.model.conv1.weight.data == model.deeplab.encoder.model.conv1.weight.data).all())  # first conv
-
-trainer = Trainer(
-    accelerator='auto',
-    callbacks=[checkpoint_callback, early_stopping_callback],
-    fast_dev_run=fast_dev_run,
-    log_every_n_steps=1,
-    logger=[wandb_logger],
-    min_epochs=1,
-    max_epochs=50,
-    num_sanity_val_steps=1
-)
-
-# Train the model
-trainer.fit(model, train_dl, val_dl)
-
-
-# Inspect a single batch of data from train_dl
-for batch in train_dl:
-    img, mask = batch
-    print("Image shape:", img.shape)  # Check the shape of img
-    print("Mask shape:", mask.shape)  # Check the shape of mask
-    break  # Exit after printing the first batch
+# Get the output shape of the original encoder
+with torch.no_grad():
+    original_encoder_outputs = deeplabv3plus.encoder(input_tensor)
+    for i, output in enumerate(original_encoder_outputs):
+        print(f'Original DeepLabV3+ ResNet50 encoder output shape at stage {i}: {output.shape}')    

@@ -133,7 +133,7 @@ sentinel_source_normalized, sentinel_label_raster_source = create_sentinel_raste
 rasterized_buildings_source, buildings_label_source = create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5)
 
 raster_sources = [rasterized_buildings_source, sentinel_source_normalized]
-# raster_source_multi = MultiRasterSource(raster_sources=raster_sources, primary_source_idx=0, force_same_dtype=True)
+raster_source_multi = MultiRasterSource(raster_sources=raster_sources, primary_source_idx=0, force_same_dtype=True)
 
 gdf = gpd.read_file(label_uri)
 gdf = gdf.to_crs('EPSG:3857')
@@ -183,6 +183,7 @@ class MultiModalDataModule(LightningDataModule):
 
     def val_dataloader(self):
         return zip(self.val_sentinel_loader, self.val_buildings_loader)
+data_module = MultiModalDataModule(train_sentinel_loader, train_buildings_loader, val_sentinel_loader, val_buildings_loader)
 
 num_workers=11
 batch_size= 4
@@ -226,26 +227,6 @@ class MultiModalDataModule(LightningDataModule):
 
 # Initialize the data module
 data_module = MultiModalDataModule(train_loader, val_loader)
-
-for batch_idx, batch in enumerate(data_module.train_dataloader()):
-    sentinel_batch, buildings_batch = batch
-    buildings_data, buildings_labels = buildings_batch
-    sentinel_data, _ = sentinel_batch
-    
-    # Print shapes for verification
-    sentinel_data = sentinel_data.to(device)
-    buildings_data = buildings_data.to(device)
-
-    print(f"Batch {batch_idx}:")
-    print(f"Sentinel data shape: {sentinel_data.shape}")
-    print(f"Buildings data shape: {buildings_data.shape}")
-    print(f"Buildings labels shape: {buildings_labels.shape}")
-    
-    # Pass the data through the model
-    segmentation = model(sentinel_data, buildings_data)
-    print(f"Segmentation output shape: {segmentation.shape}")
-    
-    break  # Exit after the first batch for brevity
 
 # def create_full_image(source) -> np.ndarray:
 #     extent = source.extent
@@ -294,23 +275,63 @@ def init_segm_model(num_bands: int = 4) -> torch.nn.Module:
 
     return segm_model
 
-class SentinelEncoder(nn.Module):
-    def __init__(self, pretrained_checkpoint=None):
-        super().__init__()
+# class BuildingsEncoder(nn.Module):
+#     def __init__(self, pretrained_checkpoint=None):
+#         super().__init__()
         
-        self.segm_model = init_segm_model(num_bands=4)
+#         self.segm_model = init_segm_model(num_bands=1)
         
-        if pretrained_checkpoint:
-            checkpoint = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
-            checkpoint = process_state_dict(checkpoint, "segm_model.", ["aux_classifier."])
-            checkpoint = {k: v.float() for k, v in checkpoint.items()}
+#         if pretrained_checkpoint:
+#             checkpoint = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
+#             checkpoint = process_state_dict(checkpoint, "segm_model.", ["aux_classifier."])
+#             checkpoint = {k: v.float() for k, v in checkpoint.items()}
             
-            model_dict = self.segm_model.state_dict()
-            model_dict.update(checkpoint)
-            self.segm_model.load_state_dict(model_dict)
+#             # Adjust the first conv layer weights
+#             checkpoint = adjust_first_conv_layer(checkpoint, 'backbone.conv1.weight', 'backbone.conv1.weight')
+            
+#             # Remove classifier layer weights if they don't match
+#             if 'classifier.4.weight' in checkpoint and 'classifier.4.bias' in checkpoint:
+#                 del checkpoint['classifier.4.weight']
+#                 del checkpoint['classifier.4.bias']
+            
+#             model_dict = self.segm_model.state_dict()
+#             model_dict.update(checkpoint)
+#             self.segm_model.load_state_dict(model_dict)
+            
+#         self.additional_conv = nn.Conv2d(2048, 2048, kernel_size=3, stride=2, padding=1)
+
+#     def forward(self, x):
+#         x = self.segm_model.backbone(x)['out']
+#         return self.additional_conv(x)
+
+# class JointEncoder(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         self.segm_model = deeplabv3_resnet50(pretrained=False, progress=True, num_classes=1)
         
-    def forward(self, x):
-        return self.segm_model.backbone(x)['out']
+#     def forward(self, x):
+#         # Assuming x is the combined features from sentinel and buildings encoders
+#         x = self.segm_model.classifier(x)
+#         x = F.interpolate(x, size=(288, 288), mode='bilinear', align_corners=False)
+#         return x
+
+# class SentinelEncoder(nn.Module):
+#     def __init__(self, pretrained_checkpoint=None):
+#         super().__init__()
+        
+#         self.segm_model = init_segm_model(num_bands=4)
+        
+#         if pretrained_checkpoint:
+#             checkpoint = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
+#             checkpoint = process_state_dict(checkpoint, "segm_model.", ["aux_classifier."])
+#             checkpoint = {k: v.float() for k, v in checkpoint.items()}
+            
+#             model_dict = self.segm_model.state_dict()
+#             model_dict.update(checkpoint)
+#             self.segm_model.load_state_dict(model_dict)
+        
+#     def forward(self, x):
+#         return self.segm_model.backbone(x)['out']
     
 # Function to strip the prefix from the keys in the state dict and exclude certain keys
 def process_state_dict(state_dict, prefix, exclude_prefixes):
@@ -330,46 +351,61 @@ def adjust_first_conv_layer(state_dict, old_key, new_key):
     del state_dict[old_key]
     return state_dict
 
-class BuildingsEncoder(nn.Module):
-    def __init__(self, pretrained_checkpoint=None):
-        super().__init__()
-        
-        self.segm_model = init_segm_model(num_bands=1)
-        
-        if pretrained_checkpoint:
-            checkpoint = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
-            checkpoint = process_state_dict(checkpoint, "segm_model.", ["aux_classifier."])
-            checkpoint = {k: v.float() for k, v in checkpoint.items()}
-            
-            # Adjust the first conv layer weights
-            checkpoint = adjust_first_conv_layer(checkpoint, 'backbone.conv1.weight', 'backbone.conv1.weight')
-            
-            # Remove classifier layer weights if they don't match
-            if 'classifier.4.weight' in checkpoint and 'classifier.4.bias' in checkpoint:
-                del checkpoint['classifier.4.weight']
-                del checkpoint['classifier.4.bias']
-            
-            model_dict = self.segm_model.state_dict()
-            model_dict.update(checkpoint)
-            self.segm_model.load_state_dict(model_dict)
-            
-        self.additional_conv = nn.Conv2d(2048, 2048, kernel_size=3, stride=2, padding=1)
-
-    def forward(self, x):
-        x = self.segm_model.backbone(x)['out']
-        return self.additional_conv(x)
-
-class JointEncoder(nn.Module):
+class SentinelEncoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.segm_model = deeplabv3_resnet50(pretrained=False, progress=True, num_classes=1)
-        
-    def forward(self, x):
-        # Assuming x is the combined features from sentinel and buildings encoders
-        x = self.segm_model.classifier(x)
-        x = F.interpolate(x, size=(288, 288), mode='bilinear', align_corners=False)
-        return x
+        # Example encoder structure (adjust as needed)
+        self.encoder = nn.Sequential(
+            nn.Conv2d(4, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.ReLU()
+        )
     
+    def forward(self, x):
+        return self.encoder(x)
+
+class BuildingsEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Example encoder structure (adjust as needed)
+        self.encoder = nn.Sequential(
+            nn.Conv2d(1, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.ReLU()
+        )
+    
+    def forward(self, x):
+        return self.encoder(x)
+
+class Decoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Example decoder structure (adjust as needed)
+        self.decoder = nn.Sequential(
+            nn.Conv2d(512, 256, 3, padding=1),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(256, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 1, 1)
+        )
+    
+    def forward(self, x):
+        return self.decoder(x)
+
 # Train the model
 class MultiModalSegmentationModel(pl.LightningModule):
     def __init__(self):
@@ -377,24 +413,23 @@ class MultiModalSegmentationModel(pl.LightningModule):
         
         self.learning_rate = 1e-4
         self.weight_decay = 0
-        self.segm_model = deeplabv3_resnet50(pretrained=False, progress=True, num_classes=1)
         
-        pretrained_checkpoint_path = "/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt"
-        self.sentinel_encoder = SentinelEncoder()#pretrained_checkpoint=pretrained_checkpoint_path)
-        self.buildings_encoder = BuildingsEncoder()#pretrained_checkpoint=pretrained_checkpoint_path)
-        self.joint_encoder = JointEncoder()
+        self.sentinel_encoder = SentinelEncoder()
+        self.buildings_encoder = BuildingsEncoder()
+        self.decoder = Decoder()
              
     def forward(self, sentinel_data, buildings_data):
         sentinel_features = self.sentinel_encoder(sentinel_data)
         buildings_features = self.buildings_encoder(buildings_data)
         
-        # combine the features at same resolution
-        combined_features = sentinel_features + buildings_features
-
-        # combined_features = torch.cat((sentinel_features, buildings_features), dim=0)
+        # Upsample sentinel features to match buildings features size
+        sentinel_features = nn.functional.interpolate(sentinel_features, size=buildings_features.shape[2:])
         
-        # continue training until segmentation head
-        segmentation = self.joint_encoder(combined_features).squeeze(1)
+        # Concatenate features along the channel dimension
+        fused_features = torch.cat([sentinel_features, buildings_features], dim=1)
+        
+        # Decode the fused features
+        segmentation = self.decoder(fused_features)
         
         return segmentation
     
@@ -442,7 +477,7 @@ class MultiModalSegmentationModel(pl.LightningModule):
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         optimizer = AdamW(
-            self.segm_model.parameters(),
+            self.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay
         )
@@ -460,11 +495,35 @@ class MultiModalSegmentationModel(pl.LightningModule):
     
 model = MultiModalSegmentationModel()
 model.to(device)
-model.train()
+model.eval()
+# data_module = MultiModalDataModule(train_loader, val_loader)
 
-data_module = MultiModalDataModule(train_loader, val_loader)
+for batch_idx, batch in enumerate(data_module.train_dataloader()):
+    sentinel_batch, buildings_batch = batch
+    buildings_data, buildings_labels = buildings_batch
+    sentinel_data, _ = sentinel_batch
+    
+    # Print shapes for verification
+    sentinel_data = sentinel_data.to(device)
+    buildings_data = buildings_data.to(device)
 
-# data_module = MultiModalDataModule(train_sentinel_loader, train_buildings_loader, val_sentinel_loader, val_buildings_loader)
+    print(f"Batch {batch_idx}:")
+    print(f"Sentinel data shape: {sentinel_data.shape}")
+    print(f"Buildings data shape: {buildings_data.shape}")
+    print(f"Buildings labels shape: {buildings_labels.shape}")
+    
+    sent_model = SentinelEncoder()
+    sent_encoded = sent_model(sentinel_data)
+    buildings_model = BuildingsEncoder()
+    buildings_encoded = buildings_model(buildings_data)
+    print("Sentinel encoded shape: ", sent_encoded.shape)
+    print("Buildings encoded shape: ", buildings_encoded.shape)
+    
+    # Pass the data through the model
+    # segmentation = model(sentinel_data, buildings_data)
+    # print(f"Segmentation output shape: {segmentation.shape}")
+    
+    break  # Exit after the first batch for brevity
 
 output_dir = f'../../UNITAC-trained-models/multi_modal/'
 os.makedirs(output_dir, exist_ok=True)
@@ -530,8 +589,6 @@ class PredictionsIterator:
 
     def __iter__(self):
         return iter(zip(self.windows, self.predictions))
-
-
 
 predictions_iterator = PredictionsIterator(best_model, train_loader, device=device)
 windows, predictions = zip(*predictions_iterator)
