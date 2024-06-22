@@ -17,7 +17,6 @@ import pytorch_lightning as pl
 device = torch.device('mps' if torch.has_mps else 'cpu')
 device
 
-# Assuming you have defined your make_dir function somewhere
 def make_dir(directory):
     if not os.path.exists(directory):
         os.makedirs(directory)

@@ -1,0 +1,276 @@
+2024-06-22 19:07:32,908 INFO    StreamThr :25555 [internal.py:wandb_internal():85] W&B internal server running at pid: 25555, started at: 2024-06-22 19:07:32.906490
+2024-06-22 19:07:32,911 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status
+2024-06-22 19:07:32,912 INFO    WriterThread:25555 [datastore.py:open_for_write():87] open: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/run-o7mtwp30.wandb
+2024-06-22 19:07:32,915 DEBUG   SenderThread:25555 [sender.py:send():379] send: header
+2024-06-22 19:07:32,915 DEBUG   SenderThread:25555 [sender.py:send():379] send: run
+2024-06-22 19:07:33,250 INFO    SenderThread:25555 [dir_watcher.py:__init__():211] watching files in: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files
+2024-06-22 19:07:33,250 INFO    SenderThread:25555 [sender.py:_start_run_threads():1188] run started: o7mtwp30 with start time 1719079651.976862
+2024-06-22 19:07:33,260 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: check_version
+2024-06-22 19:07:33,260 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: check_version
+2024-06-22 19:07:33,293 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: run_start
+2024-06-22 19:07:33,302 DEBUG   HandlerThread:25555 [system_info.py:__init__():26] System info init
+2024-06-22 19:07:33,302 DEBUG   HandlerThread:25555 [system_info.py:__init__():41] System info init done
+2024-06-22 19:07:33,302 INFO    HandlerThread:25555 [system_monitor.py:start():194] Starting system monitor
+2024-06-22 19:07:33,302 INFO    SystemMonitor:25555 [system_monitor.py:_start():158] Starting system asset monitoring threads
+2024-06-22 19:07:33,302 INFO    HandlerThread:25555 [system_monitor.py:probe():214] Collecting system info
+2024-06-22 19:07:33,302 INFO    SystemMonitor:25555 [interfaces.py:start():188] Started cpu monitoring
+2024-06-22 19:07:33,304 INFO    SystemMonitor:25555 [interfaces.py:start():188] Started disk monitoring
+2024-06-22 19:07:33,305 INFO    SystemMonitor:25555 [interfaces.py:start():188] Started gpuapple monitoring
+2024-06-22 19:07:33,307 INFO    SystemMonitor:25555 [interfaces.py:start():188] Started memory monitoring
+2024-06-22 19:07:33,307 INFO    SystemMonitor:25555 [interfaces.py:start():188] Started network monitoring
+2024-06-22 19:07:33,726 DEBUG   HandlerThread:25555 [system_info.py:probe():152] Probing system
+2024-06-22 19:07:33,727 DEBUG   HandlerThread:25555 [system_info.py:_probe_git():137] Probing git
+2024-06-22 19:07:33,742 DEBUG   HandlerThread:25555 [system_info.py:_probe_git():145] Probing git done
+2024-06-22 19:07:33,742 DEBUG   HandlerThread:25555 [system_info.py:probe():200] Probing system done
+2024-06-22 19:07:33,742 DEBUG   HandlerThread:25555 [system_monitor.py:probe():223] {'os': 'macOS-14.4.1-arm64-arm-64bit', 'python': '3.11.9', 'heartbeatAt': '2024-06-22T18:07:33.726676', 'startedAt': '2024-06-22T18:07:24.560326', 'docker': None, 'cuda': None, 'args': (), 'state': 'running', 'program': '/Users/janmagnuszewski/dev/slums-model-unitac/src/make_predictions.py', 'codePathLocal': 'make_predictions.py', 'codePath': 'src/make_predictions.py', 'git': {'remote': 'https://github.com/jankomag/unitac-slums-model.git', 'commit': 'd6e870f2b1b3504ef66d4a5e0beadea212493e77'}, 'email': 'jan@magnuszewski.com', 'root': '/Users/janmagnuszewski/dev/slums-model-unitac', 'host': 'eduroam-int-dhcp-97-236-123.ucl.ac.uk', 'username': 'janmagnuszewski', 'executable': '/opt/miniconda3/envs/rv/bin/python', 'cpu_count': 11, 'cpu_count_logical': 11, 'cpu_freq': {'current': 4056, 'min': 696, 'max': 4056}, 'cpu_freq_per_core': [{'current': 4056, 'min': 696, 'max': 4056}], 'disk': {'/': {'total': 926.3517189025879, 'used': 310.0166130065918}}, 'gpuapple': {'type': 'Apple M3 Pro', 'vendor': 'sppci_vendor_Apple'}, 'memory': {'total': 18.0}}
+2024-06-22 19:07:33,742 INFO    HandlerThread:25555 [system_monitor.py:probe():224] Finished collecting system info
+2024-06-22 19:07:33,742 INFO    HandlerThread:25555 [system_monitor.py:probe():227] Publishing system info
+2024-06-22 19:07:33,742 DEBUG   HandlerThread:25555 [system_info.py:_save_conda():209] Saving list of conda packages installed into the current environment
+2024-06-22 19:07:34,255 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_created():271] file/dir created: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/conda-environment.yaml
+2024-06-22 19:07:35,459 DEBUG   HandlerThread:25555 [system_info.py:_save_conda():224] Saving conda packages done
+2024-06-22 19:07:35,459 INFO    HandlerThread:25555 [system_monitor.py:probe():229] Finished publishing system info
+2024-06-22 19:07:35,460 DEBUG   SenderThread:25555 [sender.py:send():379] send: files
+2024-06-22 19:07:35,460 INFO    SenderThread:25555 [sender.py:_save_file():1454] saving file wandb-metadata.json with policy now
+2024-06-22 19:07:35,575 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: python_packages
+2024-06-22 19:07:35,575 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: python_packages
+2024-06-22 19:07:35,576 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-22 19:07:35,576 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: stop_status
+2024-06-22 19:07:35,578 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:35,806 DEBUG   SenderThread:25555 [sender.py:send():379] send: telemetry
+2024-06-22 19:07:35,924 INFO    wandb-upload_0:25555 [upload_job.py:push():130] Uploaded file /var/folders/gk/qnd3k3r95k79msznmhs8kl4r0000gn/T/tmp_4ed5wezwandb/nricg72f-wandb-metadata.json
+2024-06-22 19:07:36,261 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/conda-environment.yaml
+2024-06-22 19:07:36,262 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_created():271] file/dir created: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/requirements.txt
+2024-06-22 19:07:36,262 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_created():271] file/dir created: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/wandb-metadata.json
+2024-06-22 19:07:36,262 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_created():271] file/dir created: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:07:36,583 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:37,584 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:38,272 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:07:38,589 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:38,824 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:07:39,593 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:40,596 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:41,599 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:42,604 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:43,610 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:44,586 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:07:44,611 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:45,615 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:46,618 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:47,624 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:48,628 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:49,600 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:07:49,634 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:50,582 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-22 19:07:50,582 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: stop_status
+2024-06-22 19:07:50,634 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:51,639 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:52,644 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:53,649 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:54,656 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:55,443 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:07:55,660 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:56,350 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:07:56,664 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:57,668 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:58,673 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:07:59,677 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:00,367 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:00,599 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:08:00,683 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:01,685 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:02,691 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:03,695 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:04,698 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:05,586 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-22 19:08:05,587 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: stop_status
+2024-06-22 19:08:05,704 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:05,726 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:08:06,399 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/config.yaml
+2024-06-22 19:08:06,709 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:07,714 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:08,718 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:09,724 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:10,727 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:11,609 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:08:11,729 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:12,735 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:13,736 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:14,435 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:14,742 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:15,746 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:16,751 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:17,451 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:08:17,755 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:18,451 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:18,761 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:19,771 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:20,592 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-22 19:08:20,592 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: stop_status
+2024-06-22 19:08:20,770 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:21,781 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:22,471 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:22,781 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:22,824 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:08:23,785 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:24,788 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:25,792 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:26,798 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:28,557 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:28,619 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:08:29,559 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:30,512 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:30,565 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:31,570 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:32,522 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:32,574 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:33,313 DEBUG   SystemMonitor:25555 [system_monitor.py:_start():172] Starting system metrics aggregation loop
+2024-06-22 19:08:33,315 DEBUG   SenderThread:25555 [sender.py:send():379] send: telemetry
+2024-06-22 19:08:33,316 DEBUG   SenderThread:25555 [sender.py:send():379] send: stats
+2024-06-22 19:08:33,579 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:34,319 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:08:34,528 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:34,584 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:35,589 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:35,595 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: stop_status
+2024-06-22 19:08:35,595 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: stop_status
+2024-06-22 19:08:36,539 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:36,593 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:37,598 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:38,603 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:39,477 DEBUG   SenderThread:25555 [sender.py:send():379] send: telemetry
+2024-06-22 19:08:39,479 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:08:39,479 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: server_info
+2024-06-22 19:08:39,603 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: server_info
+2024-06-22 19:08:39,716 DEBUG   SenderThread:25555 [sender.py:send():379] send: exit
+2024-06-22 19:08:39,717 INFO    SenderThread:25555 [sender.py:send_exit():586] handling exit code: 0
+2024-06-22 19:08:39,717 INFO    SenderThread:25555 [sender.py:send_exit():588] handling runtime: 66
+2024-06-22 19:08:39,717 INFO    SenderThread:25555 [sender.py:_save_file():1454] saving file wandb-summary.json with policy end
+2024-06-22 19:08:39,717 INFO    SenderThread:25555 [sender.py:send_exit():594] send defer
+2024-06-22 19:08:39,718 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:39,718 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 0
+2024-06-22 19:08:39,718 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:39,718 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 0
+2024-06-22 19:08:39,718 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 1
+2024-06-22 19:08:39,718 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:39,718 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 1
+2024-06-22 19:08:39,718 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:39,718 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 1
+2024-06-22 19:08:39,718 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 2
+2024-06-22 19:08:39,718 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:39,718 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 2
+2024-06-22 19:08:39,719 INFO    HandlerThread:25555 [system_monitor.py:finish():203] Stopping system monitor
+2024-06-22 19:08:39,719 INFO    HandlerThread:25555 [interfaces.py:finish():200] Joined cpu monitor
+2024-06-22 19:08:39,719 INFO    HandlerThread:25555 [interfaces.py:finish():200] Joined disk monitor
+2024-06-22 19:08:39,719 INFO    HandlerThread:25555 [interfaces.py:finish():200] Joined gpuapple monitor
+2024-06-22 19:08:39,719 INFO    HandlerThread:25555 [interfaces.py:finish():200] Joined memory monitor
+2024-06-22 19:08:39,719 INFO    HandlerThread:25555 [interfaces.py:finish():200] Joined network monitor
+2024-06-22 19:08:39,719 DEBUG   SystemMonitor:25555 [system_monitor.py:_start():179] Finished system metrics aggregation loop
+2024-06-22 19:08:39,719 DEBUG   SystemMonitor:25555 [system_monitor.py:_start():183] Publishing last batch of metrics
+2024-06-22 19:08:39,720 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:39,720 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 2
+2024-06-22 19:08:39,720 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 3
+2024-06-22 19:08:39,720 DEBUG   SenderThread:25555 [sender.py:send():379] send: stats
+2024-06-22 19:08:39,721 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:39,721 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 3
+2024-06-22 19:08:39,721 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:39,721 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 3
+2024-06-22 19:08:39,721 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 4
+2024-06-22 19:08:39,721 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:39,721 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 4
+2024-06-22 19:08:39,721 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:39,721 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 4
+2024-06-22 19:08:39,721 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 5
+2024-06-22 19:08:39,721 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:39,721 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 5
+2024-06-22 19:08:39,721 DEBUG   SenderThread:25555 [sender.py:send():379] send: summary
+2024-06-22 19:08:39,722 INFO    SenderThread:25555 [sender.py:_save_file():1454] saving file wandb-summary.json with policy end
+2024-06-22 19:08:39,722 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:39,722 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 5
+2024-06-22 19:08:39,722 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 6
+2024-06-22 19:08:39,722 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:39,722 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 6
+2024-06-22 19:08:39,722 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:39,722 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 6
+2024-06-22 19:08:39,722 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 7
+2024-06-22 19:08:39,722 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: status_report
+2024-06-22 19:08:39,722 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:39,722 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 7
+2024-06-22 19:08:39,722 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:39,722 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 7
+2024-06-22 19:08:40,558 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/config.yaml
+2024-06-22 19:08:40,558 INFO    Thread-48 :25555 [dir_watcher.py:_on_file_created():271] file/dir created: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/wandb-summary.json
+2024-06-22 19:08:40,722 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: poll_exit
+2024-06-22 19:08:41,966 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 8
+2024-06-22 19:08:41,966 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: poll_exit
+2024-06-22 19:08:41,966 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:41,967 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 8
+2024-06-22 19:08:41,967 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:41,967 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 8
+2024-06-22 19:08:41,967 INFO    SenderThread:25555 [job_builder.py:build():440] Attempting to build job artifact
+2024-06-22 19:08:41,967 INFO    SenderThread:25555 [job_builder.py:_get_source_type():569] is repo sourced job
+2024-06-22 19:08:41,967 INFO    SenderThread:25555 [job_builder.py:_get_program_relpath():587] run is notebook based run
+2024-06-22 19:08:41,967 INFO    SenderThread:25555 [job_builder.py:_build_repo_job_source():232] target path does not exist, exiting
+2024-06-22 19:08:41,967 WARNING SenderThread:25555 [job_builder.py:_log_if_verbose():274] Source type is set to 'repo' but some required information is missing from the environment. A job will not be created from this run. See https://docs.wandb.ai/guides/launch/create-job
+2024-06-22 19:08:41,967 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 9
+2024-06-22 19:08:41,967 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:41,967 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 9
+2024-06-22 19:08:41,968 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:41,968 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 9
+2024-06-22 19:08:41,968 INFO    SenderThread:25555 [dir_watcher.py:finish():358] shutting down directory watcher
+2024-06-22 19:08:42,566 INFO    SenderThread:25555 [dir_watcher.py:_on_file_modified():288] file/dir modified: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:42,567 INFO    SenderThread:25555 [dir_watcher.py:finish():388] scan: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files
+2024-06-22 19:08:42,567 INFO    SenderThread:25555 [dir_watcher.py:finish():402] scan save: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/requirements.txt requirements.txt
+2024-06-22 19:08:42,567 INFO    SenderThread:25555 [dir_watcher.py:finish():402] scan save: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log output.log
+2024-06-22 19:08:42,569 INFO    SenderThread:25555 [dir_watcher.py:finish():402] scan save: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/config.yaml config.yaml
+2024-06-22 19:08:42,570 INFO    SenderThread:25555 [dir_watcher.py:finish():402] scan save: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/wandb-summary.json wandb-summary.json
+2024-06-22 19:08:42,570 INFO    SenderThread:25555 [dir_watcher.py:finish():402] scan save: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/conda-environment.yaml conda-environment.yaml
+2024-06-22 19:08:42,570 INFO    SenderThread:25555 [dir_watcher.py:finish():402] scan save: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/wandb-metadata.json wandb-metadata.json
+2024-06-22 19:08:42,570 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 10
+2024-06-22 19:08:42,570 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:42,570 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 10
+2024-06-22 19:08:42,571 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:42,571 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 10
+2024-06-22 19:08:42,571 INFO    SenderThread:25555 [file_pusher.py:finish():169] shutting down file pusher
+2024-06-22 19:08:42,731 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: poll_exit
+2024-06-22 19:08:42,731 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: poll_exit
+2024-06-22 19:08:42,911 INFO    wandb-upload_0:25555 [upload_job.py:push():130] Uploaded file /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/requirements.txt
+2024-06-22 19:08:42,947 INFO    wandb-upload_4:25555 [upload_job.py:push():130] Uploaded file /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/conda-environment.yaml
+2024-06-22 19:08:42,949 INFO    wandb-upload_2:25555 [upload_job.py:push():130] Uploaded file /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/config.yaml
+2024-06-22 19:08:42,964 INFO    wandb-upload_3:25555 [upload_job.py:push():130] Uploaded file /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/wandb-summary.json
+2024-06-22 19:08:43,098 INFO    wandb-upload_1:25555 [upload_job.py:push():130] Uploaded file /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/files/output.log
+2024-06-22 19:08:43,304 INFO    Thread-47 (_thread_body):25555 [sender.py:transition_state():614] send defer: 11
+2024-06-22 19:08:43,305 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:43,305 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 11
+2024-06-22 19:08:43,306 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:43,306 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 11
+2024-06-22 19:08:43,306 INFO    SenderThread:25555 [file_pusher.py:join():175] waiting for file pusher
+2024-06-22 19:08:43,307 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 12
+2024-06-22 19:08:43,307 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:43,308 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 12
+2024-06-22 19:08:43,308 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:43,308 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 12
+2024-06-22 19:08:43,308 INFO    SenderThread:25555 [file_stream.py:finish():601] file stream finish called
+2024-06-22 19:08:43,450 INFO    SenderThread:25555 [file_stream.py:finish():605] file stream finish is done
+2024-06-22 19:08:43,450 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 13
+2024-06-22 19:08:43,450 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:43,450 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 13
+2024-06-22 19:08:43,451 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:43,451 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 13
+2024-06-22 19:08:43,451 INFO    SenderThread:25555 [sender.py:transition_state():614] send defer: 14
+2024-06-22 19:08:43,452 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: defer
+2024-06-22 19:08:43,452 DEBUG   SenderThread:25555 [sender.py:send():379] send: final
+2024-06-22 19:08:43,452 INFO    HandlerThread:25555 [handler.py:handle_request_defer():184] handle defer: 14
+2024-06-22 19:08:43,452 DEBUG   SenderThread:25555 [sender.py:send():379] send: footer
+2024-06-22 19:08:43,453 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: defer
+2024-06-22 19:08:43,453 INFO    SenderThread:25555 [sender.py:send_request_defer():610] handle sender defer: 14
+2024-06-22 19:08:43,455 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: poll_exit
+2024-06-22 19:08:43,455 DEBUG   SenderThread:25555 [sender.py:send_request():406] send_request: poll_exit
+2024-06-22 19:08:43,458 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: internal_messages
+2024-06-22 19:08:43,459 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: get_summary
+2024-06-22 19:08:43,460 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: sampled_history
+2024-06-22 19:08:43,464 DEBUG   HandlerThread:25555 [handler.py:handle_request():158] handle_request: shutdown
+2024-06-22 19:08:43,464 INFO    HandlerThread:25555 [handler.py:finish():882] shutting down handler
+2024-06-22 19:08:44,460 INFO    WriterThread:25555 [datastore.py:close():296] close: /Users/janmagnuszewski/dev/slums-model-unitac/src/wandb/run-20240622_190724-o7mtwp30/run-o7mtwp30.wandb
+2024-06-22 19:08:44,460 INFO    SenderThread:25555 [sender.py:finish():1608] shutting down sender
+2024-06-22 19:08:44,460 INFO    SenderThread:25555 [file_pusher.py:finish():169] shutting down file pusher
+2024-06-22 19:08:44,461 INFO    SenderThread:25555 [file_pusher.py:join():175] waiting for file pusher
