@@ -11,3 +11,4 @@ deeplnafrica/deeplnafrica_trained_models/
 src/models/wandb/
 *.ckpt
 vectorised_model_predictions/
+predictions.qgz

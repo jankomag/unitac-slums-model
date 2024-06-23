@@ -5,15 +5,15 @@ from typing import Any, Optional, Tuple, Union, Sequence, Dict, Iterator, Litera
 from shapely.geometry import Polygon
 
 import multiprocessing
-multiprocessing.set_start_method('fork')
-
+# multiprocessing.set_start_method('fork')
+import cv2
 import pytorch_lightning as pl
 import numpy as np
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import torch
 from rastervision.core.box import Box
-
+import rasterio
 from affine import Affine
 from pyproj import Transformer
 from rasterio.transform import rowcol, xy
@@ -38,609 +38,200 @@ from torchvision.models.segmentation.deeplabv3 import DeepLabHead
 # Project-specific imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-# grandparent_dir = os.path.dirname(parent_dir)
-sys.path.append(parent_dir)
+grandparent_dir = os.path.dirname(parent_dir)
+sys.path.append(grandparent_dir)
 
-from deeplnafrica.deepLNAfrica import Deeplabv3SegmentationModel, init_segm_model, CustomDeeplabv3SegmentationModel
-from src.data.dataloaders import create_sentinel_raster_source, create_buildings_raster_source, create_datasets
+from deeplnafrica.deepLNAfrica import (Deeplabv3SegmentationModel, init_segm_model,
+                                       CustomDeeplabv3SegmentationModel)
+from src.data.dataloaders import (create_sentinel_raster_source, create_buildings_raster_source,
+                                  create_datasets, show_windows,
+                                  CustomSemanticSegmentationSlidingWindowGeoDataset)
 from rastervision.core.data.label import SemanticSegmentationLabels
-from rastervision.core.data.label_store import SemanticSegmentationLabelStore
-from rastervision.core.data import Scene, ClassConfig
-from rastervision.core.data.utils import all_equal, match_bboxes, geoms_to_bbox_coords
-# from rastervision.core.raster_stats import RasterStats
-# from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
-# from rastervision.pipeline.utils import repr_with_args
-# from rastervision.pytorch_learner.dataset.transform import (TransformType)
-# from rastervision.pipeline.config import (Config,Field)
-# from rastervision.pytorch_learner.dataset import SlidingWindowGeoDataset, TransformType
+from rastervision.pytorch_learner import SemanticSegmentationVisualizer
+from rastervision.core.data import (Scene, ClassConfig, RasterioCRSTransformer,
+                                    RasterioSource, GeoJSONVectorSource,
+                                    ClassInferenceTransformer, RasterizedSource,
+                                    SemanticSegmentationLabelSource, VectorSource)
+from rastervision.pytorch_learner import SemanticSegmentationSlidingWindowGeoDataset
+from rastervision.core.raster_stats import RasterStats
+from rastervision.core.data.raster_transformer import RasterTransformer
+from rastervision.core.data.utils import listify_uris, merge_geojsons
+from rastervision.pipeline.file_system import (
+    get_local_path, json_to_file, make_dir, sync_to_dir, file_exists,
+    download_if_needed, NotReadableError, get_tmp_dir)
+import matplotlib.colors as mcolors
+import matplotlib.patches as mpatches
 
-from typing import (TYPE_CHECKING, Callable, Dict, List, Literal, Optional,
-                    Sequence, Tuple, Union)
-from pydantic import PositiveInt as PosInt, conint
-import math
-import random
+from rastervision.pytorch_learner.dataset.visualizer import Visualizer  # NOQA
+from rastervision.pytorch_learner.utils import (
+    color_to_triple, plot_channel_groups, channel_groups_to_imgs)
 
-import numpy as np
-from shapely.geometry import Polygon
-from shapely.ops import unary_union
-from rasterio.windows import Window as RioWindow
+from typing import (TYPE_CHECKING, Sequence, Optional, List, Dict, Union,
+                    Tuple, Any)
+from abc import ABC, abstractmethod
 
-from rastervision.pipeline.utils import repr_with_args
+from torch import Tensor
+import albumentations as A
 
-NonNegInt = conint(ge=0)
+from rastervision.pipeline.file_system import make_dir
+from rastervision.core.data import ClassConfig
+from rastervision.pytorch_learner.utils import (
+    deserialize_albumentation_transform, validate_albumentation_transform,
+    MinMaxNormalize)
+from rastervision.pytorch_learner.learner_config import (
+    RGBTuple,
+    ChannelInds,
+    validate_channel_display_groups,
+    get_default_channel_display_groups,
+)
 
 if TYPE_CHECKING:
-    from shapely.geometry import MultiPolygon
+    from torch.utils.data import Dataset
+    from matplotlib.figure import Figure
 
+from typing import TYPE_CHECKING, Iterator, List, Optional
+from os.path import join
 
-class BoxSizeError(ValueError):
-    pass
+from rastervision.pipeline.config import register_config, Config, Field
+from rastervision.core.data.label_store import (LabelStoreConfig,
+                                                SemanticSegmentationLabelStore)
+from rastervision.core.data.utils import (denoise, mask_to_building_polygons,
+                                          mask_to_polygons)
 
+if TYPE_CHECKING:
+    import numpy as np
+    from shapely.geometry.base import BaseGeometry
 
-class CustomBox():
-    """A multi-purpose box (ie. rectangle) representation."""
+    from rastervision.core.box import Box
+    from rastervision.core.data import (ClassConfig, CRSTransformer,
+                                        SceneConfig)
+    from rastervision.core.rv_pipeline import RVPipelineConfig
+    
+class CustomVectorOutputConfig(Config):
+    """Config for vectorized semantic segmentation predictions."""
+    class_id: int = Field(
+        ...,
+        description='The prediction class that is to be turned into vectors.'
+    )
+    denoise: int = Field(
+        8,
+        description='Diameter of the circular structural element used to '
+        'remove high-frequency signals from the image. Smaller values will '
+        'reduce less noise and make vectorization slower and more memory '
+        'intensive (especially for large images). Larger values will remove '
+        'more noise and make vectorization faster but might also remove '
+        'legitimate detections.'
+    )
+    threshold: Optional[float] = Field(
+        None,
+        description='Probability threshold for creating the binary mask for '
+        'the pixels of this class. Pixels will be considered to belong to '
+        'this class if their probability for this class is >= ``threshold``. '
+        'Defaults to ``None``, which is equivalent to (1 / num_classes).'
+    )
 
-    def __init__(self, ymin, xmin, ymax, xmax):
-        """Construct a bounding box.
+    def vectorize(self, mask: np.ndarray) -> Iterator['Polygon']:
+        """Vectorize binary mask representing the target class into polygons."""
+        # Apply denoising if necessary
+        if self.denoise > 0:
+            kernel = np.ones((self.denoise, self.denoise), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-        Unless otherwise stated, the convention is that these coordinates are
-        in pixel coordinates and represent boxes that lie within a
-        RasterSource.
+        # Find contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        Args:
-            ymin: minimum y value (y is row)
-            xmin: minimum x value (x is column)
-            ymax: maximum y value
-            xmax: maximum x value
-        """
-        self.ymin = ymin
-        self.xmin = xmin
-        self.ymax = ymax
-        self.xmax = xmax
+        # Convert contours to polygons
+        for contour in contours:
+            if contour.size >= 6:  # Minimum number of points for a valid polygon
+                yield Polygon(contour.squeeze())
 
-    def __eq__(self, other: 'Box') -> bool:
-        """Return true if other has same coordinates."""
-        return self.tuple_format() == other.tuple_format()
+    def get_uri(self, root: str, class_config: Optional['ClassConfig'] = None) -> str:
+        """Get the URI for saving the vector output."""
+        if class_config is not None:
+            class_name = class_config.get_name(self.class_id)
+            uri = join(root, f'class-{self.class_id}-{class_name}.json')
+        else:
+            uri = join(root, f'class-{self.class_id}.json')
+        return uri
+    
+class CustomStatsTransformer(RasterTransformer):
+    def __init__(self,
+                 means: Sequence[float],
+                 stds: Sequence[float],
+                 max_stds: float = 3.):
+        # shape = (1, 1, num_channels)
+        self.means = np.array(means, dtype=float)
+        self.stds = np.array(stds, dtype=float)
+        self.max_stds = max_stds
 
-    def __ne__(self, other: 'Box'):
-        """Return true if other has different coordinates."""
-        return self.tuple_format() != other.tuple_format()
+    def transform(self,
+                  chip: np.ndarray,
+                  channel_order: Optional[Sequence[int]] = None) -> np.ndarray:
+        if chip.dtype == np.uint8:
+            return chip
 
-    @property
-    def height(self) -> int:
-        """Return height of Box."""
-        return self.ymax - self.ymin
+        means = self.means
+        stds = self.stds
+        max_stds = self.max_stds
+        if channel_order is not None:
+            means = means[channel_order]
+            stds = stds[channel_order]
 
-    @property
-    def width(self) -> int:
-        """Return width of Box."""
-        return self.xmax - self.xmin
+        # Don't transform NODATA zero values.
+        nodata_mask = chip == 0
 
-    @property
-    def extent(self) -> 'Box':
-        """Return a (0, 0, h, w) Box representing the size of this Box."""
-        return Box(0, 0, self.height, self.width)
+        # Convert chip to float (if not already)
+        chip = chip.astype(float)
 
-    @property
-    def size(self) -> Tuple[int, int]:
-        return self.height, self.width
+        # Subtract mean and divide by std to get z-scores.
+        for i in range(chip.shape[-1]):  # Loop over channels
+            chip[..., i] -= means[i]
+            chip[..., i] /= stds[i]
 
-    @property
-    def area(self) -> int:
-        """Return area of Box."""
-        return self.height * self.width
+        # Apply max_stds clipping
+        chip = np.clip(chip, -max_stds, max_stds)
+        
+        # Normalise to [0, 1]
+        # chip = (chip - chip.min()) / (chip.max() - chip.min())
+    
+        # Normalize to have standard deviation of 1
+        for i in range(chip.shape[-1]):
+            chip[..., i] /= np.std(chip[..., i])
 
-    def normalize(self) -> 'Box':
-        """Ensure ymin <= ymax and xmin <= xmax."""
-        ymin, ymax = sorted((self.ymin, self.ymax))
-        xmin, xmax = sorted((self.xmin, self.xmax))
-        return Box(ymin, xmin, ymax, xmax)
-
-    def rasterio_format(self) -> Tuple[Tuple[int, int], Tuple[int, int]]:
-        """Return Box in Rasterio format: ((ymin, ymax), (xmin, xmax))."""
-        return ((self.ymin, self.ymax), (self.xmin, self.xmax))
-
-    def tuple_format(self) -> Tuple[int, int, int, int]:
-        return (self.ymin, self.xmin, self.ymax, self.xmax)
-
-    def shapely_format(self) -> Tuple[int, int, int, int]:
-        return self.to_xyxy()
-
-    def to_int(self):
-        return Box(
-            int(self.ymin), int(self.xmin), int(self.ymax), int(self.xmax))
-
-    def npbox_format(self):
-        """Return Box in npbox format used by TF Object Detection API.
-
-        Returns:
-            Numpy array of form [ymin, xmin, ymax, xmax] with float type
-        """
-        return np.array(
-            [self.ymin, self.xmin, self.ymax, self.xmax], dtype=float)
-
-    @staticmethod
-    def to_npboxes(boxes):
-        """Return nx4 numpy array from list of Box."""
-        nb_boxes = len(boxes)
-        npboxes = np.empty((nb_boxes, 4))
-        for boxind, box in enumerate(boxes):
-            npboxes[boxind, :] = box.npbox_format()
-        return npboxes
-
-    def __iter__(self):
-        return iter(self.tuple_format())
-
-    def __getitem__(self, i):
-        return self.tuple_format()[i]
-
-    def __repr__(self) -> str:
-        return repr_with_args(self, **self.to_dict())
-
-    def __hash__(self) -> int:
-        return hash(self.tuple_format())
-
-    def geojson_coordinates(self) -> List[Tuple[int, int]]:
-        """Return Box as GeoJSON coordinates."""
-        # Compass directions:
-        nw = [self.xmin, self.ymin]
-        ne = [self.xmin, self.ymax]
-        se = [self.xmax, self.ymax]
-        sw = [self.xmax, self.ymin]
-        return [nw, ne, se, sw, nw]
-
-    def make_random_square_container(self, size: int) -> 'Box':
-        """Return a new square Box that contains this Box.
-
-        Args:
-            size: the width and height of the new Box
-        """
-        return self.make_random_box_container(size, size)
-
-    def make_random_box_container(self, out_h: int, out_w: int) -> 'Box':
-        """Return a new rectangular Box that contains this Box.
-
-        Args:
-            out_h (int): the height of the new Box
-            out_w (int): the width of the new Box
-        """
-        self_h, self_w = self.size
-
-        if out_h < self_h:
-            raise BoxSizeError('size of random container cannot be < height')
-        if out_w < self_w:
-            raise BoxSizeError('size of random container cannot be < width')
-
-        ymin, xmin, _, _ = self.normalize()
-
-        lb = ymin - (out_h - self_h)
-        ub = ymin
-        out_ymin = random.randint(int(lb), int(ub))
-
-        lb = xmin - (out_w - self_w)
-        ub = xmin
-        out_xmin = random.randint(int(lb), int(ub))
-
-        return Box(out_ymin, out_xmin, out_ymin + out_h, out_xmin + out_w)
-
-    def make_random_square(self, size: int) -> 'Box':
-        """Return new randomly positioned square Box that lies inside this Box.
-
-        Args:
-            size: the height and width of the new Box
-        """
-        if size >= self.width:
-            raise BoxSizeError('size of random square cannot be >= width')
-
-        if size >= self.height:
-            raise BoxSizeError('size of random square cannot be >= height')
-
-        ymin, xmin, ymax, xmax = self.normalize()
-
-        lb = ymin
-        ub = ymax - size
-        rand_y = random.randint(int(lb), int(ub))
-
-        lb = xmin
-        ub = xmax - size
-        rand_x = random.randint(int(lb), int(ub))
-
-        return Box.make_square(rand_y, rand_x, size)
-
-    def intersection(self, other: 'Box') -> 'Box':
-        """Return the intersection of this Box and the other.
-
-        Args:
-            other: The box to intersect with this one.
-
-        Returns:
-             The intersection of this box and the other one.
-        """
-        if not self.intersects(other):
-            return Box(0, 0, 0, 0)
-
-        box1 = self.normalize()
-        box2 = other.normalize()
-
-        xmin = max(box1.xmin, box2.xmin)
-        ymin = max(box1.ymin, box2.ymin)
-        xmax = min(box1.xmax, box2.xmax)
-        ymax = min(box1.ymax, box2.ymax)
-        return Box(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax)
-
-    def intersects(self, other: 'Box') -> bool:
-        box1 = self.normalize()
-        box2 = other.normalize()
-        if box1.ymax <= box2.ymin or box1.ymin >= box2.ymax:
-            return False
-        if box1.xmax <= box2.xmin or box1.xmin >= box2.xmax:
-            return False
-        return True
-
-    @staticmethod
-    def from_npbox(npbox):
-        """Return new Box based on npbox format.
-
-        Args:
-            npbox: Numpy array of form [ymin, xmin, ymax, xmax] with float type
-        """
-        return Box(*npbox)
-
-    @staticmethod
-    def from_shapely(shape):
-        """Instantiate from the bounds of a shapely geometry."""
-        xmin, ymin, xmax, ymax = shape.bounds
-        return Box(ymin, xmin, ymax, xmax)
+        chip[nodata_mask] = 0
+        
+        return chip
 
     @classmethod
-    def from_rasterio(self, rio_window: RioWindow) -> 'Box':
-        """Instantiate from a rasterio window."""
-        yslice, xslice = rio_window.toslices()
-        return Box(yslice.start, xslice.start, yslice.stop, xslice.stop)
-
-    def to_xywh(self) -> Tuple[int, int, int, int]:
-        """Convert to (xmin, ymin, width, height) tuple"""
-        return (self.xmin, self.ymin, self.width, self.height)
-
-    def to_xyxy(self) -> Tuple[int, int, int, int]:
-        """Convert to (xmin, ymin, xmax, ymax) tuple"""
-        return (self.xmin, self.ymin, self.xmax, self.ymax)
-
-    def to_points(self) -> np.ndarray:
-        """Get (x, y) coords of each vertex as a 4x2 numpy array."""
-        return np.array(self.geojson_coordinates()[:4])
-
-    def to_shapely(self) -> Polygon:
-        """Convert to shapely Polygon."""
-        return Polygon.from_bounds(*self.shapely_format())
-
-    def to_rasterio(self) -> RioWindow:
-        """Convert to a Rasterio Window."""
-        return RioWindow.from_slices(*self.normalize().to_slices())
-
-    def to_slices(self,
-                  h_step: Optional[int] = None,
-                  w_step: Optional[int] = None) -> Tuple[slice, slice]:
-        """Convert to slices: ymin:ymax[:h_step], xmin:xmax[:w_step]"""
-        return slice(self.ymin, self.ymax, h_step), slice(
-            self.xmin, self.xmax, w_step)
-
-    def translate(self, dy: int, dx: int) -> 'Box':
-        """Translate window along y and x axes by the given distances."""
-        ymin, xmin, ymax, xmax = self
-        return Box(ymin + dy, xmin + dx, ymax + dy, xmax + dx)
-
-    def to_global_coords(self, bbox: 'Box') -> 'Box':
-        """Go from bbox coords to global coords.
-
-        E.g., Given a box Box(20, 20, 40, 40) and bbox Box(20, 20, 100, 100),
-        the box becomes Box(40, 40, 60, 60).
-
-        Inverse of Box.to_local_coords().
-        """
-        return self.translate(dy=bbox.ymin, dx=bbox.xmin)
-
-    def to_local_coords(self, bbox: 'Box') -> 'Box':
-        """Go from to global coords bbox coords.
-
-        E.g., Given a box Box(40, 40, 60, 60) and bbox Box(20, 20, 100, 100),
-        the box becomes Box(20, 20, 40, 40).
-
-        Inverse of Box.to_global_coords().
-        """
-        return self.translate(dy=-bbox.ymin, dx=-bbox.xmin)
-
-    def reproject(self, transform_fn: Callable) -> 'Box':
-        """Reprojects this box based on a transform function.
-
-        Args:
-            transform_fn: A function that takes in a tuple (x, y) and
-                reprojects that point to the target coordinate reference
-                system.
-        """
-        (xmin, ymin) = transform_fn((self.xmin, self.ymin))
-        (xmax, ymax) = transform_fn((self.xmax, self.ymax))
-
-        return Box(ymin, xmin, ymax, xmax)
-
-    @staticmethod
-    def make_square(ymin, xmin, size) -> 'Box':
-        """Return new square Box."""
-        return Box(ymin, xmin, ymin + size, xmin + size)
-
-    def center_crop(self, edge_offset_y: int, edge_offset_x: int) -> 'Box':
-        """Return Box whose sides are eroded by the given offsets.
-
-        Box(0, 0, 10, 10).center_crop(2, 4) ==  Box(2, 4, 8, 6)
-        """
-        return Box(self.ymin + edge_offset_y, self.xmin + edge_offset_x,
-                   self.ymax - edge_offset_y, self.xmax - edge_offset_x)
-
-    def erode(self, erosion_sz) -> 'Box':
-        """Return new Box whose sides are eroded by erosion_sz."""
-        return self.center_crop(erosion_sz, erosion_sz)
-
-    def buffer(self, buffer_sz: float, max_extent: 'Box') -> 'Box':
-        """Return new Box whose sides are buffered by buffer_sz.
-
-        The resulting box is clipped so that the values of the corners are
-        always greater than zero and less than the height and width of
-        max_extent.
-        """
-        buffer_sz = max(0., buffer_sz)
-        if buffer_sz < 1.:
-            delta_width = int(round(buffer_sz * self.width))
-            delta_height = int(round(buffer_sz * self.height))
-        else:
-            delta_height = delta_width = int(round(buffer_sz))
-
-        return Box(
-            max(0, math.floor(self.ymin - delta_height)),
-            max(0, math.floor(self.xmin - delta_width)),
-            min(max_extent.height,
-                int(self.ymax) + delta_height),
-            min(max_extent.width,
-                int(self.xmax) + delta_width))
-
-    def pad(self, ymin: int, xmin: int, ymax: int, xmax: int) -> 'Box':
-        """Pad sides by the given amount."""
-        return Box(
-            ymin=self.ymin - ymin,
-            xmin=self.xmin - xmin,
-            ymax=self.ymax + ymax,
-            xmax=self.xmax + xmax)
-
-    def copy(self) -> 'Box':
-        return Box(*self)
-
-    def get_windows(self,
-                    size: Union[PosInt, Tuple[PosInt, PosInt]],
-                    stride: Union[PosInt, Tuple[PosInt, PosInt]],
-                    padding: Optional[Union[NonNegInt, Tuple[
-                        NonNegInt, NonNegInt]]] = None,
-                    pad_direction: Literal['both', 'start', 'end'] = 'end'
-                    ) -> List['Box']:
-        """Returns a list of boxes representing windows generated using a
-        sliding window traversal with the specified size, stride, and
-        padding.
-
-        Each of size, stride, and padding can be either a positive int or
-        a tuple `(vertical-component, horizontal-component)` of positive ints.
-
-        Padding currently only applies to the right and bottom edges.
-
-        Args:
-            size (Union[PosInt, Tuple[PosInt, PosInt]]): Size (h, w) of the
-                windows.
-            stride (Union[PosInt, Tuple[PosInt, PosInt]]): Step size between
-                windows. Can be 2-tuple (h_step, w_step) or positive int.
-            padding (Optional[Union[PosInt, Tuple[PosInt, PosInt]]], optional):
-                Optional padding to accommodate windows that overflow the
-                extent. Can be 2-tuple (h_pad, w_pad) or non-negative int.
-                If None, will be set to (size[0]//2, size[1]//2).
-                Defaults to None.
-            pad_direction (Literal['both', 'start', 'end']): If 'end', only pad
-                ymax and xmax (bottom and right). If 'start', only pad ymin and
-                xmin (top and left). If 'both', pad all sides. Has no effect if
-                padding is zero. Defaults to 'end'.
-
-        Returns:
-            List[Box]: List of Box objects.
-        """
-        if not isinstance(size, tuple):
-            size = (size, size)
-
-        if not isinstance(stride, tuple):
-            stride = (stride, stride)
-
-        if size[0] <= 0 or size[1] <= 0 or stride[0] <= 0 or stride[1] <= 0:
-            raise ValueError('size and stride must be positive.')
-
-        if padding is None:
-            padding = (size[0] // 2, size[1] // 2)
-
-        if not isinstance(padding, tuple):
-            padding = (padding, padding)
-
-        if padding[0] < 0 or padding[1] < 0:
-            raise ValueError('padding must be non-negative.')
-
-        if padding != (0, 0):
-            h_pad, w_pad = padding
-            if pad_direction == 'both':
-                padded_box = self.pad(
-                    ymin=h_pad, xmin=w_pad, ymax=h_pad, xmax=w_pad)
-            elif pad_direction == 'end':
-                padded_box = self.pad(ymin=0, xmin=0, ymax=h_pad, xmax=w_pad)
-            elif pad_direction == 'start':
-                padded_box = self.pad(ymin=h_pad, xmin=w_pad, ymax=0, xmax=0)
-            else:
-                raise ValueError('pad_directions must be one of: '
-                                 '"both", "start", "end".')
-            return padded_box.get_windows(
-                size=size, stride=stride, padding=(0, 0))
-
-        # padding is necessarily (0, 0) at this point, so we ignore it
-        h, w = size
-        h_step, w_step = stride
-        # lb = lower bound, ub = upper bound
-        ymin_lb = self.ymin
-        xmin_lb = self.xmin
-        ymin_ub = self.ymax - h
-        xmin_ub = self.xmax - w
-
-        windows = []
-        for ymin in range(ymin_lb, ymin_ub + 1, h_step):
-            for xmin in range(xmin_lb, xmin_ub + 1, w_step):
-                windows.append(Box(ymin, xmin, ymin + h, xmin + w))
-        return windows
-
-    def to_dict(self) -> Dict[str, int]:
-        """Convert to a dict with keys: ymin, xmin, ymax, xmax."""
-        return {
-            'ymin': self.ymin,
-            'xmin': self.xmin,
-            'ymax': self.ymax,
-            'xmax': self.xmax,
-        }
-
+    def from_raster_sources(cls,
+                            raster_sources: List['RasterSource'],
+                            sample_prob: Optional[float] = 0.1,
+                            max_stds: float = 3.,
+                            chip_sz: int = 300) -> 'CustomStatsTransformer':
+        stats = RasterStats()
+        stats.compute(
+            raster_sources=raster_sources,
+            sample_prob=sample_prob,
+            chip_sz=chip_sz)
+        stats_transformer = cls.from_raster_stats(
+            stats, max_stds=max_stds)
+        return stats_transformer
+    
     @classmethod
-    def from_dict(cls, d: dict) -> 'Box':
-        return cls(d['ymin'], d['xmin'], d['ymax'], d['xmax'])
-
-    @staticmethod
-    def filter_by_aoi(windows: List['Box'],
-                      aoi_polygons: List[Polygon],
-                      within: bool = True) -> List['Box']:
-        """Filters windows by a list of AOI polygons
-
-        Args:
-            within: if True, windows are only kept if they lie fully within an
-                AOI polygon. Otherwise, windows are kept if they intersect an
-                AOI polygon.
-        """
-        # merge overlapping polygons, if any
-        aoi_polygons: Polygon | MultiPolygon = unary_union(aoi_polygons)
-
-        if within:
-            keep_window = aoi_polygons.contains
-        else:
-            keep_window = aoi_polygons.intersects
-
-        out = [w for w in windows if keep_window(w.to_shapely())]
-        return out
-
-    @staticmethod
-    def within_aoi(window: 'Box',
-                   aoi_polygons: Polygon | List[Polygon]) -> bool:
-        """Check if window is within the union of given AOI polygons."""
-        aoi_polygons: Polygon | MultiPolygon = unary_union(aoi_polygons)
-        w = window.to_shapely()
-        out = aoi_polygons.contains(w)
-        return out
-
-    @staticmethod
-    def intersects_aoi(window: 'Box',
-                       aoi_polygons: Polygon | List[Polygon]) -> bool:
-        """Check if window intersects with the union of given AOI polygons."""
-        aoi_polygons: Polygon | MultiPolygon = unary_union(aoi_polygons)
-        w = window.to_shapely()
-        out = aoi_polygons.intersects(w)
-        return out
+    def from_raster_stats(cls, stats: RasterStats,
+                          max_stds: float = 3.) -> 'CustomStatsTransformer':
+        stats_transformer = cls(stats.means, stats.stds, max_stds=max_stds)
+        return stats_transformer
     
-    def from_tensor(tensor):
-        """Create a Box object from a tensor."""
-        ymin, xmin, ymax, xmax = tensor.tolist()
-        return Box(ymin, xmin, ymax, xmax)
-
-    def __contains__(self, query: Union['Box', Sequence]) -> bool:
-        """Check if box or point is contained within this box.
-
-        Args:
-            query: Box or single point (x, y).
-
-        Raises:
-            NotImplementedError: if query is not a Box or tuple/list.
-        """
-        if isinstance(query, Box):
-            ymin, xmin, ymax, xmax = query
-            return (ymin >= self.ymin and xmin >= self.xmin
-                    and ymax <= self.ymax and xmax <= self.xmax)
-        elif isinstance(query, (tuple, list)):
-            x, y = query
-            return self.xmin <= x <= self.xmax and self.ymin <= y <= self.ymax
-        else:
-            raise NotImplementedError()
-
-
-# class CustomVectorOutputConfig(Config):
-#     """Config for vectorized semantic segmentation predictions."""
-#     class_id: int = Field(
-#         ...,
-#         description='The prediction class that is to be turned into vectors.'
-#     )
-#     denoise: int = Field(
-#         8,
-#         description='Diameter of the circular structural element used to '
-#         'remove high-frequency signals from the image. Smaller values will '
-#         'reduce less noise and make vectorization slower and more memory '
-#         'intensive (especially for large images). Larger values will remove '
-#         'more noise and make vectorization faster but might also remove '
-#         'legitimate detections.'
-#     )
-#     threshold: Optional[float] = Field(
-#         None,
-#         description='Probability threshold for creating the binary mask for '
-#         'the pixels of this class. Pixels will be considered to belong to '
-#         'this class if their probability for this class is >= ``threshold``. '
-#         'Defaults to ``None``, which is equivalent to (1 / num_classes).'
-#     )
-
-#     def vectorize(self, mask: np.ndarray) -> Iterator['Polygon']:
-#         """Vectorize binary mask representing the target class into polygons."""
-#         # Apply denoising if necessary
-#         if self.denoise > 0:
-#             kernel = np.ones((self.denoise, self.denoise), np.uint8)
-#             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-#         # Find contours
-#         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-#         # Convert contours to polygons
-#         for contour in contours:
-#             if contour.size >= 6:  # Minimum number of points for a valid polygon
-#                 yield Polygon(contour.squeeze())
-
-#     def get_uri(self, root: str, class_config: Optional['ClassConfig'] = None) -> str:
-#         """Get the URI for saving the vector output."""
-#         if class_config is not None:
-#             class_name = class_config.get_name(self.class_id)
-#             uri = join(root, f'class-{self.class_id}-{class_name}.json')
-#         else:
-#             uri = join(root, f'class-{self.class_id}.json')
-#         return uri
-    
-label_uri = "../data/0/SantoDomingo3857.geojson"
-image_uri = '../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-buildings_uri = '../data/0/overture/santodomingo_buildings.geojson'
+label_uri = "../../data/0/SantoDomingo3857.geojson"
+image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
 
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
-
-sentinel_source_normalized, sentinel_label_raster_source = create_sentinel_raster_source(image_uri, label_uri, class_config)
-rasterized_buildings_source, buildings_label_source = create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5)
-
-# gdf = gpd.read_file(label_uri)
-# gdf = gdf.to_crs('EPSG:3857')
-# xmin, ymin, xmax, ymax = gdf.total_bounds
-# pixel_polygon = Polygon([
-#     (xmin, ymin),
-#     (xmin, ymax),
-#     (xmax, ymax),
-#     (xmax, ymin),
-#     (xmin, ymin)
-# ])
+sentinel_source_normalized, sentinel_label_raster_source = create_sentinel_raster_source(image_uri, label_uri, class_config, clip_to_label_source=True)
+rasterized_buildings_source, buildings_label_source, crs_transformer_buildings = create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5)    
 
 if not torch.backends.mps.is_available():
     if not torch.backends.mps.is_built():
@@ -664,9 +255,9 @@ BuildingsScence = Scene(
 
 buildingsGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(BuildingsScence, imgsize=288, stride = 288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 sentinelGeoDataset, train_sentinel_dataset, val_sentinel_dataset, test_sentinel_dataset = create_datasets(SentinelScene, imgsize=144, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+batch_size= 8
 
 # num_workers = 11
-batch_size= 8
 # train_sentinel_loader = DataLoader(train_sentinel_dataset, batch_size=batch_size, shuffle=False)#, num_workers=num_workers)
 # train_buildings_loader = DataLoader(train_buildings_dataset, batch_size=batch_size, shuffle=False)#, num_workers=num_workers)
 # val_sentinel_loader = DataLoader(val_sentinel_dataset, batch_size=batch_size, shuffle=False) #, num_workers=num_workers)
@@ -705,10 +296,26 @@ class ConcatDataset(Dataset):
 
 train_dataset = ConcatDataset(train_sentinel_dataset, train_buildings_dataset)
 val_dataset = ConcatDataset(val_sentinel_dataset, val_buildings_dataset)
+
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True) #, num_workers=num_workers)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)#, num_workers=num_workers)
 
-train_loader.num_workers
+channel_display_groups_sent = {'RGB': (0,1,2), 'NIR': (3, )}
+channel_display_groups_build = {'Buildings': (0,)}
+
+vis_sent = SemanticSegmentationVisualizer(
+    class_names=class_config.names, class_colors=class_config.colors,
+    channel_display_groups=channel_display_groups_sent)
+
+vis_build = SemanticSegmentationVisualizer(
+    class_names=class_config.names, class_colors=class_config.colors,
+    channel_display_groups=channel_display_groups_build)
+
+x, y = vis_sent.get_batch(train_sentinel_dataset, 2)
+vis_sent.plot_batch(x, y, show=True)
+
+x, y = vis_build.get_batch(train_buildings_dataset, 2)
+vis_build.plot_batch(x, y, show=True)
 
 class MultiModalDataModule(LightningDataModule):
     def __init__(self, train_loader, val_loader):
@@ -795,7 +402,11 @@ class MultiModalSegmentationModel(pl.LightningModule):
         loss_fn = torch.nn.BCEWithLogitsLoss()
         loss = loss_fn(segmentation, buildings_labels.float())
         
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        
         self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
                 
         return loss
     
@@ -809,7 +420,10 @@ class MultiModalSegmentationModel(pl.LightningModule):
         loss_fn = torch.nn.BCEWithLogitsLoss()
         val_loss = loss_fn(segmentation, buildings_labels.float())
         
-        wandb.log({'val_loss': val_loss.item(), 'epoch': self.current_epoch})
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        
+        self.log('val_mean_iou', mean_iou)
         self.log('val_loss', val_loss, prog_bar=True, logger=True)
         
     def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
@@ -821,7 +435,21 @@ class MultiModalSegmentationModel(pl.LightningModule):
 
         loss_fn = torch.nn.BCEWithLogitsLoss()
         test_loss = loss_fn(segmentation, buildings_labels)
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+
         self.log('test_loss', test_loss)
+        self.log('test_mean_iou', mean_iou)
+        
+    def compute_mean_iou(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        return iou.mean()
 
     def configure_optimizers(self) -> dict:
         optimizer = torch.optim.AdamW(
@@ -891,17 +519,15 @@ trainer = Trainer(
     max_epochs=50,
     num_sanity_val_steps=3
 )
-print("using num workers ", data_module.train_dataloader().num_workers)
+
 # Train the model
 trainer.fit(model, datamodule=data_module)
 
 # # Use best model for evaluation
-best_model_path = checkpoint_callback.best_model_path
+best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/multimodal_runidrun_id=0-batch_size=00-epoch=15-val_loss=0.2595.ckpt"
+# best_model_path = checkpoint_callback.best_model_path
 best_model = MultiModalSegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
-
-full_dataset = ConcatDataset(sentinelGeoDataset, buildingsGeoDataset)
-full_dataloader = DataLoader(full_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)#, num_workers=num_workers)
 
 class PredictionsIterator:
     def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
@@ -913,7 +539,7 @@ class PredictionsIterator:
         self.predictions = []
         
         with torch.no_grad():
-            for idx in range(len(buildingsGeoDataset)):
+            for idx in range(len(sentinelGeoDataset)):
                 buildings = buildingsGeoDataset[idx]
                 sentinel = sentinelGeoDataset[idx]
                 
@@ -936,14 +562,14 @@ class PredictionsIterator:
 predictions_iterator = PredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 
-# # Ensure windows are Box instances
+# Ensure windows are Box instances
 windows = [Box(*window.tolist()) if isinstance(window, torch.Tensor) else window for window in windows]
 
 # Create SemanticSegmentationLabels from predictions
 pred_labels = SemanticSegmentationLabels.from_predictions(
     windows,
     predictions,
-    extent=SentinelScene.extent,
+    extent=BuildingsScence.extent,
     num_classes=len(class_config),
     smooth=True
 )
@@ -958,17 +584,260 @@ ax.set_title('infs Scores')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
-# # Saving predictions as GEOJSON
-# vector_output_config = CustomVectorOutputConfig(
-#     class_id=1,
-#     denoise=8,
-#     threshold=0.5)
+# Saving predictions as GEOJSON
+vector_output_config = CustomVectorOutputConfig(
+    class_id=1,
+    denoise=8,
+    threshold=0.5)
 
-# pred_label_store = SemanticSegmentationLabelStore(
-#     uri='../../vectorised_model_predictions/buildings_model_only/',
-#     crs_transformer = crs_transformer_buildings,
-#     class_config = class_config,
-#     vector_outputs = [vector_output_config],
-#     discrete_output = True)
+pred_label_store = SemanticSegmentationLabelStore(
+    uri='../../vectorised_model_predictions/multi-modal/SD_only/',
+    crs_transformer = crs_transformer_buildings,
+    class_config = class_config,
+    vector_outputs = [vector_output_config],
+    discrete_output = True)
 
-# pred_label_store.save(pred_labels)
+pred_label_store.save(pred_labels)
+
+
+
+### Make predictions on another city ###
+# implements loading gdf - class CustomGeoJSONVectorSource
+class CustomGeoJSONVectorSource(VectorSource):
+    """A :class:`.VectorSource` for reading GeoJSON files or GeoDataFrames."""
+
+    def __init__(self,
+                 crs_transformer: 'CRSTransformer',
+                 uris: Optional[Union[str, List[str]]] = None,
+                 gdf: Optional[gpd.GeoDataFrame] = None,
+                 vector_transformers: List['VectorTransformer'] = [],
+                 bbox: Optional[Box] = None):
+        """Constructor.
+
+        Args:
+            uris (Optional[Union[str, List[str]]]): URI(s) of the GeoJSON file(s).
+            gdf (Optional[gpd.GeoDataFrame]): A GeoDataFrame with vector data.
+            crs_transformer: A ``CRSTransformer`` to convert
+                between map and pixel coords. Normally this is obtained from a
+                :class:`.RasterSource`.
+            vector_transformers: ``VectorTransformers`` for transforming
+                geometries. Defaults to ``[]``.
+            bbox (Optional[Box]): User-specified crop of the extent. If None,
+                the full extent available in the source file is used.
+        """
+        self.uris = listify_uris(uris) if uris is not None else None
+        self.gdf = gdf
+        super().__init__(
+            crs_transformer,
+            vector_transformers=vector_transformers,
+            bbox=bbox)
+
+    def _get_geojson(self) -> dict:
+        if self.gdf is not None:
+            # Convert GeoDataFrame to GeoJSON
+            df = self.gdf.to_crs('epsg:4326')
+            geojson = df.__geo_interface__
+        elif self.uris is not None:
+            geojsons = [self._get_geojson_single(uri) for uri in self.uris]
+            geojson = merge_geojsons(geojsons)
+        else:
+            raise ValueError("Either 'uris' or 'gdf' must be provided.")
+        return geojson
+
+    def _get_geojson_single(self, uri: str) -> dict:
+        # download first so that it gets cached
+        path = download_if_needed(uri)
+        df: gpd.GeoDataFrame = gpd.read_file(path)
+        df = df.to_crs('epsg:4326')
+        geojson = df.__geo_interface__
+        return geojson
+    
+image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+image_uriHT = '../../data/0/sentinel_Gee/HTI_Tabarre_2023.tif'
+
+sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
+gdf = gpd.read_parquet(sica_cities)
+port_au_prince = gdf[gdf["city_ascii"] == "Tabarre"]
+port_au_prince = port_au_prince.to_crs('EPSG:3857')
+gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = port_au_prince.total_bounds
+
+with rasterio.open(image_uriHT) as src:
+    bounds = src.bounds
+    raster_xmin, raster_ymin, raster_xmax, raster_ymax = bounds.left, bounds.bottom, bounds.right, bounds.top
+
+# Define the bounding box in EPSG:3857
+common_xmin_3857 = max(gdf_xmin, raster_xmin)
+common_ymin_3857 = max(gdf_ymin, raster_ymin)
+common_xmax_3857 = min(gdf_xmax, raster_xmax)
+common_ymax_3857 = min(gdf_ymax, raster_ymax)
+transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+common_xmin_4326, common_ymin_4326 = transformer.transform(common_xmin_3857, common_ymin_3857)
+common_xmax_4326, common_ymax_4326 = transformer.transform(common_xmax_3857, common_ymax_3857)
+
+import duckdb
+import pandas as pd
+con = duckdb.connect("../../data/0/data.db")
+con.install_extension('httpfs')
+con.install_extension('spatial')
+con.load_extension('httpfs')
+con.load_extension('spatial')
+con.execute("SET s3_region='us-west-2'")
+con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
+
+def query_buildings_data(con, xmin, ymin, xmax, ymax):
+    query = f"""
+        SELECT *
+        FROM buildings
+        WHERE bbox.xmin > {xmin}
+          AND bbox.xmax < {xmax}
+          AND bbox.ymin > {ymin}
+          AND bbox.ymax < {ymax};
+    """
+    buildings = pd.read_sql(query, con=con)
+
+    if not buildings.empty:
+        buildings = gpd.GeoDataFrame(buildings, geometry=gpd.GeoSeries.from_wkb(buildings.geometry.apply(bytes)), crs='EPSG:4326')
+        buildings = buildings[['id', 'geometry']]
+        buildings = buildings.to_crs("EPSG:3857")
+        buildings['class_id'] = 1
+
+    return buildings
+
+buildings = query_buildings_data(con, common_xmin_4326, common_ymin_4326, common_xmax_4326, common_ymax_4326)
+resolution = 5
+crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
+affine_transform_buildings = Affine(resolution, 0, common_xmin_3857, 0, -resolution, common_ymax_3857)
+crs_transformer_buildings.transform = affine_transform_buildings
+
+crs_transformer = RasterioCRSTransformer.from_uri(image_uriHT)
+buildings_vector_source_crsimage = CustomGeoJSONVectorSource(
+        gdf = buildings,
+        crs_transformer = crs_transformer,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+
+buildings_vector_source_crsbuildings = CustomGeoJSONVectorSource(
+        gdf = buildings,
+        crs_transformer = crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+    
+rasterized_buildings_source = RasterizedSource(
+    buildings_vector_source_crsbuildings,
+    background_class_id=0)
+    
+print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
+
+# Define the bbox of buildings in the image crs 
+buildings_extent = buildings_vector_source_crsimage.extent
+
+### SENTINEL SOURCE ###
+sentinel_source_unnormalized = RasterioSource(
+    image_uriHT,
+    allow_streaming=True)
+
+# Calculate statistics transformer from the unnormalized source
+calc_stats_transformer = CustomStatsTransformer.from_raster_sources(
+    raster_sources=[sentinel_source_unnormalized],
+    max_stds=3
+)
+
+# Define a normalized raster source using the calculated transformer
+sentinel_sourceHT = RasterioSource(
+    image_uriHT,
+    allow_streaming=True,
+    raster_transformers=[calc_stats_transformer],
+    channel_order=[2, 1, 0, 3],
+    bbox=buildings_extent
+)
+print(f"Loaded Sentinel data of size {sentinel_sourceHT.shape}, and dtype: {sentinel_sourceHT.dtype}")
+# chip = sentinel_sourceHT[:, :, :]
+# fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+# ax.imshow(chip)
+# plt.show()
+
+### SCENE ###    
+HT_build_scene = Scene(
+        id='portauprince_sent',
+        raster_source = rasterized_buildings_source)
+
+HT_sent_scene = Scene(
+        id='portauprince_buildings',
+        raster_source = sentinel_sourceHT)
+
+build_ds = CustomSemanticSegmentationSlidingWindowGeoDataset(
+        scene=HT_build_scene,
+        size=288,
+        stride=288,
+        out_size=288,
+        padding=0)
+
+sent_ds = CustomSemanticSegmentationSlidingWindowGeoDataset(
+        scene=HT_sent_scene,
+        size=144,
+        stride=144,
+        out_size=144,
+        padding=0)
+
+# def create_full_image(source) -> np.ndarray:
+#     extent = source.extent
+#     chip = source._get_chip(extent)    
+#     return chip
+
+# img_full = create_full_image(build_ds.scene.raster_source)
+# img_full.shape
+# train_windows = build_ds.windows
+# val_windows = build_ds.windows
+# test_windows = build_ds.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+
+# img_full = create_full_image(sentinel_sourceHT)
+# img_full = img_full[:, :, 0]
+# train_windows = sent_ds.windows
+# val_windows = sent_ds.windows
+# test_windows = sent_ds.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+
+predictions_iterator = PredictionsIterator(best_model, sent_ds, build_ds, device=device)
+windows, predictions = zip(*predictions_iterator)
+
+# Ensure windows are Box instances
+windows = [Box(*window.tolist()) if isinstance(window, torch.Tensor) else window for window in windows]
+
+# Create SemanticSegmentationLabels from predictions
+pred_labels = SemanticSegmentationLabels.from_predictions(
+    windows,
+    predictions,
+    extent=HT_build_scene.extent,
+    num_classes=len(class_config),
+    smooth=True
+)
+
+# Show predictions
+scores = pred_labels.get_score_arr(pred_labels.extent)
+scores_building = scores[0]
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+image = ax.imshow(scores_building)
+ax.axis('off')
+ax.set_title('infs Scores')
+cbar = fig.colorbar(image, ax=ax)
+plt.show()
+
+# Saving predictions as GEOJSON
+vector_output_config = CustomVectorOutputConfig(
+    class_id=1,
+    denoise=8,
+    threshold=0.5)
+
+crs_transformer_HT = RasterioCRSTransformer.from_uri(image_uriHT)
+affine_transform_buildings = Affine(5, 0, common_xmin_3857, 0, -5, common_ymax_3857)
+crs_transformer_HT.transform = affine_transform_buildings
+
+pred_label_store = SemanticSegmentationLabelStore(
+    uri='../../vectorised_model_predictions/multi-modal/SD_only/Haiti_portauprincenostride/',
+    crs_transformer = crs_transformer_HT,
+    class_config = class_config,
+    vector_outputs = [vector_output_config],
+    discrete_output = True)
+
+pred_label_store.save(pred_labels)
