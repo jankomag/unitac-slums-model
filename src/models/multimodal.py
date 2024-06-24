@@ -26,6 +26,7 @@ from torchvision.models.segmentation import deeplabv3_resnet50
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models._utils import IntermediateLayerGetter
+from torch.utils.data import ConcatDataset
 
 from typing import Self
 from pytorch_lightning.loggers.wandb import WandbLogger
@@ -40,11 +41,13 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
+sys.path.append(parent_dir)
 
+from src.models.model_definitions import MultiModalSegmentationModel, MultiModalPredictionsIterator
 from deeplnafrica.deepLNAfrica import (Deeplabv3SegmentationModel, init_segm_model,
                                        CustomDeeplabv3SegmentationModel)
 from src.data.dataloaders import (create_sentinel_raster_source, create_buildings_raster_source,
-                                  create_datasets, show_windows,
+                                  create_datasets, show_windows, CustomStatsTransformer,
                                   CustomSemanticSegmentationSlidingWindowGeoDataset)
 from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.pytorch_learner import SemanticSegmentationVisualizer
@@ -154,84 +157,23 @@ class CustomVectorOutputConfig(Config):
             uri = join(root, f'class-{self.class_id}.json')
         return uri
     
-class CustomStatsTransformer(RasterTransformer):
-    def __init__(self,
-                 means: Sequence[float],
-                 stds: Sequence[float],
-                 max_stds: float = 3.):
-        # shape = (1, 1, num_channels)
-        self.means = np.array(means, dtype=float)
-        self.stds = np.array(stds, dtype=float)
-        self.max_stds = max_stds
-
-    def transform(self,
-                  chip: np.ndarray,
-                  channel_order: Optional[Sequence[int]] = None) -> np.ndarray:
-        if chip.dtype == np.uint8:
-            return chip
-
-        means = self.means
-        stds = self.stds
-        max_stds = self.max_stds
-        if channel_order is not None:
-            means = means[channel_order]
-            stds = stds[channel_order]
-
-        # Don't transform NODATA zero values.
-        nodata_mask = chip == 0
-
-        # Convert chip to float (if not already)
-        chip = chip.astype(float)
-
-        # Subtract mean and divide by std to get z-scores.
-        for i in range(chip.shape[-1]):  # Loop over channels
-            chip[..., i] -= means[i]
-            chip[..., i] /= stds[i]
-
-        # Apply max_stds clipping
-        chip = np.clip(chip, -max_stds, max_stds)
-        
-        # Normalise to [0, 1]
-        # chip = (chip - chip.min()) / (chip.max() - chip.min())
-    
-        # Normalize to have standard deviation of 1
-        for i in range(chip.shape[-1]):
-            chip[..., i] /= np.std(chip[..., i])
-
-        chip[nodata_mask] = 0
-        
-        return chip
-
-    @classmethod
-    def from_raster_sources(cls,
-                            raster_sources: List['RasterSource'],
-                            sample_prob: Optional[float] = 0.1,
-                            max_stds: float = 3.,
-                            chip_sz: int = 300) -> 'CustomStatsTransformer':
-        stats = RasterStats()
-        stats.compute(
-            raster_sources=raster_sources,
-            sample_prob=sample_prob,
-            chip_sz=chip_sz)
-        stats_transformer = cls.from_raster_stats(
-            stats, max_stds=max_stds)
-        return stats_transformer
-    
-    @classmethod
-    def from_raster_stats(cls, stats: RasterStats,
-                          max_stds: float = 3.) -> 'CustomStatsTransformer':
-        stats_transformer = cls(stats.means, stats.stds, max_stds=max_stds)
-        return stats_transformer
-    
 label_uri = "../../data/0/SantoDomingo3857.geojson"
 image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
 buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
 
+label_uriGC = "../../data/SHP/Guatemala_PS.shp"
+image_uriGC = '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
+buildings_uriGC = '../../data/0/overture/GT_buildings3857.geojson'
+
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
+
 sentinel_source_normalized, sentinel_label_raster_source = create_sentinel_raster_source(image_uri, label_uri, class_config, clip_to_label_source=True)
 rasterized_buildings_source, buildings_label_source, crs_transformer_buildings = create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5)    
+
+sentinel_source_normalizedGC, sentinel_label_raster_sourceGC = create_sentinel_raster_source(image_uriGC, label_uriGC, class_config, clip_to_label_source=True)
+rasterized_buildings_sourceGC, buildings_label_sourceGC, crs_transformer_buildingsGC = create_buildings_raster_source(buildings_uriGC, image_uriGC, label_uriGC, class_config, resolution=5)    
 
 if not torch.backends.mps.is_available():
     if not torch.backends.mps.is_built():
@@ -247,15 +189,36 @@ SentinelScene = Scene(
         raster_source = sentinel_source_normalized,
         label_source = sentinel_label_raster_source)
         # aoi_polygons=[pixel_polygon])
+        
+SentinelSceneGC = Scene(
+        id='GC_sentinel',
+        raster_source = sentinel_source_normalizedGC,
+        label_source = sentinel_label_raster_sourceGC)
 
 BuildingsScence = Scene(
         id='santodomingo_buildings',
         raster_source = rasterized_buildings_source,
         label_source = buildings_label_source)
 
+BuildingsScenceGC = Scene(
+        id='GC_buildings',
+        raster_source = rasterized_buildings_sourceGC,
+        label_source = buildings_label_sourceGC)
+
 buildingsGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(BuildingsScence, imgsize=288, stride = 288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 sentinelGeoDataset, train_sentinel_dataset, val_sentinel_dataset, test_sentinel_dataset = create_datasets(SentinelScene, imgsize=144, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-batch_size= 8
+buildingsGeoDatasetGC, train_buildings_datasetGC, val_buildings_datasetGC, test_buildings_datasetGC = create_datasets(BuildingsScenceGC, imgsize=288, stride = 288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+sentinelGeoDatasetGC, train_sentinel_datasetGC, val_sentinel_datasetGC, test_sentinel_datasetGC = create_datasets(SentinelSceneGC, imgsize=144, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+SDGC_sentinel_train_ds = ConcatDataset([train_sentinel_dataset, train_sentinel_datasetGC])
+SDGC_sentinel_val_ds = ConcatDataset([val_sentinel_dataset, val_sentinel_datasetGC])
+SDGC_sentinel_test_ds = ConcatDataset([test_sentinel_dataset, test_sentinel_datasetGC])
+
+SDGC_build_train_ds = ConcatDataset([train_buildings_dataset, train_buildings_datasetGC])
+SDGC_build_val_ds = ConcatDataset([val_buildings_dataset, val_buildings_datasetGC])
+SDGC_build_test_ds = ConcatDataset([test_buildings_dataset, test_buildings_datasetGC])
+
+batch_size = 16
 
 # num_workers = 11
 # train_sentinel_loader = DataLoader(train_sentinel_dataset, batch_size=batch_size, shuffle=False)#, num_workers=num_workers)
@@ -284,7 +247,7 @@ batch_size= 8
 # assert len(val_sentinel_loader) == len(val_buildings_loader), "DataLoaders must have the same length"
 
 # Other approach for dataloading # Concatenate datasets
-class ConcatDataset(Dataset):
+class MergeDataset(Dataset):
     def __init__(self, *datasets):
         self.datasets = datasets
 
@@ -293,12 +256,15 @@ class ConcatDataset(Dataset):
 
     def __len__(self):
         return min(len(d) for d in self.datasets)
+# when one city for training
+# train_dataset = MergeDataset(train_sentinel_dataset, train_buildings_dataset)
+# val_dataset = MergeDataset(val_sentinel_dataset, val_buildings_dataset)
 
-train_dataset = ConcatDataset(train_sentinel_dataset, train_buildings_dataset)
-val_dataset = ConcatDataset(val_sentinel_dataset, val_buildings_dataset)
+train_dataset = MergeDataset(SDGC_sentinel_train_ds, SDGC_build_train_ds)
+val_dataset = MergeDataset(SDGC_sentinel_val_ds, SDGC_build_val_ds)
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True) #, num_workers=num_workers)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)#, num_workers=num_workers)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
 channel_display_groups_sent = {'RGB': (0,1,2), 'NIR': (3, )}
 channel_display_groups_build = {'Buildings': (0,)}
@@ -333,149 +299,8 @@ class MultiModalDataModule(LightningDataModule):
 data_module = MultiModalDataModule(train_loader, val_loader)
 
 # Train the model
-class MultiModalSegmentationModel(pl.LightningModule):
-    def __init__(self):
-        super().__init__()
-        
-        self.learning_rate = 1e-4
-        self.weight_decay = 0
-        self.sentinel_encoder = deeplabv3_resnet50(pretrained=False, progress=False)
-        self.buildings_encoder = deeplabv3_resnet50(pretrained=False, progress=True)
-        
-        self.sentinel_encoder.backbone.conv1 = nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        self.buildings_encoder.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        
-        # Intermediate Layer Getters
-        self.sentinel_encoder_backbone = IntermediateLayerGetter(self.sentinel_encoder.backbone, {'layer4': 'out_sent', 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
-        self.buildings_encoder_backbone = IntermediateLayerGetter(self.buildings_encoder.backbone, {'layer4': 'out_buil', 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
-        self.buildings_downsampler = nn.Conv2d(2048, 2048, kernel_size=2, stride=2)
-
-        self.segmentation_head = DeepLabHead(in_channels=2048*2, num_classes=1, atrous_rates=(6, 12, 24))
-             
-    def forward(self, batch):
-
-        sentinel_batch, buildings_batch = batch
-        buildings_data, buildings_labels = buildings_batch
-        sentinel_data, _ = sentinel_batch
-        
-        # Move data to the device
-        sentinel_data = sentinel_data.to(self.device)
-        buildings_data = buildings_data.to(self.device)
-        buildings_labels = buildings_labels.to(self.device)
-        
-        sentinel_features = self.sentinel_encoder_backbone(sentinel_data)
-        buildings_features = self.buildings_encoder_backbone(buildings_data)
-        
-        sentinel_out = sentinel_features['out_sent']
-        buildings_out = buildings_features['out_buil']
-        buildings_out_downsampled = self.buildings_downsampler(buildings_out)
-        
-        # print("Output of sent backbone out: ", sentinel_out.shape)
-        # print("Output of sent backbone layer3: ", sentinel_features['layer3'].shape)
-        # print("Output of sent backbone layer2: ", sentinel_features['layer2'].shape)
-        # print("Output of sent backbone layer1: ", sentinel_features['layer1'].shape)
-        # print("")
-        # print("Output of build backbone out (before downsampling): ", buildings_out.shape)
-        # print("Output of build backbone out (after downsampling): ", buildings_out_downsampled.shape)
-        # print("Output of build backbone layer3: ", buildings_features['layer3'].shape)
-        # print("Output of build backbone layer2: ", buildings_features['layer2'].shape)
-        # print("Output of build backbone layer1: ", buildings_features['layer1'].shape)
-        
-        concatenated_features = torch.cat([sentinel_out, buildings_out_downsampled], dim=1)
-        
-        # Decode the fused features
-        segmentation = self.segmentation_head(concatenated_features)
-        
-        segmentation = F.interpolate(segmentation, size=288, mode="bilinear", align_corners=False)
-        
-        return segmentation.squeeze()
-    
-    def training_step(self, batch):
-        
-        _, buildings_batch = batch
-        _, buildings_labels = buildings_batch
-
-        segmentation = self.forward(batch)
-        
-        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        loss = loss_fn(segmentation, buildings_labels.float())
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, buildings_labels)
-        
-        self.log('train_loss', loss)
-        self.log('train_mean_iou', mean_iou)
-                
-        return loss
-    
-    def validation_step(self, batch):
-        _, buildings_batch = batch
-        _, buildings_labels = buildings_batch
-
-        segmentation = self.forward(batch)      
-        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        val_loss = loss_fn(segmentation, buildings_labels.float())
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, buildings_labels)
-        
-        self.log('val_mean_iou', mean_iou)
-        self.log('val_loss', val_loss, prog_bar=True, logger=True)
-        
-    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
-        _, buildings_batch = batch
-        _, buildings_labels = buildings_batch
-
-        segmentation = self.forward(batch)     
-        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        test_loss = loss_fn(segmentation, buildings_labels)
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, buildings_labels)
-
-        self.log('test_loss', test_loss)
-        self.log('test_mean_iou', mean_iou)
-        
-    def compute_mean_iou(self, preds, target):
-        preds = preds.bool()
-        target = target.bool()
-        smooth = 1e-6
-        intersection = (preds & target).float().sum((1, 2))
-        union = (preds | target).float().sum((1, 2))
-        iou = (intersection + smooth) / (union + smooth)
-        return iou.mean()
-
-    def configure_optimizers(self) -> dict:
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay
-        )
-
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=10,  # adjust step_size to your needs
-            gamma=0.1      # adjust gamma to your needs
-        )
-
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'epoch',
-                'frequency': 1
-            }
-        }
-    
 model = MultiModalSegmentationModel()
 model.to(device)
-# model.train()
 
 for batch_idx, batch in enumerate(data_module.train_dataloader()):
     sentinel_batch, buildings_batch = batch
@@ -493,7 +318,7 @@ for batch_idx, batch in enumerate(data_module.train_dataloader()):
     print(f"Segmentation output shape: {model_out.shape}")
     break  # Exit after the first batch for brevity
 
-output_dir = f'../../UNITAC-trained-models/multi_modal/'
+output_dir = f'../../UNITAC-trained-models/multi_modal/trained_SD_GC/'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-multi-modal')
@@ -529,37 +354,7 @@ best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-
 best_model = MultiModalSegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
 
-class PredictionsIterator:
-    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
-        self.model = model
-        self.sentinelGeoDataset = sentinelGeoDataset
-        self.dataset = buildingsGeoDataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(sentinelGeoDataset)):
-                buildings = buildingsGeoDataset[idx]
-                sentinel = sentinelGeoDataset[idx]
-                
-                sentinel_data = sentinel[0].unsqueeze(0).to(device)
-                sentlabels = sentinel[1].unsqueeze(0).to(device)
-
-                buildings_data = buildings[0].unsqueeze(0).to(device)
-                labels = buildings[1].unsqueeze(0).to(device)
-
-                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = buildingsGeoDataset.windows[idx]
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
-    
-predictions_iterator = PredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
+predictions_iterator = MultiModalPredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Ensure windows are Box instances
@@ -591,7 +386,7 @@ vector_output_config = CustomVectorOutputConfig(
     threshold=0.5)
 
 pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/multi-modal/SD_only/',
+    uri='../../vectorised_model_predictions/multi-modal/SD_GC/',
     crs_transformer = crs_transformer_buildings,
     class_config = class_config,
     vector_outputs = [vector_output_config],
@@ -834,7 +629,7 @@ affine_transform_buildings = Affine(5, 0, common_xmin_3857, 0, -5, common_ymax_3
 crs_transformer_HT.transform = affine_transform_buildings
 
 pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/multi-modal/SD_only/Haiti_portauprincenostride/',
+    uri='../../vectorised_model_predictions/multi-modal/SD_GC/Haiti_portauprincenostride/',
     crs_transformer = crs_transformer_HT,
     class_config = class_config,
     vector_outputs = [vector_output_config],

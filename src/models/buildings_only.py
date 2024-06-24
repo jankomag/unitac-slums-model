@@ -77,11 +77,14 @@ from rastervision.core.data import (VectorSource, XarraySource,
                                     IdentityCRSTransformer, RasterioCRSTransformer,
                                     RasterioCRSTransformer)
 
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
+from src.models.model_definitions import (BuildingsOnlyDeeplabv3SegmentationModel, BuildingsOnlyPredictionsIterator)
 from deeplnafrica.deepLNAfrica import init_segm_model
+
 import folium
 
 from src.data.dataloaders import (
@@ -187,33 +190,20 @@ rasterized_buildings_sourceSD, buildings_label_sourceSD, crs_transformer_SD = cr
 # buildings_uri_GC = '../../data/0/overture/GT_buildings3857.geojson'
 # gpd.read_file(buildings_uri_GC)
 # rasterized_buildings_sourceGC, buildings_label_sourceGC, crs_transformer_GC = create_buildings_raster_source(buildings_uri_GC, image_uri_GC, label_uri_GC, class_config, resolution=5)
-
-# gdf = gpd.read_file(label_uri)
-# gdf = gdf.to_crs('EPSG:3857')
-# xmin, ymin, xmax, ymax = gdf.total_bounds
-# pixel_polygon = Polygon([
-#     (xmin, ymin),
-#     (xmin, ymax),
-#     (xmax, ymax),
-#     (xmax, ymin),
-#     (xmin, ymin)
-# ])
+# BuildingsScenceGC = Scene(
+#         id='guatemalacity_buildings',
+#         raster_source = rasterized_buildings_sourceGC,
+#         label_source = buildings_label_sourceGC)
+# buildingsGeoDatasetGC, train_buildings_datasetGC, val_buildings_datasetGC, test_buildings_datasetGC = create_datasets(
+#     BuildingsScenceGC, imgsize=288, stride = 288, padding=0, val_ratio=0.3, test_ratio=0.1, seed=42)
 
 BuildingsScenceSD = Scene(
         id='santodomingo_buildings',
         raster_source = rasterized_buildings_sourceSD,
         label_source = buildings_label_sourceSD)
 
-# BuildingsScenceGC = Scene(
-#         id='guatemalacity_buildings',
-#         raster_source = rasterized_buildings_sourceGC,
-#         label_source = buildings_label_sourceGC)
-
-# buildingsGeoDatasetGC, train_buildings_datasetGC, val_buildings_datasetGC, test_buildings_datasetGC = create_datasets(
-#     BuildingsScenceGC, imgsize=288, stride = 288, padding=0, val_ratio=0.3, test_ratio=0.1, seed=42)
-
 buildingsGeoDatasetSD, train_buildings_datasetSD, val_buildings_datasetSD, test_buildings_datasetSD = create_datasets(
-    SentinelScene, imgsize=288, stride = 288, padding=0, val_ratio=0.3, test_ratio=0.1, seed=42)
+    BuildingsScenceSD, imgsize=288, stride = 144, padding=0, val_ratio=0.3, test_ratio=0.1, seed=42)
 
 # combined_train_dataset = ConcatDataset([train_buildings_datasetSD, train_buildings_datasetGC])
 # combined_val_dataset = ConcatDataset([val_buildings_datasetSD, val_buildings_datasetGC])
@@ -248,121 +238,6 @@ else:
     print("MPS is available.")
 
 # Model definition
-class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
-    def __init__(self,
-                num_bands: int = 1,
-                learning_rate: float = 1e-4,
-                weight_decay: float = 1e-4,
-                # pos_weight: torch.Tensor = torch.tensor([1.0, 1.0], device='mps'),
-                pretrained_checkpoint: Optional[Path] = None) -> None:
-        super().__init__()
-
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        # self.pos_weight = pos_weight
-        self.segm_model = init_segm_model(num_bands)
-        
-        if pretrained_checkpoint:
-            pretrained_dict = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
-            model_dict = self.state_dict()
-
-            # Filter out unnecessary keys and convert to float32
-            pretrained_dict = {k: v.float() if v.dtype == torch.float64 else v for k, v in pretrained_dict.items() if k in model_dict and 'backbone.conv1.weight' not in k}
-            model_dict.update(pretrained_dict)
-            self.load_state_dict(model_dict)
-
-            # Special handling for the first convolutional layer
-            if num_bands == 1:
-                conv1_weight = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']['segm_model.backbone.conv1.weight']
-                new_weight = conv1_weight.mean(dim=1, keepdim=True).float()  # Ensure float32 dtype
-                with torch.no_grad():
-                    self.segm_model.backbone.conv1.weight[:, 0] = new_weight.squeeze(1)
-
-        self.save_hyperparameters(ignore='pretrained_checkpoint')
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.segm_model(x)['out'].squeeze(dim=1)
-        # print(f"The shape of the model output before premutation {x.shape}")
-        # x = x.permute(0, 2, 3, 1)
-        # print(f"The shape of the model output after premutation  {x.shape}")
-        return x
-
-    def compute_mean_iou(self, preds, target):
-        preds = preds.bool()
-        target = target.bool()
-        smooth = 1e-6
-        intersection = (preds & target).float().sum((1, 2))
-        union = (preds | target).float().sum((1, 2))
-        iou = (intersection + smooth) / (union + smooth)
-        return iou.mean()
-
-    def training_step(self, batch, batch_idx):
-        img, groundtruth = batch
-        segmentation = self(img)
-        groundtruth = groundtruth.float()
-        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        loss = loss_fn(segmentation, groundtruth)
-
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, groundtruth)
-
-        self.log('train_loss', loss)
-        self.log('train_mean_iou', mean_iou)
-
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        img, groundtruth = batch
-        groundtruth = groundtruth.float()
-        segmentation = self(img)
-        
-        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
-        loss = loss_fn(segmentation, groundtruth)
-
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, groundtruth)
-
-        self.log('val_loss', loss)
-        self.log('val_mean_iou', mean_iou.item())
-
-
-    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
-        img, groundtruth = batch
-        segmentation = self(img.to(device))
-
-        informal_gt = groundtruth[:, 0, :, :].float().to(device)
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
-        loss = loss_fn(segmentation, informal_gt)
-
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, informal_gt)
-
-        self.log('test_loss', loss)
-        self.log('test_mean_iou', mean_iou)
-
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        optimizer = AdamW(
-            self.segm_model.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay
-        )
-
-        scheduler = MultiStepLR(optimizer, milestones=[6, 12], gamma=0.3)
-
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'epoch',
-                'frequency': 1
-            }
-        }
-        
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 output_dir = f'../../UNITAC-trained-models/buildings_only/'
 os.makedirs(output_dir, exist_ok=True)
@@ -398,37 +273,15 @@ model.to(device)
 trainer.fit(model, train_dl, val_dl)
 
 # Use best model for evaluation
-# best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=09-val_loss=0.1590.ckpt"
-best_model_path = checkpoint_callback.best_model_path
+best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=09-val_loss=0.1590.ckpt"
+# best_model_path = checkpoint_callback.best_model_path
 best_model = BuildingsOnlyDeeplabv3SegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
 
 #  Make predictions
-class PredictionsIterator:
-    def __init__(self, model, dataset, device='cuda'):
-        self.model = model
-        self.dataset = dataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(dataset)):
-                image, _ = dataset[idx]
-                image = image.unsqueeze(0).to(device)
 
-                output = self.model(image)
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = dataset.windows[idx]
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
-    
 buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScenceSD, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-predictions_iterator = PredictionsIterator(best_model, buildingsGeoDataset, device=device)
+predictions_iterator = BuildingsOnlyPredictionsIterator(best_model, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
@@ -462,6 +315,17 @@ pred_label_store = SemanticSegmentationLabelStore(
 
 pred_label_store.save(pred_labels)
 
+# Evaluate predictions
+from rastervision.core.evaluation import SemanticSegmentationEvaluator
+
+evaluator = SemanticSegmentationEvaluator(class_config)
+gt_labels = BuildingsScenceSD.label_source.get_labels()
+evaluation = evaluator.evaluate_predictions(
+    ground_truth=gt_labels, predictions=pred_labels)
+eval_metrics_dict = evaluation.class_to_eval_item[0]
+f1_score = eval_metrics_dict.f1
+f1_score
+
 # Map interactive visualization
 predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/2/vector_output/class-1-slums.json'
 label_uri = "../../data/0/SantoDomingo3857.geojson"
@@ -471,6 +335,8 @@ m = folium.Map(location=[gdf.geometry[0].centroid.y, gdf.geometry[0].centroid.x]
 folium.GeoJson(gdf).add_to(m) 
 folium.GeoJson(extent_gdf, style_function=lambda x: {'color':'red'}).add_to(m)
 m
+
+
 
 ### Make predictions on another city ###
 image_uri = '../../data/0/sentinel_Gee/HTI_Tabarre_2023.tif'
@@ -516,10 +382,3 @@ pred_label_store = SemanticSegmentationLabelStore(
     discrete_output = True)
 
 pred_label_store.save(pred_labels_HT)
-
-predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/GT/vector_output/class-1-slums.json'
-gdf = gpd.read_file(predspath)
-m = folium.Map(location=[gdf.geometry[0].centroid.y, gdf.geometry[0].centroid.x], zoom_start=12)
-folium.GeoJson(gdf).add_to(m) 
-folium.GeoJson(extent_gdf, style_function=lambda x: {'color':'red'}).add_to(m)
-m

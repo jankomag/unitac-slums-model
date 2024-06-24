@@ -43,15 +43,17 @@ from torch.utils.data import ConcatDataset
 # Project-specific imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-# grandparent_dir = os.path.dirname(parent_dir)
+grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(parent_dir)
+sys.path.append(grandparent_dir)
 
 from deeplnafrica.deepLNAfrica import init_segm_model
-
 from src.data.dataloaders import (
+    query_buildings_data,
     create_datasets,
     create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
 )
+from src.models.model_definitions import (CustomGeoJSONVectorSource, MultiModalSegmentationModel)
 
 from rastervision.core.raster_stats import RasterStats
 from rastervision.core.data.raster_transformer import RasterTransformer
@@ -265,205 +267,6 @@ class CustomStatsTransformer(RasterTransformer):
         stats_transformer = cls(stats.means, stats.stds, max_stds=max_stds)
         return stats_transformer
     
-# implements loading gdf - class CustomGeoJSONVectorSource
-class CustomGeoJSONVectorSource(VectorSource):
-    """A :class:`.VectorSource` for reading GeoJSON files or GeoDataFrames."""
-
-    def __init__(self,
-                 crs_transformer: 'CRSTransformer',
-                 uris: Optional[Union[str, List[str]]] = None,
-                 gdf: Optional[gpd.GeoDataFrame] = None,
-                 vector_transformers: List['VectorTransformer'] = [],
-                 bbox: Optional[Box] = None):
-        """Constructor.
-
-        Args:
-            uris (Optional[Union[str, List[str]]]): URI(s) of the GeoJSON file(s).
-            gdf (Optional[gpd.GeoDataFrame]): A GeoDataFrame with vector data.
-            crs_transformer: A ``CRSTransformer`` to convert
-                between map and pixel coords. Normally this is obtained from a
-                :class:`.RasterSource`.
-            vector_transformers: ``VectorTransformers`` for transforming
-                geometries. Defaults to ``[]``.
-            bbox (Optional[Box]): User-specified crop of the extent. If None,
-                the full extent available in the source file is used.
-        """
-        self.uris = listify_uris(uris) if uris is not None else None
-        self.gdf = gdf
-        super().__init__(
-            crs_transformer,
-            vector_transformers=vector_transformers,
-            bbox=bbox)
-
-    def _get_geojson(self) -> dict:
-        if self.gdf is not None:
-            # Convert GeoDataFrame to GeoJSON
-            df = self.gdf.to_crs('epsg:4326')
-            geojson = df.__geo_interface__
-        elif self.uris is not None:
-            geojsons = [self._get_geojson_single(uri) for uri in self.uris]
-            geojson = merge_geojsons(geojsons)
-        else:
-            raise ValueError("Either 'uris' or 'gdf' must be provided.")
-        return geojson
-
-    def _get_geojson_single(self, uri: str) -> dict:
-        # download first so that it gets cached
-        path = download_if_needed(uri)
-        df: gpd.GeoDataFrame = gpd.read_file(path)
-        df = df.to_crs('epsg:4326')
-        geojson = df.__geo_interface__
-        return geojson
-
-# Model definition
-class MultiModalSegmentationModel(pl.LightningModule):
-    def __init__(self):
-        super().__init__()
-        
-        self.learning_rate = 1e-4
-        self.weight_decay = 0
-        self.sentinel_encoder = deeplabv3_resnet50(pretrained=False, progress=False)
-        self.buildings_encoder = deeplabv3_resnet50(pretrained=False, progress=True)
-        
-        self.sentinel_encoder.backbone.conv1 = nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        self.buildings_encoder.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        
-        # Intermediate Layer Getters
-        self.sentinel_encoder_backbone = IntermediateLayerGetter(self.sentinel_encoder.backbone, {'layer4': 'out_sent', 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
-        self.buildings_encoder_backbone = IntermediateLayerGetter(self.buildings_encoder.backbone, {'layer4': 'out_buil', 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
-        self.buildings_downsampler = nn.Conv2d(2048, 2048, kernel_size=2, stride=2)
-
-        self.segmentation_head = DeepLabHead(in_channels=2048*2, num_classes=1, atrous_rates=(6, 12, 24))
-             
-    def forward(self, batch):
-
-        sentinel_batch, buildings_batch = batch
-        buildings_data, buildings_labels = buildings_batch
-        sentinel_data, _ = sentinel_batch
-        
-        # Move data to the device
-        sentinel_data = sentinel_data.to(self.device)
-        buildings_data = buildings_data.to(self.device)
-        buildings_labels = buildings_labels.to(self.device)
-        
-        sentinel_features = self.sentinel_encoder_backbone(sentinel_data)
-        buildings_features = self.buildings_encoder_backbone(buildings_data)
-        
-        sentinel_out = sentinel_features['out_sent']
-        buildings_out = buildings_features['out_buil']
-        buildings_out_downsampled = self.buildings_downsampler(buildings_out)
-        
-        concatenated_features = torch.cat([sentinel_out, buildings_out_downsampled], dim=1)
-        
-        # Decode the fused features
-        segmentation = self.segmentation_head(concatenated_features)
-        
-        segmentation = F.interpolate(segmentation, size=288, mode="bilinear", align_corners=False)
-        
-        return segmentation.squeeze()
-    
-    def training_step(self, batch):
-        
-        _, buildings_batch = batch
-        _, buildings_labels = buildings_batch
-
-        segmentation = self.forward(batch)
-        
-        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        loss = loss_fn(segmentation, buildings_labels.float())
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, buildings_labels)
-        
-        self.log('train_loss', loss)
-        self.log('train_mean_iou', mean_iou)
-                
-        return loss
-    
-    def validation_step(self, batch):
-        _, buildings_batch = batch
-        _, buildings_labels = buildings_batch
-
-        segmentation = self.forward(batch)      
-        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        val_loss = loss_fn(segmentation, buildings_labels.float())
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, buildings_labels)
-        
-        self.log('val_mean_iou', mean_iou)
-        self.log('val_loss', val_loss, prog_bar=True, logger=True)
-        
-    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
-        _, buildings_batch = batch
-        _, buildings_labels = buildings_batch
-
-        segmentation = self.forward(batch)     
-        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        test_loss = loss_fn(segmentation, buildings_labels)
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, buildings_labels)
-
-        self.log('test_loss', test_loss)
-        self.log('test_mean_iou', mean_iou)
-        
-    def compute_mean_iou(self, preds, target):
-        preds = preds.bool()
-        target = target.bool()
-        smooth = 1e-6
-        intersection = (preds & target).float().sum((1, 2))
-        union = (preds | target).float().sum((1, 2))
-        iou = (intersection + smooth) / (union + smooth)
-        return iou.mean()
-
-    def configure_optimizers(self) -> dict:
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay
-        )
-
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=10,  # adjust step_size to your needs
-            gamma=0.1      # adjust gamma to your needs
-        )
-
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'epoch',
-                'frequency': 1
-            }
-        }
-    
-def query_buildings_data(con, xmin, ymin, xmax, ymax):
-    query = f"""
-        SELECT *
-        FROM buildings
-        WHERE bbox.xmin > {xmin}
-          AND bbox.xmax < {xmax}
-          AND bbox.ymin > {ymin}
-          AND bbox.ymax < {ymax};
-    """
-    buildings_df = pd.read_sql(query, con=con)
-
-    if not buildings_df.empty:
-        buildings = gpd.GeoDataFrame(buildings_df, geometry=gpd.GeoSeries.from_wkb(buildings_df.geometry.apply(bytes)), crs='EPSG:4326')
-        buildings = buildings[['id', 'geometry']]
-        buildings = buildings.to_crs("EPSG:3857")
-        buildings['class_id'] = 1
-
-    return buildings
-
 def rasterise_buildings(image_uri, buildings, xmin, ymax, resolution = 5):
     crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
     affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymax)
@@ -570,7 +373,7 @@ def save_predictions(model, sent_ds, buil_ds, build_scene, crs_transformer, coun
 
     pred_label_store.save(pred_labels)
 
-best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/multimodal_runidrun_id=0-batch_size=00-epoch=15-val_loss=0.2595.ckpt"
+best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/trained_SD_GC/multimodal_runidrun_id=0-batch_size=00-epoch=17-val_loss=0.1598.ckpt"
 best_model = MultiModalSegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
 
@@ -590,8 +393,7 @@ sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.
 gdf = gpd.read_parquet(sica_cities)
 gdf = gdf.to_crs('EPSG:3857')
 
-gdf = gdf.tail(2)
-for index, row in gdf.iterrows():
+for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
     country_code = row['iso3']
     print("Doing predictions for: ", city_name, country_code)
@@ -636,3 +438,37 @@ for index, row in gdf.iterrows():
 
     save_predictions(best_model, sent_ds, buil_ds, build_scene, crs_transformer_buildings, country_code, city_name)
     print(f"Saved predictions data for {city_name}, {country_code}")
+    
+    
+# Merge geojson for cities
+def merge_geojson_files(country_directory, output_file):
+    # Create an empty GeoDataFrame with an appropriate schema
+    merged_gdf = gpd.GeoDataFrame()
+    
+    # Traverse the directory structure
+    for city in os.listdir(country_directory):
+        city_path = os.path.join(country_directory, city)
+        vector_output_path = os.path.join(city_path, 'vector_output')
+        
+        if os.path.isdir(vector_output_path):
+            # Find the .json file in the vector_output directory
+            for file in os.listdir(vector_output_path):
+                if file.endswith('.json'):
+                    file_path = os.path.join(vector_output_path, file)
+                    # Load the GeoJSON file into a GeoDataFrame
+                    gdf = gpd.read_file(file_path)
+                    # Add the city name as an attribute to each feature
+                    gdf['city'] = city
+                    # Append to the merged GeoDataFrame
+                    merged_gdf = pd.concat([merged_gdf, gdf], ignore_index=True)
+    
+    # Save the merged GeoDataFrame to a GeoJSON file
+    merged_gdf.to_file(output_file, driver='GeoJSON')
+    print(f'Merged GeoJSON file saved to {output_file}')
+
+# Specify the country directory and the output file path
+country_directory = '../vectorised_model_predictions/multi-modal/SD_GC/SLV/'
+output_file = os.path.join(country_directory, 'SLV_multimodal_SDGC.geojson')
+
+# Merge the GeoJSON files
+merge_geojson_files(country_directory, output_file)

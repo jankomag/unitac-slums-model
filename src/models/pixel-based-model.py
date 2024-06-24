@@ -35,7 +35,7 @@ buildings['area'] = buildings.geometry.area
 buildings['area_reciprocal'] = 100 / buildings.area
 
 # Define raster properties
-resolution = 5
+resolution = 100
 xmin, ymin, xmax, ymax = buildings.total_bounds
 width = int((xmax - xmin) / resolution)
 height = int((ymax - ymin) / resolution)
@@ -52,14 +52,14 @@ raster = features.rasterize(
 )
 
 # Define Gaussian kernel
-kernel_radius_pixels = int(5 / resolution)
-sigma = 5/kernel_radius_pixels
+kernel_radius_pixels = int(600 / resolution)
+sigma =20/kernel_radius_pixels
 
 # Apply Gaussian filter to get density
 density = gaussian_filter(raster, sigma=sigma)
 
 # Save the density raster
-density_path = '../../data/1/pixelbasedmodel/SDbuilding_density.tif'
+density_path = '../../data/1/pixelbasedmodel/SDbuilding_density_30m.tif'
 with rasterio.open(density_path, 'w', driver='GTiff',
                    height=height, width=width,
                    count=1, dtype=density.dtype,
@@ -211,7 +211,7 @@ def create_features_and_labels(sentinel_data, density_data, labels_gdf, profile)
     return features.reshape((-1, features.shape[0])), labels.flatten()
     
 features, labels = create_features_and_labels(sentinel_data, density_data, labels_gdf, sentinel_profile)
-    
+
 # Plot RGB bands
 rgb = sentinel_data[:3,:,:].transpose(1, 2, 0)
 plt.imshow(rgb)
@@ -224,13 +224,16 @@ X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=
 
 # Create and train the model
 def create_and_evaluate_model(X, y):
+    # Ensure X is in the correct shape (n_samples, n_features)
+    if X.shape[1] != 5:
+        X = X.reshape(-1, 5)
     
     # Create model with adjusted hyperparameters
     rf_model = RandomForestClassifier(
         n_estimators=200,
-        min_samples_split=5,
-        min_samples_leaf=2,
-        max_depth=20,
+        min_samples_split=100,
+        min_samples_leaf=50,
+        max_depth=15,
         random_state=42
     )
 
@@ -244,9 +247,11 @@ def create_and_evaluate_model(X, y):
 
     return rf_model
 
+model = create_and_evaluate_model(features, labels)
+
 def predict_and_visualize(model, features, profile):
-    # Reshape features to 2D array
-    features_2d = features.reshape((-1, features.shape[0]))
+    # Features are already in the correct shape (n_pixels, n_features)
+    features_2d = features  # No need to transpose
 
     # Make predictions
     predictions_proba = model.predict_proba(features_2d)[:, 1]
@@ -272,7 +277,7 @@ def predict_and_visualize(model, features, profile):
 
     return predictions_proba_2d, predictions_binary_2d
 
-model = create_and_evaluate_model(features, labels)
+features.shape
 prob_map, binary_map = predict_and_visualize(model, features, sentinel_profile)
 
 def vectorize_predictions(binary_map, profile):
@@ -291,4 +296,4 @@ def save_to_geojson(gdf, output_path):
 predicted_polygons = vectorize_predictions(binary_map, sentinel_profile)
 save_to_geojson(predicted_polygons, 'pixelbased-predicted_polygons.geojson')()
 
-joblib.dump(model, '../../../UNITAC-trained-models/pixel-based_basemodel/trained_rf_model.joblib')
+joblib.dump(model, '../../UNITAC-trained-models/pixel-based_basemodel/trained_rf_model.joblib')
