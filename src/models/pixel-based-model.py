@@ -21,6 +21,8 @@ from sklearn.feature_selection import SelectFromModel
 from rasterio.features import shapes
 from sklearn.model_selection import cross_val_score
 import joblib
+from scipy.ndimage import uniform_filter
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 # Load the building footprints GeoDataFrame
 buildings_uri_SD = '../../data/0/overture/santodomingo_buildings.geojson'
@@ -35,13 +37,13 @@ buildings['area'] = buildings.geometry.area
 buildings['area_reciprocal'] = 100 / buildings.area
 
 # Define raster properties
-resolution = 100
+# Rasterize the buildings using area_reciprocal as the burn value
+resolution = 10
 xmin, ymin, xmax, ymax = buildings.total_bounds
 width = int((xmax - xmin) / resolution)
 height = int((ymax - ymin) / resolution)
 transform = rasterio.transform.from_bounds(xmin, ymin, xmax, ymax, width, height)
 
-# Rasterize the buildings using area_reciprocal as the burn value
 raster = features.rasterize(
     [(geom, value) for geom, value in zip(buildings.geometry, buildings.area_reciprocal)],
     out_shape=(height, width),
@@ -52,11 +54,8 @@ raster = features.rasterize(
 )
 
 # Define Gaussian kernel
-kernel_radius_pixels = int(600 / resolution)
-sigma =20/kernel_radius_pixels
-
-# Apply Gaussian filter to get density
-density = gaussian_filter(raster, sigma=sigma)
+kernel_size = int(300 / resolution)
+density = uniform_filter(raster, size=kernel_size, mode='constant')
 
 # Save the density raster
 density_path = '../../data/1/pixelbasedmodel/SDbuilding_density_30m.tif'
@@ -83,8 +82,8 @@ with rasterio.open(density_path) as src:
     ax.set_ylabel('Latitude')
     plt.show()
 
-# Print some basic information about the raster
 print(f"Raster shape: {raster_data.shape}")
+
 
 
 ### Prepare data for the Random Forest model ###
@@ -211,6 +210,10 @@ def create_features_and_labels(sentinel_data, density_data, labels_gdf, profile)
     return features.reshape((-1, features.shape[0])), labels.flatten()
     
 features, labels = create_features_and_labels(sentinel_data, density_data, labels_gdf, sentinel_profile)
+features.shape, labels.shape
+
+scaler = StandardScaler()
+normalized_features = scaler.fit_transform(features)
 
 # Plot RGB bands
 rgb = sentinel_data[:3,:,:].transpose(1, 2, 0)
@@ -218,9 +221,10 @@ plt.imshow(rgb)
 plt.title("Sentinel RGB Bands")
 plt.show()  
     
+
 ### RF MODEL ###
 # Split data for training
-X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.5, random_state=42)
 
 # Create and train the model
 def create_and_evaluate_model(X, y):
@@ -230,10 +234,10 @@ def create_and_evaluate_model(X, y):
     
     # Create model with adjusted hyperparameters
     rf_model = RandomForestClassifier(
-        n_estimators=200,
-        min_samples_split=100,
-        min_samples_leaf=50,
-        max_depth=15,
+        n_estimators=10,
+        min_samples_split=1000,
+        min_samples_leaf=100,
+        max_depth=10,
         random_state=42
     )
 
@@ -277,7 +281,6 @@ def predict_and_visualize(model, features, profile):
 
     return predictions_proba_2d, predictions_binary_2d
 
-features.shape
 prob_map, binary_map = predict_and_visualize(model, features, sentinel_profile)
 
 def vectorize_predictions(binary_map, profile):

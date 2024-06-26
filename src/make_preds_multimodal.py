@@ -18,7 +18,7 @@ from shapely.affinity import translate
 from torchvision.models.segmentation import deeplabv3_resnet50
 from torchvision.models.segmentation.deeplabv3 import DeepLabHead
 from torchvision.models._utils import IntermediateLayerGetter
-
+import pandas as pd
 from typing import Any, Optional, Tuple, Union, Sequence
 from pyproj import Transformer
 from rasterio.transform import rowcol, xy
@@ -365,15 +365,14 @@ def save_predictions(model, sent_ds, buil_ds, build_scene, crs_transformer, coun
     threshold=0.5)
 
     pred_label_store = SemanticSegmentationLabelStore(
-        uri=f'../../vectorised_model_predictions/multi-modal/SD_only_train/{country_code}/{city_name}_{country_code}',
+        uri=f'../../vectorised_model_predictions/multi-modal/4cit_only_train/{country_code}/{city_name}_{country_code}',
         crs_transformer = crs_transformer,
         class_config = class_config,
         vector_outputs = [vector_output_config],
         discrete_output = True)
 
     pred_label_store.save(pred_labels)
-
-best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/trained_SD_GC/multimodal_runidrun_id=0-batch_size=00-epoch=17-val_loss=0.1598.ckpt"
+best_model_path = '/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/trained_4Cit_sentinel_DLNAw_fusion_module/multimodal_runidrun_id=0-batch_size=00-epoch=06-val_loss=0.0918.ckpt'
 best_model = MultiModalSegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
 
@@ -382,6 +381,7 @@ class_config = ClassConfig(names=['background', 'slums'],
                                 null_class='background')
 
 con = duckdb.connect("../../data/0/data.db")
+
 con.install_extension('httpfs')
 con.install_extension('spatial')
 con.load_extension('httpfs')
@@ -392,12 +392,13 @@ con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=htt
 sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
 gdf = gpd.read_parquet(sica_cities)
 gdf = gdf.to_crs('EPSG:3857')
+gdf = gdf[gdf['city_ascii'] == 'Tabarre']
 
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
     country_code = row['iso3']
     print("Doing predictions for: ", city_name, country_code)
-    image_uri =  f"../../data/0/sentinel_Gee/{country_code}_{city_name}_2023.tif"
+    image_uri =  f"../data/0/sentinel_Gee/{country_code}_{city_name}_2023.tif"
     
     # Check if the image_uri exists
     if not os.path.exists(image_uri):
@@ -440,35 +441,35 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     print(f"Saved predictions data for {city_name}, {country_code}")
     
     
-# Merge geojson for cities
-def merge_geojson_files(country_directory, output_file):
-    # Create an empty GeoDataFrame with an appropriate schema
-    merged_gdf = gpd.GeoDataFrame()
+# # Merge geojson for cities
+# def merge_geojson_files(country_directory, output_file):
+#     # Create an empty GeoDataFrame with an appropriate schema
+#     merged_gdf = gpd.GeoDataFrame()
     
-    # Traverse the directory structure
-    for city in os.listdir(country_directory):
-        city_path = os.path.join(country_directory, city)
-        vector_output_path = os.path.join(city_path, 'vector_output')
+#     # Traverse the directory structure
+#     for city in os.listdir(country_directory):
+#         city_path = os.path.join(country_directory, city)
+#         vector_output_path = os.path.join(city_path, 'vector_output')
         
-        if os.path.isdir(vector_output_path):
-            # Find the .json file in the vector_output directory
-            for file in os.listdir(vector_output_path):
-                if file.endswith('.json'):
-                    file_path = os.path.join(vector_output_path, file)
-                    # Load the GeoJSON file into a GeoDataFrame
-                    gdf = gpd.read_file(file_path)
-                    # Add the city name as an attribute to each feature
-                    gdf['city'] = city
-                    # Append to the merged GeoDataFrame
-                    merged_gdf = pd.concat([merged_gdf, gdf], ignore_index=True)
+#         if os.path.isdir(vector_output_path):
+#             # Find the .json file in the vector_output directory
+#             for file in os.listdir(vector_output_path):
+#                 if file.endswith('.json'):
+#                     file_path = os.path.join(vector_output_path, file)
+#                     # Load the GeoJSON file into a GeoDataFrame
+#                     gdf = gpd.read_file(file_path)
+#                     # Add the city name as an attribute to each feature
+#                     gdf['city'] = city
+#                     # Append to the merged GeoDataFrame
+#                     merged_gdf = pd.concat([merged_gdf, gdf], ignore_index=True)
     
-    # Save the merged GeoDataFrame to a GeoJSON file
-    merged_gdf.to_file(output_file, driver='GeoJSON')
-    print(f'Merged GeoJSON file saved to {output_file}')
+#     # Save the merged GeoDataFrame to a GeoJSON file
+#     merged_gdf.to_file(output_file, driver='GeoJSON')
+#     print(f'Merged GeoJSON file saved to {output_file}')
 
-# Specify the country directory and the output file path
-country_directory = '../vectorised_model_predictions/multi-modal/SD_GC/SLV/'
-output_file = os.path.join(country_directory, 'SLV_multimodal_SDGC.geojson')
+# # Specify the country directory and the output file path
+# country_directory = '../vectorised_model_predictions/multi-modal/SD_GC/SLV/'
+# output_file = os.path.join(country_directory, 'SLV_multimodal_SDGC.geojson')
 
-# Merge the GeoJSON files
-merge_geojson_files(country_directory, output_file)
+# # Merge the GeoJSON files
+# merge_geojson_files(country_directory, output_file)

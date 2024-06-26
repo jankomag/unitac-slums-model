@@ -11,7 +11,7 @@ from pathlib import Path
 import torch.nn as nn
 import cv2
 from os.path import join
-
+import torch.nn.functional as F
 import json
 from shapely.geometry import shape, mapping
 from shapely.affinity import translate
@@ -30,6 +30,8 @@ from datetime import datetime
 import wandb
 from pytorch_lightning import Trainer
 import pytorch_lightning as pl
+from torchvision.models.segmentation import deeplabv3_resnet50
+from collections import OrderedDict
 
 from typing import Iterator, Optional
 from torch.optim import AdamW
@@ -70,7 +72,8 @@ from pyproj import Transformer
 from rasterio.transform import rowcol, xy
 from typing import List
 from rasterio.features import rasterize
-    
+from torchvision.models.segmentation.deeplabv3 import DeepLabHead
+
 from rastervision.core.data.raster_transformer import RasterTransformer
 from rastervision.core.data.raster_source import RasterSource
 from rastervision.core.data import (VectorSource, XarraySource,
@@ -82,7 +85,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
-from src.models.model_definitions import (BuildingsOnlyDeeplabv3SegmentationModel, BuildingsOnlyPredictionsIterator)
+from src.models.model_definitions import (BuildingsDeeplabv3, BuildingsSimpleSS, CustomVectorOutputConfig, BuildingsOnlyPredictionsIterator)
 from deeplnafrica.deepLNAfrica import init_segm_model
 
 import folium
@@ -96,53 +99,6 @@ from rastervision.core.data import (
     ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
     VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
 )
-
-class CustomVectorOutputConfig(Config):
-    """Config for vectorized semantic segmentation predictions."""
-    class_id: int = Field(
-        ...,
-        description='The prediction class that is to be turned into vectors.'
-    )
-    denoise: int = Field(
-        8,
-        description='Diameter of the circular structural element used to '
-        'remove high-frequency signals from the image. Smaller values will '
-        'reduce less noise and make vectorization slower and more memory '
-        'intensive (especially for large images). Larger values will remove '
-        'more noise and make vectorization faster but might also remove '
-        'legitimate detections.'
-    )
-    threshold: Optional[float] = Field(
-        None,
-        description='Probability threshold for creating the binary mask for '
-        'the pixels of this class. Pixels will be considered to belong to '
-        'this class if their probability for this class is >= ``threshold``. '
-        'Defaults to ``None``, which is equivalent to (1 / num_classes).'
-    )
-
-    def vectorize(self, mask: np.ndarray) -> Iterator['Polygon']:
-        """Vectorize binary mask representing the target class into polygons."""
-        # Apply denoising if necessary
-        if self.denoise > 0:
-            kernel = np.ones((self.denoise, self.denoise), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-        # Find contours
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        # Convert contours to polygons
-        for contour in contours:
-            if contour.size >= 6:  # Minimum number of points for a valid polygon
-                yield Polygon(contour.squeeze())
-
-    def get_uri(self, root: str, class_config: Optional['ClassConfig'] = None) -> str:
-        """Get the URI for saving the vector output."""
-        if class_config is not None:
-            class_name = class_config.get_name(self.class_id)
-            uri = join(root, f'class-{self.class_id}-{class_name}.json')
-        else:
-            uri = join(root, f'class-{self.class_id}.json')
-        return uri
 
 def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5):
     gdf = gpd.read_file(buildings_uri)
@@ -203,29 +159,29 @@ BuildingsScenceSD = Scene(
         label_source = buildings_label_sourceSD)
 
 buildingsGeoDatasetSD, train_buildings_datasetSD, val_buildings_datasetSD, test_buildings_datasetSD = create_datasets(
-    BuildingsScenceSD, imgsize=288, stride = 144, padding=0, val_ratio=0.3, test_ratio=0.1, seed=42)
+    BuildingsScenceSD, imgsize=288, stride = 288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 
 # combined_train_dataset = ConcatDataset([train_buildings_datasetSD, train_buildings_datasetGC])
 # combined_val_dataset = ConcatDataset([val_buildings_datasetSD, val_buildings_datasetGC])
 # combined_val_dataset = ConcatDataset([test_buildings_datasetSD, test_buildings_datasetGC])
 
-# def create_full_image(source) -> np.ndarray:
-#     extent = source.extent
-#     chip = source.get_label_arr(extent)    
-#     return chip
+def create_full_image(source) -> np.ndarray:
+    extent = source.extent
+    chip = source.get_label_arr(extent)    
+    return chip
 
-# img_full = create_full_image(buildingsGeoDatasetGC.scene.label_source)
-# train_windows = train_buildings_datasetGC.windows
-# val_windows = val_buildings_datasetGC.windows
-# test_windows = test_buildings_datasetGC.windows
-# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+img_full = create_full_image(buildingsGeoDatasetSD.scene.label_source)
+train_windows = train_buildings_datasetSD.windows
+val_windows = val_buildings_datasetSD.windows
+test_windows = test_buildings_datasetSD.windows
+window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
-batch_size=6
+batch_size=8
 train_dl = DataLoader(train_buildings_datasetSD, batch_size=batch_size, shuffle=True)
 val_dl = DataLoader(val_buildings_datasetSD, batch_size=batch_size, shuffle=False)
 test_dl = DataLoader(test_buildings_datasetSD, batch_size=batch_size, shuffle=False)
-train_dl.num_workers
+
 # Fine-tune the model
 # Define device
 if not torch.backends.mps.is_available():
@@ -236,10 +192,16 @@ if not torch.backends.mps.is_available():
 else:
     device = torch.device("mps")
     print("MPS is available.")
+    
+# Train the model
+model = BuildingsSimpleSS(weight_decay=0.001,
+                            learning_rate=0.001,
+                            gamma=0.01,
+                            pos_weight=torch.tensor(5, device='mps'))
+model.to(device)
 
-# Model definition
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_dir = f'../../UNITAC-trained-models/buildings_only/'
+output_dir = f'../../UNITAC-trained-models/buildings_only/unet/'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-buildings-only')
@@ -252,7 +214,7 @@ checkpoint_callback = ModelCheckpoint(
     filename='buildings_runid{run_id}_{image_size:02d}-{batch_size:02d}-{epoch:02d}-{val_loss:.4f}',
     save_top_k=1,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=6)
+early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=5)
 
 # Define trainer
 trainer = Trainer(
@@ -260,26 +222,21 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=1,
+    min_epochs=10,
     max_epochs=120,
     num_sanity_val_steps=1
 )
 
-# Train the model
-pretrained_checkpoint_path = "/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt"
-model = BuildingsOnlyDeeplabv3SegmentationModel(num_bands=1)#, pretrained_checkpoint=pretrained_checkpoint_path)
-model.to(device)
-
 trainer.fit(model, train_dl, val_dl)
 
-# Use best model for evaluation
-best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=09-val_loss=0.1590.ckpt"
-# best_model_path = checkpoint_callback.best_model_path
-best_model = BuildingsOnlyDeeplabv3SegmentationModel.load_from_checkpoint(best_model_path)
+# Best deeplab model path val=0.3083
+# best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
+# best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=18-val_loss=0.1848.ckpt"
+best_model_path = checkpoint_callback.best_model_path
+best_model = BuildingsSimpleSS.load_from_checkpoint(best_model_path)
 best_model.eval()
 
 #  Make predictions
-
 buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScenceSD, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 predictions_iterator = BuildingsOnlyPredictionsIterator(best_model, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
@@ -300,41 +257,41 @@ image = ax.imshow(scores_building)
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
-# Saving predictions as GEOJSON
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
+# # Saving predictions as GEOJSON
+# vector_output_config = CustomVectorOutputConfig(
+#     class_id=1,
+#     denoise=8,
+#     threshold=0.5)
 
-pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/buildings_model_only/2/',
-    crs_transformer = crs_transformer_SD,
-    class_config = class_config,
-    vector_outputs = [vector_output_config],
-    discrete_output = True)
+# pred_label_store = SemanticSegmentationLabelStore(
+#     uri='../../vectorised_model_predictions/buildings_model_only/2/',
+#     crs_transformer = crs_transformer_SD,
+#     class_config = class_config,
+#     vector_outputs = [vector_output_config],
+#     discrete_output = True)
 
-pred_label_store.save(pred_labels)
+# pred_label_store.save(pred_labels)
 
-# Evaluate predictions
-from rastervision.core.evaluation import SemanticSegmentationEvaluator
+# # Evaluate predictions
+# from rastervision.core.evaluation import SemanticSegmentationEvaluator
 
-evaluator = SemanticSegmentationEvaluator(class_config)
-gt_labels = BuildingsScenceSD.label_source.get_labels()
-evaluation = evaluator.evaluate_predictions(
-    ground_truth=gt_labels, predictions=pred_labels)
-eval_metrics_dict = evaluation.class_to_eval_item[0]
-f1_score = eval_metrics_dict.f1
-f1_score
+# evaluator = SemanticSegmentationEvaluator(class_config)
+# gt_labels = BuildingsScenceSD.label_source.get_labels()
+# evaluation = evaluator.evaluate_predictions(
+#     ground_truth=gt_labels, predictions=pred_labels)
+# eval_metrics_dict = evaluation.class_to_eval_item[0]
+# f1_score = eval_metrics_dict.f1
+# f1_score
 
-# Map interactive visualization
-predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/2/vector_output/class-1-slums.json'
-label_uri = "../../data/0/SantoDomingo3857.geojson"
-extent_gdf = gpd.read_file(label_uri)
-gdf = gpd.read_file(predspath)
-m = folium.Map(location=[gdf.geometry[0].centroid.y, gdf.geometry[0].centroid.x], zoom_start=12)
-folium.GeoJson(gdf).add_to(m) 
-folium.GeoJson(extent_gdf, style_function=lambda x: {'color':'red'}).add_to(m)
-m
+# # Map interactive visualization
+# predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/2/vector_output/class-1-slums.json'
+# label_uri = "../../data/0/SantoDomingo3857.geojson"
+# extent_gdf = gpd.read_file(label_uri)
+# gdf = gpd.read_file(predspath)
+# m = folium.Map(location=[gdf.geometry[0].centroid.y, gdf.geometry[0].centroid.x], zoom_start=12)
+# folium.GeoJson(gdf).add_to(m) 
+# folium.GeoJson(extent_gdf, style_function=lambda x: {'color':'red'}).add_to(m)
+# m
 
 
 
@@ -352,7 +309,7 @@ HT_eval_scene = Scene(
 
 HTGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(HT_eval_scene, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 
-predictions_iterator = PredictionsIterator(best_model, HTGeoDataset, device=device)
+predictions_iterator = BuildingsOnlyPredictionsIterator(best_model, HTGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
@@ -374,11 +331,16 @@ cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
 # Saving predictions as GEOJSON
-pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/buildings_model_only/HT/',
+vector_output_config = CustomVectorOutputConfig(
+    class_id=1,
+    denoise=8,
+    threshold=0.5)
+
+pred_label_storeHT = SemanticSegmentationLabelStore(
+    uri='../../vectorised_model_predictions/buildings_model_only/Haiti_unet/',
     crs_transformer = crs_transformer_HT,
     class_config = class_config,
     vector_outputs = [vector_output_config],
     discrete_output = True)
 
-pred_label_store.save(pred_labels_HT)
+pred_label_storeHT.save(pred_labels_HT)

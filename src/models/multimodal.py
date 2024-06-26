@@ -10,6 +10,7 @@ import cv2
 import pytorch_lightning as pl
 import numpy as np
 import geopandas as gpd
+import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 from rastervision.core.box import Box
@@ -35,6 +36,9 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from torch.utils.data import DataLoader, Dataset
 from pytorch_lightning import LightningDataModule
 from torchvision.models.segmentation.deeplabv3 import DeepLabHead
+from collections import OrderedDict
+import duckdb
+
 
 # Project-specific imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -43,7 +47,7 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import MultiModalSegmentationModel, MultiModalPredictionsIterator
+from src.models.model_definitions import MultiModalPredictionsIterator, CustomGeoJSONVectorSource, FusionModule
 from deeplnafrica.deepLNAfrica import (Deeplabv3SegmentationModel, init_segm_model,
                                        CustomDeeplabv3SegmentationModel)
 from src.data.dataloaders import (create_sentinel_raster_source, create_buildings_raster_source,
@@ -157,96 +161,6 @@ class CustomVectorOutputConfig(Config):
             uri = join(root, f'class-{self.class_id}.json')
         return uri
     
-label_uri = "../../data/0/SantoDomingo3857.geojson"
-image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
-
-label_uriGC = "../../data/SHP/Guatemala_PS.shp"
-image_uriGC = '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
-buildings_uriGC = '../../data/0/overture/GT_buildings3857.geojson'
-
-class_config = ClassConfig(names=['background', 'slums'], 
-                                colors=['lightgray', 'darkred'],
-                                null_class='background')
-
-sentinel_source_normalized, sentinel_label_raster_source = create_sentinel_raster_source(image_uri, label_uri, class_config, clip_to_label_source=True)
-rasterized_buildings_source, buildings_label_source, crs_transformer_buildings = create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5)    
-
-sentinel_source_normalizedGC, sentinel_label_raster_sourceGC = create_sentinel_raster_source(image_uriGC, label_uriGC, class_config, clip_to_label_source=True)
-rasterized_buildings_sourceGC, buildings_label_sourceGC, crs_transformer_buildingsGC = create_buildings_raster_source(buildings_uriGC, image_uriGC, label_uriGC, class_config, resolution=5)    
-
-if not torch.backends.mps.is_available():
-    if not torch.backends.mps.is_built():
-        print("MPS not available because the current PyTorch install was not built with MPS enabled.")
-    else:
-        print("MPS not available.")
-else:
-    device = torch.device("mps")
-    print("MPS is available.")
-
-SentinelScene = Scene(
-        id='santodomingo_sentinel',
-        raster_source = sentinel_source_normalized,
-        label_source = sentinel_label_raster_source)
-        # aoi_polygons=[pixel_polygon])
-        
-SentinelSceneGC = Scene(
-        id='GC_sentinel',
-        raster_source = sentinel_source_normalizedGC,
-        label_source = sentinel_label_raster_sourceGC)
-
-BuildingsScence = Scene(
-        id='santodomingo_buildings',
-        raster_source = rasterized_buildings_source,
-        label_source = buildings_label_source)
-
-BuildingsScenceGC = Scene(
-        id='GC_buildings',
-        raster_source = rasterized_buildings_sourceGC,
-        label_source = buildings_label_sourceGC)
-
-buildingsGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(BuildingsScence, imgsize=288, stride = 288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-sentinelGeoDataset, train_sentinel_dataset, val_sentinel_dataset, test_sentinel_dataset = create_datasets(SentinelScene, imgsize=144, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-buildingsGeoDatasetGC, train_buildings_datasetGC, val_buildings_datasetGC, test_buildings_datasetGC = create_datasets(BuildingsScenceGC, imgsize=288, stride = 288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-sentinelGeoDatasetGC, train_sentinel_datasetGC, val_sentinel_datasetGC, test_sentinel_datasetGC = create_datasets(SentinelSceneGC, imgsize=144, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-
-SDGC_sentinel_train_ds = ConcatDataset([train_sentinel_dataset, train_sentinel_datasetGC])
-SDGC_sentinel_val_ds = ConcatDataset([val_sentinel_dataset, val_sentinel_datasetGC])
-SDGC_sentinel_test_ds = ConcatDataset([test_sentinel_dataset, test_sentinel_datasetGC])
-
-SDGC_build_train_ds = ConcatDataset([train_buildings_dataset, train_buildings_datasetGC])
-SDGC_build_val_ds = ConcatDataset([val_buildings_dataset, val_buildings_datasetGC])
-SDGC_build_test_ds = ConcatDataset([test_buildings_dataset, test_buildings_datasetGC])
-
-batch_size = 16
-
-# num_workers = 11
-# train_sentinel_loader = DataLoader(train_sentinel_dataset, batch_size=batch_size, shuffle=False)#, num_workers=num_workers)
-# train_buildings_loader = DataLoader(train_buildings_dataset, batch_size=batch_size, shuffle=False)#, num_workers=num_workers)
-# val_sentinel_loader = DataLoader(val_sentinel_dataset, batch_size=batch_size, shuffle=False) #, num_workers=num_workers)
-# val_buildings_loader = DataLoader(val_buildings_dataset, batch_size=batch_size, shuffle=False)#, num_workers=num_workers)
-# train_sentinel_loader.num_workers
-
-# class MultiModalDataModule(LightningDataModule):
-#     def __init__(self, train_sentinel_loader, train_buildings_loader, val_sentinel_loader, val_buildings_loader):
-#         super().__init__()
-#         self.train_sentinel_loader = train_sentinel_loader
-#         self.train_buildings_loader = train_buildings_loader
-#         self.val_sentinel_loader = val_sentinel_loader
-#         self.val_buildings_loader = val_buildings_loader
-
-#     def train_dataloader(self):
-#         return zip(self.train_sentinel_loader, self.train_buildings_loader)
-
-#     def val_dataloader(self):
-#         return zip(self.val_sentinel_loader, self.val_buildings_loader)
-    
-# data_module = MultiModalDataModule(train_sentinel_loader, train_buildings_loader, val_sentinel_loader, val_buildings_loader)
-
-# assert len(train_sentinel_loader) == len(train_buildings_loader), "DataLoaders must have the same length"
-# assert len(val_sentinel_loader) == len(val_buildings_loader), "DataLoaders must have the same length"
-
-# Other approach for dataloading # Concatenate datasets
 class MergeDataset(Dataset):
     def __init__(self, *datasets):
         self.datasets = datasets
@@ -256,12 +170,132 @@ class MergeDataset(Dataset):
 
     def __len__(self):
         return min(len(d) for d in self.datasets)
-# when one city for training
-# train_dataset = MergeDataset(train_sentinel_dataset, train_buildings_dataset)
-# val_dataset = MergeDataset(val_sentinel_dataset, val_buildings_dataset)
+    
+if not torch.backends.mps.is_available():
+    if not torch.backends.mps.is_built():
+        print("MPS not available because the current PyTorch install was not built with MPS enabled.")
+    else:
+        print("MPS not available.")
+else:
+    device = torch.device("mps")
+    print("MPS is available.")
 
-train_dataset = MergeDataset(SDGC_sentinel_train_ds, SDGC_build_train_ds)
-val_dataset = MergeDataset(SDGC_sentinel_val_ds, SDGC_build_val_ds)
+label_uri = "../../data/0/SantoDomingo3857.geojson"
+image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
+
+label_uriGC = "../../data/SHP/Guatemala_PS.shp"
+image_uriGC = '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
+buildings_uriGC = '../../data/0/overture/GT_buildings3857.geojson'
+
+label_uriTG = "../../data/SHP/Tegucigalpa_PS.shp"
+image_uriTG = '../../data/0/sentinel_Gee/HND_Comayaguela_2023.tif'
+buildings_uriTG = '../../data/0/overture/HND_buildings3857.geojson'
+
+label_uriPN = "../../data/SHP/Panama_PS.shp"
+image_uriPN = '../../data/0/sentinel_Gee/PAN_San_Miguelito_2023.tif'
+buildings_uriPN = '../../data/0/overture/PN_buildings3857.geojson'
+
+class_config = ClassConfig(names=['background', 'slums'], 
+                                colors=['lightgray', 'darkred'],
+                                null_class='background')
+
+# Santo Domingo
+sentinel_source_normalizedSD, sentinel_label_raster_sourceSD = create_sentinel_raster_source(image_uri, label_uri, class_config, clip_to_label_source=True)
+rasterized_buildings_sourceSD, buildings_label_sourceSD, crs_transformer_buildingsSD = create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5)    
+
+SentinelScene_SD = Scene(
+        id='santodomingo_sentinel',
+        raster_source = sentinel_source_normalizedSD,
+        label_source = sentinel_label_raster_sourceSD)
+        # aoi_polygons=[pixel_polygon])
+
+BuildingsScene_SD = Scene(
+        id='santodomingo_buildings',
+        raster_source = rasterized_buildings_sourceSD,
+        label_source = buildings_label_sourceSD)
+
+train_multiple_cities=False
+if train_multiple_cities:
+    # # Guatemala City
+    # sentinel_source_normalizedGC, sentinel_label_raster_sourceGC = create_sentinel_raster_source(image_uriGC, label_uriGC, class_config, clip_to_label_source=True)
+    # rasterized_buildings_sourceGC, buildings_label_sourceGC, crs_transformer_buildingsGC = create_buildings_raster_source(buildings_uriGC, image_uriGC, label_uriGC, class_config, resolution=5)    
+
+    # BuildingsScene_GC = Scene(
+    #         id='GC_buildings',
+    #         raster_source = rasterized_buildings_sourceGC,
+    #         label_source = buildings_label_sourceGC)
+            
+    # SentinelScene_GC = Scene(
+    #         id='GC_sentinel',
+    #         raster_source = sentinel_source_normalizedGC,
+    #         label_source = sentinel_label_raster_sourceGC)
+
+    # # Tegucigalpa
+    # sentinel_source_normalizedTG, sentinel_label_raster_sourceTG = create_sentinel_raster_source(image_uriGC, label_uriTG, class_config, clip_to_label_source=True)
+    # rasterized_buildings_sourceTG, buildings_label_sourceTG, crs_transformer_buildingsTG = create_buildings_raster_source(buildings_uriGC, image_uriGC, label_uriTG, class_config, resolution=5)
+
+    # SentinelScene_TG = Scene(
+    #     id='TG_sentinel',
+    #     raster_source=sentinel_source_normalizedTG,
+    #     label_source=sentinel_label_raster_sourceTG)
+
+    # BuildingsScene_TG = Scene(
+    #     id='TG_buildings',
+    #     raster_source=rasterized_buildings_sourceTG,
+    #     label_source=buildings_label_sourceTG)
+
+    # # Panama City
+    # sentinel_source_normalizedPN, sentinel_label_raster_sourcePN = create_sentinel_raster_source(image_uriPN, label_uriPN, class_config, clip_to_label_source=True)
+    # rasterized_buildings_sourcePN, buildings_label_sourcePN, crs_transformer_buildingsPN = create_buildings_raster_source(buildings_uriPN, image_uriPN, label_uriPN, class_config, resolution=5)
+
+    # SentinelScene_PN = Scene(
+    #     id='PN_sentinel',
+    #     raster_source=sentinel_source_normalizedPN,
+    #     label_source=sentinel_label_raster_sourcePN)
+
+    # BuildingsScene_PN = Scene(
+    #     id='PN_buildings',
+    #     raster_source=rasterized_buildings_sourcePN,
+    #     label_source=buildings_label_sourcePN)
+    
+    # Guatemala City
+    # buildingsGeoDataset_GC, train_buildings_dataset_GC, val_buildings_dataset_GC, test_buildings_dataset_GC = create_datasets(BuildingsScene_GC, imgsize=288, stride=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+    # sentinelGeoDataset_GC, train_sentinel_dataset_GC, val_sentinel_dataset_GC, test_sentinel_dataset_GC = create_datasets(SentinelScene_GC, imgsize=144, stride=144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+    # Tegucigalpa
+    # buildingsGeoDataset_TG, train_buildings_dataset_TG, val_buildings_dataset_TG, test_buildings_dataset_TG = create_datasets(BuildingsScene_TG, imgsize=288, stride=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+    # sentinelGeoDataset_TG, train_sentinel_dataset_TG, val_sentinel_dataset_TG, test_sentinel_dataset_TG = create_datasets(SentinelScene_TG, imgsize=144, stride=144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+    # # Panama City
+    # buildingsGeoDataset_PN, train_buildings_dataset_PN, val_buildings_dataset_PN, test_buildings_dataset_PN = create_datasets(BuildingsScene_PN, imgsize=288, stride=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+    # sentinelGeoDataset_PN, train_sentinel_dataset_PN, val_sentinel_dataset_PN, test_sentinel_dataset_PN = create_datasets(SentinelScene_PN, imgsize=144, stride=144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+    pass
+
+batch_size = 16
+
+# Santo Domingo
+buildingsGeoDataset_SD, train_buildings_dataset_SD, val_buildings_dataset_SD, test_buildings_dataset_SD = create_datasets(BuildingsScene_SD, imgsize=288, stride=288, padding=50, val_ratio=0.2, test_ratio=0.1, seed=42)
+sentinelGeoDataset_SD, train_sentinel_dataset_SD, val_sentinel_dataset_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=144, stride=144, padding=25, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+all_cities_sentinel_train_ds = ConcatDataset([train_sentinel_dataset_SD]) #train_sentinel_dataset_GC, train_sentinel_dataset_TG, train_sentinel_dataset_PN
+all_cities_sentinel_val_ds = ConcatDataset([val_sentinel_dataset_SD]) # val_sentinel_dataset_GC, val_sentinel_dataset_TG, val_sentinel_dataset_PN
+all_cities_sentinel_test_ds = ConcatDataset([test_sentinel_dataset_SD]) # test_sentinel_dataset_GC, test_sentinel_dataset_TG, test_sentinel_dataset_PN
+
+all_cities_build_train_ds = ConcatDataset([train_buildings_dataset_SD]) #train_buildings_dataset_GC train_buildings_dataset_TG, train_buildings_dataset_PN
+all_cities_build_val_ds = ConcatDataset([val_buildings_dataset_SD]) #val_buildings_dataset_GC, val_buildings_dataset_TG, val_buildings_dataset_PN
+all_cities_build_test_ds = ConcatDataset([test_buildings_dataset_SD]) #test_buildings_dataset_GC, test_buildings_dataset_TG, test_buildings_dataset_PN
+    
+train_dataset = MergeDataset(all_cities_sentinel_train_ds, all_cities_build_train_ds)
+val_dataset = MergeDataset(all_cities_sentinel_val_ds, all_cities_build_val_ds)
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+
+# when one city for training:
+train_dataset = MergeDataset(train_sentinel_dataset_SD, train_buildings_dataset_SD)
+val_dataset = MergeDataset(val_sentinel_dataset_SD, val_buildings_dataset_SD)
 
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
@@ -277,10 +311,10 @@ vis_build = SemanticSegmentationVisualizer(
     class_names=class_config.names, class_colors=class_config.colors,
     channel_display_groups=channel_display_groups_build)
 
-x, y = vis_sent.get_batch(train_sentinel_dataset, 2)
+x, y = vis_sent.get_batch(all_cities_sentinel_train_ds, 2)
 vis_sent.plot_batch(x, y, show=True)
 
-x, y = vis_build.get_batch(train_buildings_dataset, 2)
+x, y = vis_build.get_batch(all_cities_build_train_ds, 2)
 vis_build.plot_batch(x, y, show=True)
 
 class MultiModalDataModule(LightningDataModule):
@@ -298,27 +332,235 @@ class MultiModalDataModule(LightningDataModule):
 # Initialize the data module
 data_module = MultiModalDataModule(train_loader, val_loader)
 
+# buildings encoder testing 
+buildings_encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)
+buildings_encoder.backbone
+
+# buildings_conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+# buildings_bn1 = buildings_encoder.backbone.bn1
+# buildings_relu = buildings_encoder.backbone.relu
+# buildings_maxpool = buildings_encoder.backbone.maxpool
+# buildings_layer1 = buildings_encoder.backbone.layer1
+# conv_extra = nn.Conv2d(256, 2048, kernel_size=3, padding=1)
+# adaptive_pool = torch.nn.AdaptiveAvgPool2d((18, 18))
+
+# for batch_idx, batch in enumerate(data_module.train_dataloader()):
+#     sentinel_batch, buildings_batch = batch
+#     buildings_data, buildings_labels = buildings_batch
+#     sentinel_data, _ = sentinel_batch
+    
+#     # sentinel_data = sentinel_data.to(device)
+#     # buildings_data = buildings_data.to(device)
+#     x = buildings_conv1(buildings_data)
+#     x = buildings_bn1(x)
+#     x = buildings_relu(x)
+#     x = buildings_maxpool(x)
+#     x = buildings_layer1(x)
+#     x = conv_extra(x)
+#     x = adaptive_pool(x)
+#     print(f"conv1 data shape: {x.shape}")
+#     break
+
 # Train the model
-model = MultiModalSegmentationModel()
+class MultiResolutionSegmentationModel(pl.LightningModule):
+    def __init__(self,
+                learning_rate: float = 1e-2,
+                weight_decay: float = 1e-1,
+                gamma: float = 0.1,
+                atrous_rates = (6, 12, 24),
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
+        super().__init__()
+        
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.atrous_rates = atrous_rates
+        self.gamma = gamma
+        self.pos_weight = pos_weight
+        
+        self.sentinel_encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)     
+        self.sentinel_encoder.backbone.conv1 = nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        
+        self.buildings_conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        self.buildings_bn1 = self.sentinel_encoder.backbone.bn1
+        self.relu = self.sentinel_encoder.backbone.relu
+        self.buildings_maxpool = self.sentinel_encoder.backbone.maxpool
+        self.buildings_layer1 = self.sentinel_encoder.backbone.layer1
+        self.buildings_conv2 = nn.Conv2d(256, 2048, kernel_size=3, padding=1)
+        self.buildings_adapool = torch.nn.AdaptiveAvgPool2d((18, 18))
+
+        # load pretrained deeplnafrica weights into sentinel channels
+        allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
+        checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
+        state_dict = checkpoint["state_dict"]
+        
+        # Convert any float64 weights to float32
+        for key, value in state_dict.items():
+            if value.dtype == torch.float64:
+                state_dict[key] = value.to(torch.float32)
+                
+        # removing prefix
+        final_state_dict = OrderedDict()
+        for key, value in state_dict.items():
+            if key.startswith('segm_model.backbone.'):
+                new_key = key[len('segm_model.backbone.'):]
+                final_state_dict[new_key] = value
+
+        self.sentinel_encoder.backbone.load_state_dict(final_state_dict, strict=True)
+        
+        # Intermediate Layer Getters
+        self.sentinel_encoder_backbone = IntermediateLayerGetter(self.sentinel_encoder.backbone, {'layer4': 'out'})#, 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
+        
+        self.fusion_layer = nn.Conv2d(4096, 2048, kernel_size=1)
+        
+        self.fusion = nn.Sequential(
+            nn.Conv2d(4096, 2048, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(2048, 2048, 3, padding=1)
+        )
+        
+        self.segmentation_head = DeepLabHead(in_channels=2048, num_classes=1, atrous_rates=self.atrous_rates)
+           
+    def forward(self, batch):
+
+        sentinel_batch, buildings_batch = batch
+        buildings_data, buildings_labels = buildings_batch
+        sentinel_data, _ = sentinel_batch
+        
+        # Move data to the device
+        sentinel_data = sentinel_data.to(self.device)
+        buildings_data = buildings_data.to(self.device)
+        buildings_labels = buildings_labels.to(self.device)
+        
+        sentinel_features = self.sentinel_encoder_backbone(sentinel_data)
+        sentinel_out = sentinel_features['out']
+        # print(f"sentinel_features shape: {sentinel_features['out'].shape}")
+        
+        x = self.buildings_conv1(buildings_data)
+        x = self.buildings_bn1(x)
+        x = self.relu(x)
+        x = self.buildings_maxpool(x)
+        x = self.buildings_layer1(x)
+        x = self.buildings_conv2(x)
+        
+        buildings_out = self.buildings_adapool(x)
+        
+        # concatenated = torch.cat([sentinel_out, buildings_out], dim=1)    
+        concatenated = sentinel_out+buildings_out # addition works well on SD        
+        # print(f"concatenated features shape: {concatenated.shape}")
+        
+        # Decode the fused features
+        # fused_features = self.fusion_layer(concatenated)
+        # fused_features = self.fusion(concatenated)
+        # print(f"fused_features shape: {fused_features.shape}")
+
+        segmentation = self.segmentation_head(concatenated)
+        
+        segmentation = F.interpolate(segmentation, size=288, mode="bilinear", align_corners=False)
+        
+        return segmentation.squeeze(1)
+    
+    def training_step(self, batch):
+        
+        _, buildings_batch = batch
+        _, buildings_labels = buildings_batch
+
+        segmentation = self.forward(batch)
+        
+        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, buildings_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        
+        self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
+                
+        return loss
+    
+    def validation_step(self, batch):
+        _, buildings_batch = batch
+        _, buildings_labels = buildings_batch
+
+        segmentation = self.forward(batch)      
+        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        val_loss = loss_fn(segmentation, buildings_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        
+        self.log('val_mean_iou', mean_iou)
+        self.log('val_loss', val_loss, prog_bar=True, logger=True)
+        
+    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
+        _, buildings_batch = batch
+        _, buildings_labels = buildings_batch
+
+        segmentation = self.forward(batch)     
+        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        test_loss = loss_fn(segmentation, buildings_labels)
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+
+        self.log('test_loss', test_loss)
+        self.log('test_mean_iou', mean_iou)
+        
+    def compute_mean_iou(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        return iou.mean()
+
+    def configure_optimizers(self) -> dict:
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=10,  # adjust step_size to your needs
+            gamma=0.1      # adjust gamma to your needs
+        )
+
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+
+model = MultiResolutionSegmentationModel(weight_decay=0.001,
+                            learning_rate=0.0001,
+                            gamma=0.01,
+                            atrous_rates = (6,12,24),
+                            pos_weight=torch.tensor(1.0, device='mps'))
 model.to(device)
 
-for batch_idx, batch in enumerate(data_module.train_dataloader()):
-    sentinel_batch, buildings_batch = batch
-    buildings_data, buildings_labels = buildings_batch
-    sentinel_data, _ = sentinel_batch
+# for batch_idx, batch in enumerate(data_module.train_dataloader()):
+#     sentinel_batch, buildings_batch = batch
+#     buildings_data, buildings_labels = buildings_batch
+#     sentinel_data, _ = sentinel_batch
     
-    sentinel_data = sentinel_data.to(device)
-    buildings_data = buildings_data.to(device)
+#     sentinel_data = sentinel_data.to(device)
+#     buildings_data = buildings_data.to(device)
+#     outsent = model(batch)
+#     print(f"Sentinel data shape: {outsent.shape}")
+#     break
 
-    print(f"Sentinel data shape: {sentinel_data.shape}")
-    print(f"Buildings data shape: {buildings_data.shape}")
-    print(f"Buildings labels shape: {buildings_labels.shape}")
-    # Pass the data through the model
-    model_out = model(batch)
-    print(f"Segmentation output shape: {model_out.shape}")
-    break  # Exit after the first batch for brevity
-
-output_dir = f'../../UNITAC-trained-models/multi_modal/trained_SD_GC/'
+output_dir = f'../UNITAC-trained-models/multi_modal/trained_SD_DLNAw/'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-multi-modal')
@@ -349,11 +591,13 @@ trainer = Trainer(
 trainer.fit(model, datamodule=data_module)
 
 # # Use best model for evaluation
-best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/multimodal_runidrun_id=0-batch_size=00-epoch=15-val_loss=0.2595.ckpt"
-# best_model_path = checkpoint_callback.best_model_path
-best_model = MultiModalSegmentationModel.load_from_checkpoint(best_model_path)
+# best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/trained_SD_sentinel_DLNAw/multimodal_runidrun_id=0-batch_size=00-epoch=22-val_loss=0.2262.ckpt"
+best_model_path = checkpoint_callback.best_model_path
+best_model = MultiResolutionSegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
 
+buildingsGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(BuildingsScene_SD, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+sentinelGeoDataset, train_sentinel_dataset, val_sentinel_dataset, test_sentinel_dataset = create_datasets(SentinelScene_SD, imgsize=144, stride = 72, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 predictions_iterator = MultiModalPredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 
@@ -364,7 +608,7 @@ windows = [Box(*window.tolist()) if isinstance(window, torch.Tensor) else window
 pred_labels = SemanticSegmentationLabels.from_predictions(
     windows,
     predictions,
-    extent=BuildingsScence.extent,
+    extent=BuildingsScene_SD.extent,
     num_classes=len(class_config),
     smooth=True
 )
@@ -379,260 +623,17 @@ ax.set_title('infs Scores')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
-# Saving predictions as GEOJSON
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
+# # Saving predictions as GEOJSON
+# vector_output_config = CustomVectorOutputConfig(
+#     class_id=1,
+#     denoise=8,
+#     threshold=0.5)
 
-pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/multi-modal/SD_GC/',
-    crs_transformer = crs_transformer_buildings,
-    class_config = class_config,
-    vector_outputs = [vector_output_config],
-    discrete_output = True)
+# pred_label_store = SemanticSegmentationLabelStore(
+#     uri='../../vectorised_model_predictions/multi-modal/SD_pretrained_512/',
+#     crs_transformer = crs_transformer_buildings,
+#     class_config = class_config,
+#     vector_outputs = [vector_output_config],
+#     discrete_output = True)
 
-pred_label_store.save(pred_labels)
-
-
-
-### Make predictions on another city ###
-# implements loading gdf - class CustomGeoJSONVectorSource
-class CustomGeoJSONVectorSource(VectorSource):
-    """A :class:`.VectorSource` for reading GeoJSON files or GeoDataFrames."""
-
-    def __init__(self,
-                 crs_transformer: 'CRSTransformer',
-                 uris: Optional[Union[str, List[str]]] = None,
-                 gdf: Optional[gpd.GeoDataFrame] = None,
-                 vector_transformers: List['VectorTransformer'] = [],
-                 bbox: Optional[Box] = None):
-        """Constructor.
-
-        Args:
-            uris (Optional[Union[str, List[str]]]): URI(s) of the GeoJSON file(s).
-            gdf (Optional[gpd.GeoDataFrame]): A GeoDataFrame with vector data.
-            crs_transformer: A ``CRSTransformer`` to convert
-                between map and pixel coords. Normally this is obtained from a
-                :class:`.RasterSource`.
-            vector_transformers: ``VectorTransformers`` for transforming
-                geometries. Defaults to ``[]``.
-            bbox (Optional[Box]): User-specified crop of the extent. If None,
-                the full extent available in the source file is used.
-        """
-        self.uris = listify_uris(uris) if uris is not None else None
-        self.gdf = gdf
-        super().__init__(
-            crs_transformer,
-            vector_transformers=vector_transformers,
-            bbox=bbox)
-
-    def _get_geojson(self) -> dict:
-        if self.gdf is not None:
-            # Convert GeoDataFrame to GeoJSON
-            df = self.gdf.to_crs('epsg:4326')
-            geojson = df.__geo_interface__
-        elif self.uris is not None:
-            geojsons = [self._get_geojson_single(uri) for uri in self.uris]
-            geojson = merge_geojsons(geojsons)
-        else:
-            raise ValueError("Either 'uris' or 'gdf' must be provided.")
-        return geojson
-
-    def _get_geojson_single(self, uri: str) -> dict:
-        # download first so that it gets cached
-        path = download_if_needed(uri)
-        df: gpd.GeoDataFrame = gpd.read_file(path)
-        df = df.to_crs('epsg:4326')
-        geojson = df.__geo_interface__
-        return geojson
-    
-image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-image_uriHT = '../../data/0/sentinel_Gee/HTI_Tabarre_2023.tif'
-
-sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
-gdf = gpd.read_parquet(sica_cities)
-port_au_prince = gdf[gdf["city_ascii"] == "Tabarre"]
-port_au_prince = port_au_prince.to_crs('EPSG:3857')
-gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = port_au_prince.total_bounds
-
-with rasterio.open(image_uriHT) as src:
-    bounds = src.bounds
-    raster_xmin, raster_ymin, raster_xmax, raster_ymax = bounds.left, bounds.bottom, bounds.right, bounds.top
-
-# Define the bounding box in EPSG:3857
-common_xmin_3857 = max(gdf_xmin, raster_xmin)
-common_ymin_3857 = max(gdf_ymin, raster_ymin)
-common_xmax_3857 = min(gdf_xmax, raster_xmax)
-common_ymax_3857 = min(gdf_ymax, raster_ymax)
-transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-common_xmin_4326, common_ymin_4326 = transformer.transform(common_xmin_3857, common_ymin_3857)
-common_xmax_4326, common_ymax_4326 = transformer.transform(common_xmax_3857, common_ymax_3857)
-
-import duckdb
-import pandas as pd
-con = duckdb.connect("../../data/0/data.db")
-con.install_extension('httpfs')
-con.install_extension('spatial')
-con.load_extension('httpfs')
-con.load_extension('spatial')
-con.execute("SET s3_region='us-west-2'")
-con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
-
-def query_buildings_data(con, xmin, ymin, xmax, ymax):
-    query = f"""
-        SELECT *
-        FROM buildings
-        WHERE bbox.xmin > {xmin}
-          AND bbox.xmax < {xmax}
-          AND bbox.ymin > {ymin}
-          AND bbox.ymax < {ymax};
-    """
-    buildings = pd.read_sql(query, con=con)
-
-    if not buildings.empty:
-        buildings = gpd.GeoDataFrame(buildings, geometry=gpd.GeoSeries.from_wkb(buildings.geometry.apply(bytes)), crs='EPSG:4326')
-        buildings = buildings[['id', 'geometry']]
-        buildings = buildings.to_crs("EPSG:3857")
-        buildings['class_id'] = 1
-
-    return buildings
-
-buildings = query_buildings_data(con, common_xmin_4326, common_ymin_4326, common_xmax_4326, common_ymax_4326)
-resolution = 5
-crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-affine_transform_buildings = Affine(resolution, 0, common_xmin_3857, 0, -resolution, common_ymax_3857)
-crs_transformer_buildings.transform = affine_transform_buildings
-
-crs_transformer = RasterioCRSTransformer.from_uri(image_uriHT)
-buildings_vector_source_crsimage = CustomGeoJSONVectorSource(
-        gdf = buildings,
-        crs_transformer = crs_transformer,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-
-buildings_vector_source_crsbuildings = CustomGeoJSONVectorSource(
-        gdf = buildings,
-        crs_transformer = crs_transformer_buildings,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-    
-rasterized_buildings_source = RasterizedSource(
-    buildings_vector_source_crsbuildings,
-    background_class_id=0)
-    
-print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
-
-# Define the bbox of buildings in the image crs 
-buildings_extent = buildings_vector_source_crsimage.extent
-
-### SENTINEL SOURCE ###
-sentinel_source_unnormalized = RasterioSource(
-    image_uriHT,
-    allow_streaming=True)
-
-# Calculate statistics transformer from the unnormalized source
-calc_stats_transformer = CustomStatsTransformer.from_raster_sources(
-    raster_sources=[sentinel_source_unnormalized],
-    max_stds=3
-)
-
-# Define a normalized raster source using the calculated transformer
-sentinel_sourceHT = RasterioSource(
-    image_uriHT,
-    allow_streaming=True,
-    raster_transformers=[calc_stats_transformer],
-    channel_order=[2, 1, 0, 3],
-    bbox=buildings_extent
-)
-print(f"Loaded Sentinel data of size {sentinel_sourceHT.shape}, and dtype: {sentinel_sourceHT.dtype}")
-# chip = sentinel_sourceHT[:, :, :]
-# fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-# ax.imshow(chip)
-# plt.show()
-
-### SCENE ###    
-HT_build_scene = Scene(
-        id='portauprince_sent',
-        raster_source = rasterized_buildings_source)
-
-HT_sent_scene = Scene(
-        id='portauprince_buildings',
-        raster_source = sentinel_sourceHT)
-
-build_ds = CustomSemanticSegmentationSlidingWindowGeoDataset(
-        scene=HT_build_scene,
-        size=288,
-        stride=288,
-        out_size=288,
-        padding=0)
-
-sent_ds = CustomSemanticSegmentationSlidingWindowGeoDataset(
-        scene=HT_sent_scene,
-        size=144,
-        stride=144,
-        out_size=144,
-        padding=0)
-
-# def create_full_image(source) -> np.ndarray:
-#     extent = source.extent
-#     chip = source._get_chip(extent)    
-#     return chip
-
-# img_full = create_full_image(build_ds.scene.raster_source)
-# img_full.shape
-# train_windows = build_ds.windows
-# val_windows = build_ds.windows
-# test_windows = build_ds.windows
-# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
-
-# img_full = create_full_image(sentinel_sourceHT)
-# img_full = img_full[:, :, 0]
-# train_windows = sent_ds.windows
-# val_windows = sent_ds.windows
-# test_windows = sent_ds.windows
-# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
-
-predictions_iterator = PredictionsIterator(best_model, sent_ds, build_ds, device=device)
-windows, predictions = zip(*predictions_iterator)
-
-# Ensure windows are Box instances
-windows = [Box(*window.tolist()) if isinstance(window, torch.Tensor) else window for window in windows]
-
-# Create SemanticSegmentationLabels from predictions
-pred_labels = SemanticSegmentationLabels.from_predictions(
-    windows,
-    predictions,
-    extent=HT_build_scene.extent,
-    num_classes=len(class_config),
-    smooth=True
-)
-
-# Show predictions
-scores = pred_labels.get_score_arr(pred_labels.extent)
-scores_building = scores[0]
-fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-image = ax.imshow(scores_building)
-ax.axis('off')
-ax.set_title('infs Scores')
-cbar = fig.colorbar(image, ax=ax)
-plt.show()
-
-# Saving predictions as GEOJSON
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
-
-crs_transformer_HT = RasterioCRSTransformer.from_uri(image_uriHT)
-affine_transform_buildings = Affine(5, 0, common_xmin_3857, 0, -5, common_ymax_3857)
-crs_transformer_HT.transform = affine_transform_buildings
-
-pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/multi-modal/SD_GC/Haiti_portauprincenostride/',
-    crs_transformer = crs_transformer_HT,
-    class_config = class_config,
-    vector_outputs = [vector_output_config],
-    discrete_output = True)
-
-pred_label_store.save(pred_labels)
+# pred_label_store.save(pred_labels)

@@ -11,6 +11,7 @@ from pathlib import Path
 import torch.nn as nn
 import cv2
 from os.path import join
+from collections import OrderedDict
 
 import json
 from shapely.geometry import shape, mapping
@@ -30,6 +31,7 @@ from datetime import datetime
 import wandb
 from pytorch_lightning import Trainer
 import pytorch_lightning as pl
+import torch.nn.functional as F
 
 from typing import Iterator, Optional
 from torch.optim import AdamW
@@ -224,43 +226,51 @@ def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_co
 
     return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
 
-class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
+# Sentinel Only Models
+class SentinelDeeplabv3(pl.LightningModule):
     def __init__(self,
-                num_bands: int = 1,
-                learning_rate: float = 1e-4,
-                weight_decay: float = 1e-4,
-                # pos_weight: torch.Tensor = torch.tensor([1.0, 1.0], device='mps'),
-                pretrained_checkpoint: Optional[Path] = None) -> None:
+                learning_rate: float = 1e-2,
+                weight_decay: float = 1e-1,
+                gamma: float = 0.1,
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')) -> None:
         super().__init__()
 
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
-        # self.pos_weight = pos_weight
-        self.segm_model = init_segm_model(num_bands)
+        self.gamma = gamma
+        self.pos_weight = pos_weight
         
-        if pretrained_checkpoint:
-            pretrained_dict = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
-            model_dict = self.state_dict()
+        self.deeplab = deeplabv3_resnet50(pretrained=False, progress=False)
+        self.deeplab.backbone.conv1 = nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        self.deeplab.classifier = DeepLabHead(2048, 1, atrous_rates = (12, 24, 36))
+        
+        allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
+        checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
+        state_dict = checkpoint["state_dict"]
+            
+        # Convert any float64 weights to float32
+        for key, value in state_dict.items():
+            if value.dtype == torch.float64:
+                state_dict[key] = value.to(torch.float32)
 
-            # Filter out unnecessary keys and convert to float32
-            pretrained_dict = {k: v.float() if v.dtype == torch.float64 else v for k, v in pretrained_dict.items() if k in model_dict and 'backbone.conv1.weight' not in k}
-            model_dict.update(pretrained_dict)
-            self.load_state_dict(model_dict)
+        new_state_dict = OrderedDict()
+        for key, value in state_dict.items():
+            # Remove the prefix 'segm_model.'
+            new_key = key.replace('segm_model.', '')
+            # Exclude keys starting with 'aux_classifier'
+            if not new_key.startswith('aux_classifier'):
+                new_state_dict[new_key] = value                
 
-            # Special handling for the first convolutional layer
-            if num_bands == 1:
-                conv1_weight = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']['segm_model.backbone.conv1.weight']
-                new_weight = conv1_weight.mean(dim=1, keepdim=True).float()  # Ensure float32 dtype
-                with torch.no_grad():
-                    self.segm_model.backbone.conv1.weight[:, 0] = new_weight.squeeze(1)
-
-        self.save_hyperparameters(ignore='pretrained_checkpoint')
+        self.deeplab.load_state_dict(new_state_dict, strict=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.segm_model(x)['out'].squeeze(dim=1)
-        # print(f"The shape of the model output before premutation {x.shape}")
-        # x = x.permute(0, 2, 3, 1)
-        # print(f"The shape of the model output after premutation  {x.shape}")
+        
+        # Move data to the device
+        x = x.to(self.device)
+
+        x = self.deeplab(x)['out']#.squeeze(dim=1)
+        x = x.permute(0, 2, 3, 1)
+
         return x
 
     def compute_mean_iou(self, preds, target):
@@ -275,10 +285,10 @@ class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         img, groundtruth = batch
         segmentation = self(img)
-        groundtruth = groundtruth.float()
+        groundtruth = groundtruth.float().to(self.device)
         assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
 
-        loss_fn = torch.nn.BCEWithLogitsLoss()
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(self.pos_weight))
         loss = loss_fn(segmentation, groundtruth)
 
         preds = torch.sigmoid(segmentation) > 0.5
@@ -291,12 +301,12 @@ class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         img, groundtruth = batch
-        groundtruth = groundtruth.float()
+        groundtruth = groundtruth.float().to(self.device)
         segmentation = self(img)
         
         assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
 
-        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
         loss = loss_fn(segmentation, groundtruth)
 
         preds = torch.sigmoid(segmentation) > 0.5
@@ -305,12 +315,11 @@ class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
         self.log('val_loss', loss)
         self.log('val_mean_iou', mean_iou.item())
 
-
     def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         img, groundtruth = batch
-        segmentation = self(img.to(device))
+        segmentation = self(img.to(self.device))
 
-        informal_gt = groundtruth[:, 0, :, :].float().to(device)
+        informal_gt = groundtruth[:, 0, :, :].float().to(self.device)
 
         loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
         loss = loss_fn(segmentation, informal_gt)
@@ -323,13 +332,15 @@ class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         optimizer = AdamW(
-            self.segm_model.parameters(),
+            self.deeplab.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay
         )
-
-        scheduler = MultiStepLR(optimizer, milestones=[6, 12], gamma=0.3)
-
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=5,
+            gamma=self.gamma  
+        )
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -338,7 +349,485 @@ class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
                 'frequency': 1
             }
         }
+
+class SentinelSimpleSS(pl.LightningModule):
+    def __init__(self,
+                learning_rate: float = 1e-2,
+                weight_decay: float = 1e-1,
+                gamma: float = 0.1,
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')) -> None:
+        super().__init__()
+
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.gamma = gamma
+        self.pos_weight = pos_weight
         
+        self.encoder1 = self.conv_block(4, 64)
+        self.encoder2 = self.conv_block(64, 128)
+        self.encoder3 = self.conv_block(128, 256)
+        self.encoder4 = self.conv_block(256, 512)
+        
+        self.bottleneck = self.conv_block(512, 1024)
+        
+        self.upconv4 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
+        self.decoder4 = self.conv_block(1024, 512)
+        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.decoder3 = self.conv_block(512, 256)
+        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.decoder2 = self.conv_block(256, 128)
+        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.decoder1 = self.conv_block(128, 64)
+        
+        self.final_conv = nn.Conv2d(64, 1, kernel_size=1)
+        
+    def conv_block(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+            
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        
+        # Move data to the device
+        x = x.to(self.device)
+
+        # Encoder
+        e1 = self.encoder1(x)
+        # print(f"e1 shape: {e1.shape}")
+        e2 = self.encoder2(F.max_pool2d(e1, 2))
+        # print(f"e2 shape: {e2.shape}")
+        e3 = self.encoder3(F.max_pool2d(e2, 2))
+        # print(f"e3 shape: {e3.shape}")
+        e4 = self.encoder4(F.max_pool2d(e3, 2))
+        # print(f"e4 shape: {e4.shape}")
+
+        # Bottleneck
+        b = self.bottleneck(F.max_pool2d(e4, 2))
+        # print(f"b shape: {b.shape}")
+        
+        # Decoder
+        d4 = self.upconv4(b)
+        # print(f"d4 shape: {d4.shape}")
+        d4 = torch.cat([d4, e4], dim=1)
+        # print(f"d4 shape after cat: {d4.shape}")
+        d4 = self.decoder4(d4)
+        # print(f"d4 shape after decoder: {d4.shape}")
+        
+        d3 = self.upconv3(d4)
+        d3 = torch.cat([d3, e3], dim=1)
+        d3 = self.decoder3(d3)
+
+        d2 = self.upconv2(d3)
+        d2 = torch.cat([d2, e2], dim=1)
+        d2 = self.decoder2(d2)
+
+        d1 = self.upconv1(d2)
+        d1 = torch.cat([d1, e1], dim=1)
+        d1 = self.decoder1(d1)
+        
+        # Final Convolution
+        out = self.final_conv(d1)
+
+        return out
+
+    def compute_mean_iou(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        return iou.mean()
+    
+    def compute_dice_coefficient(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        dice = (2. * intersection + smooth) / (union + smooth)
+        return dice.mean()
+
+    def training_step(self, batch, batch_idx):
+        img, groundtruth = batch
+        groundtruth = groundtruth.float().to(self.device).permute(0,3,1,2)
+        segmentation = self(img)
+        
+        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(self.pos_weight))
+        loss = loss_fn(segmentation, groundtruth)
+
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, groundtruth)
+        dice = self.compute_dice_coefficient(preds, groundtruth)
+
+        self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
+        self.log('train_dice', dice)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        img, groundtruth = batch
+        groundtruth = groundtruth.float().to(self.device).permute(0,3,1,2)
+        segmentation = self(img)
+        
+        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, groundtruth)
+
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, groundtruth)
+        dice = self.compute_dice_coefficient(preds, groundtruth)
+
+        self.log('val_loss', loss)
+        self.log('val_mean_iou', mean_iou.item())
+        self.log('val_dice', dice)
+
+    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
+        img, groundtruth = batch
+        segmentation = self(img.to(self.device))
+
+        informal_gt = groundtruth[:, 0, :, :].float().to(self.device)
+
+        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, informal_gt)
+
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, informal_gt)
+
+        self.log('test_loss', loss)
+        self.log('test_mean_iou', mean_iou)
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        optimizer = AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=5,
+            gamma=self.gamma  
+        )
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+
+
+# Buildings Only Models
+class BuildingsDeeplabv3(pl.LightningModule):
+    def __init__(self,
+                learning_rate: float = 1e-2,
+                weight_decay: float = 1e-1,
+                gamma: float = 0.1,
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')) -> None:
+        super().__init__()
+
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.gamma = gamma
+        self.pos_weight = pos_weight
+        
+        self.deeplab = deeplabv3_resnet50(pretrained=False, progress=False)
+        self.deeplab.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        self.deeplab.classifier = DeepLabHead(2048, 1, atrous_rates = (12, 24, 36))
+        
+        allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
+        checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
+        state_dict = checkpoint["state_dict"]
+            
+        # Convert any float64 weights to float32
+        for key, value in state_dict.items():
+            if value.dtype == torch.float64:
+                state_dict[key] = value.to(torch.float32)
+
+        new_state_dict = OrderedDict()
+        for key, value in state_dict.items():
+            # Remove the prefix 'segm_model.'
+            new_key = key.replace('segm_model.', '')
+            # Exclude keys starting with 'aux_classifier'
+            if not new_key.startswith('aux_classifier'):
+                new_state_dict[new_key] = value                
+
+        conv1_weight = new_state_dict['backbone.conv1.weight']
+        new_conv1_weight = conv1_weight[:, :1, :, :].clone()
+        new_state_dict['backbone.conv1.weight'] = new_conv1_weight
+        
+        self.deeplab.load_state_dict(new_state_dict, strict=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        
+        # Move data to the device
+        x = x.to(self.device)
+        x = self.deeplab(x)['out']#.squeeze(dim=1)
+        return x
+
+    def compute_mean_iou(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        return iou.mean()
+
+    def training_step(self, batch, batch_idx):
+        img, groundtruth = batch
+        segmentation = self(img)
+        groundtruth = groundtruth.float().to(self.device).unsqueeze(1)
+        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(self.pos_weight))
+        loss = loss_fn(segmentation, groundtruth)
+
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, groundtruth)
+
+        self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        img, groundtruth = batch
+        groundtruth = groundtruth.float().to(self.device).unsqueeze(1)
+        segmentation = self(img)
+        
+        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, groundtruth)
+
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, groundtruth)
+
+        self.log('val_loss', loss)
+        self.log('val_mean_iou', mean_iou.item())
+
+    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
+        img, groundtruth = batch
+        segmentation = self(img.to(self.device))
+
+        informal_gt = groundtruth[:, 0, :, :].float().to(self.device)
+
+        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, informal_gt)
+
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, informal_gt)
+
+        self.log('test_loss', loss)
+        self.log('test_mean_iou', mean_iou)
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        optimizer = AdamW(
+            self.deeplab.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=5,
+            gamma=self.gamma  
+        )
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+
+class BuildingsSimpleSS(pl.LightningModule):
+    def __init__(self,
+                learning_rate: float = 1e-2,
+                weight_decay: float = 1e-1,
+                gamma: float = 0.1,
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')) -> None:
+        super().__init__()
+
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.gamma = gamma
+        self.pos_weight = pos_weight
+        
+        self.encoder1 = self.conv_block(1, 64)
+        self.encoder2 = self.conv_block(64, 128)
+        self.encoder3 = self.conv_block(128, 256)
+        self.encoder4 = self.conv_block(256, 512)
+        
+        self.bottleneck = self.conv_block(512, 1024)
+        
+        self.upconv4 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
+        self.decoder4 = self.conv_block(1024, 512)
+        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.decoder3 = self.conv_block(512, 256)
+        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.decoder2 = self.conv_block(256, 128)
+        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.decoder1 = self.conv_block(128, 64)
+        
+        self.final_conv = nn.Conv2d(64, 1, kernel_size=1)
+        
+    def conv_block(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+            
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        
+        # Move data to the device
+        x = x.to(self.device)
+
+        # Encoder
+        e1 = self.encoder1(x)
+        # print(f"e1 shape: {e1.shape}")
+        e2 = self.encoder2(F.max_pool2d(e1, 2))
+        # print(f"e2 shape: {e2.shape}")
+        e3 = self.encoder3(F.max_pool2d(e2, 2))
+        # print(f"e3 shape: {e3.shape}")
+        e4 = self.encoder4(F.max_pool2d(e3, 2))
+        # print(f"e4 shape: {e4.shape}")
+
+        # Bottleneck
+        b = self.bottleneck(F.max_pool2d(e4, 2))
+        # print(f"b shape: {b.shape}")
+        
+        # Decoder
+        d4 = self.upconv4(b)
+        # print(f"d4 shape: {d4.shape}")
+        d4 = torch.cat([d4, e4], dim=1)
+        # print(f"d4 shape after cat: {d4.shape}")
+        d4 = self.decoder4(d4)
+        # print(f"d4 shape after decoder: {d4.shape}")
+        
+        d3 = self.upconv3(d4)
+        d3 = torch.cat([d3, e3], dim=1)
+        d3 = self.decoder3(d3)
+
+        d2 = self.upconv2(d3)
+        d2 = torch.cat([d2, e2], dim=1)
+        d2 = self.decoder2(d2)
+
+        d1 = self.upconv1(d2)
+        d1 = torch.cat([d1, e1], dim=1)
+        d1 = self.decoder1(d1)
+        
+        # Final Convolution
+        out = self.final_conv(d1)
+
+        return out
+
+    def compute_mean_iou(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        return iou.mean()
+    
+    def compute_dice_coefficient(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        dice = (2. * intersection + smooth) / (union + smooth)
+        return dice.mean()
+
+    def training_step(self, batch, batch_idx):
+        img, groundtruth = batch
+        groundtruth = groundtruth.float().to(self.device).unsqueeze(1)
+        segmentation = self(img)
+        
+        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(self.pos_weight))
+        loss = loss_fn(segmentation, groundtruth)
+
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, groundtruth)
+        dice = self.compute_dice_coefficient(preds, groundtruth)
+
+        self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
+        self.log('train_dice', dice)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        img, groundtruth = batch
+        groundtruth = groundtruth.float().to(self.device).unsqueeze(1)
+        segmentation = self(img)
+        
+        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, groundtruth)
+
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, groundtruth)
+        dice = self.compute_dice_coefficient(preds, groundtruth)
+
+        self.log('val_loss', loss)
+        self.log('val_mean_iou', mean_iou.item())
+        self.log('val_dice', dice)
+
+    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
+        img, groundtruth = batch
+        segmentation = self(img.to(self.device))
+
+        informal_gt = groundtruth[:, 0, :, :].float().to(self.device)
+
+        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, informal_gt)
+
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, informal_gt)
+
+        self.log('test_loss', loss)
+        self.log('test_mean_iou', mean_iou)
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        optimizer = AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=5,
+            gamma=self.gamma  
+        )
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+
 class BuildingsOnlyPredictionsIterator:
     def __init__(self, model, dataset, device='cuda'):
         self.model = model
@@ -362,7 +851,52 @@ class BuildingsOnlyPredictionsIterator:
     def __iter__(self):
         return iter(self.predictions)
     
-# Model definition
+
+# Mulitmodal Model definition
+class FusionModule(nn.Module):
+    def __init__(self, sentinel_channels, buildings_channels):
+        super().__init__()
+        self.buildings_conv = nn.Conv2d(buildings_channels, sentinel_channels, kernel_size=3, padding=1)
+        self.fusion_conv = nn.Conv2d(sentinel_channels * 2, sentinel_channels, kernel_size=1)
+        
+    def forward(self, sentinel_features, buildings_features):
+        buildings_processed = self.buildings_conv(buildings_features)
+        buildings_upsampled = F.interpolate(buildings_processed, size=sentinel_features.shape[2:], mode='bilinear', align_corners=False)
+        combined = torch.cat([sentinel_features, buildings_upsampled], dim=1)
+        fused = self.fusion_conv(combined)
+        return fused
+    
+class MultiModalPredictionsIterator:
+    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
+        self.model = model
+        self.sentinelGeoDataset = sentinelGeoDataset
+        self.dataset = buildingsGeoDataset
+        self.device = device
+        
+        self.predictions = []
+        
+        with torch.no_grad():
+            for idx in range(len(sentinelGeoDataset)):
+                buildings = buildingsGeoDataset[idx]
+                sentinel = sentinelGeoDataset[idx]
+                
+                sentinel_data = sentinel[0].unsqueeze(0).to(device)
+                sentlabels = sentinel[1].unsqueeze(0).to(device)
+
+                buildings_data = buildings[0].unsqueeze(0).to(device)
+                labels = buildings[1].unsqueeze(0).to(device)
+
+                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
+                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                window = buildingsGeoDataset.windows[idx]
+                self.predictions.append((window, probabilities))
+
+    def __iter__(self):
+        return iter(self.predictions)
+
+# Train the model
 class MultiModalSegmentationModel(pl.LightningModule):
     def __init__(self):
         super().__init__()
@@ -375,12 +909,39 @@ class MultiModalSegmentationModel(pl.LightningModule):
         self.sentinel_encoder.backbone.conv1 = nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         self.buildings_encoder.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         
+        # load pretrained deeplnafrica weights into sentinel channels
+        allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
+        checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
+        state_dict = checkpoint["state_dict"]
+        
+        # Convert any float64 weights to float32
+        for key, value in state_dict.items():
+            if value.dtype == torch.float64:
+                state_dict[key] = value.to(torch.float32)
+                
+        new_state_dict = OrderedDict()
+        for key, value in state_dict.items():
+            if key.startswith('segm_model.backbone.'):
+                new_key = key[len('segm_model.backbone.'):]  # Remove the backbone prefix
+                new_state_dict[new_key] = value
+                
+        self.sentinel_encoder.backbone.load_state_dict(new_state_dict, strict=True)
+
         # Intermediate Layer Getters
         self.sentinel_encoder_backbone = IntermediateLayerGetter(self.sentinel_encoder.backbone, {'layer4': 'out_sent', 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
         self.buildings_encoder_backbone = IntermediateLayerGetter(self.buildings_encoder.backbone, {'layer4': 'out_buil', 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
         self.buildings_downsampler = nn.Conv2d(2048, 2048, kernel_size=2, stride=2)
-
-        self.segmentation_head = DeepLabHead(in_channels=2048*2, num_classes=1, atrous_rates=(6, 12, 24))
+        
+        self.fusion_layer = nn.Conv2d(4096, 2048, kernel_size=1)
+        
+        # fusion with an additional activation layer
+        self.fusion = nn.Sequential(
+            nn.Conv2d(4096, 2048, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(2048, 2048, 3, padding=1)
+        )
+        
+        self.segmentation_head = DeepLabHead(in_channels=2048, num_classes=1, atrous_rates=(6, 12, 24))
              
     def forward(self, batch):
 
@@ -400,14 +961,21 @@ class MultiModalSegmentationModel(pl.LightningModule):
         buildings_out = buildings_features['out_buil']
         buildings_out_downsampled = self.buildings_downsampler(buildings_out)
         
-        concatenated_features = torch.cat([sentinel_out, buildings_out_downsampled], dim=1)
+        # concatenated = sentinel_out+buildings_out_downsampled # addition works well on SD
+        
+        concatenated = torch.cat([sentinel_out, buildings_out_downsampled], dim=1)
+        # print(f"concatenated features shape: {concatenated.shape}")
         
         # Decode the fused features
-        segmentation = self.segmentation_head(concatenated_features)
+        # fused_features = self.fusion_layer(concatenated)
+        fused_features = self.fusion(concatenated)
+        # print(f"fused_features shape: {fused_features.shape}")
+
+        segmentation = self.segmentation_head(fused_features)
         
         segmentation = F.interpolate(segmentation, size=288, mode="bilinear", align_corners=False)
         
-        return segmentation.squeeze()
+        return segmentation.squeeze(1)
     
     def training_step(self, batch):
         
@@ -492,32 +1060,23 @@ class MultiModalSegmentationModel(pl.LightningModule):
             }
         }
 
-class MultiModalPredictionsIterator:
-    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
-        self.model = model
-        self.sentinelGeoDataset = sentinelGeoDataset
-        self.dataset = buildingsGeoDataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(sentinelGeoDataset)):
-                buildings = buildingsGeoDataset[idx]
-                sentinel = sentinelGeoDataset[idx]
-                
-                sentinel_data = sentinel[0].unsqueeze(0).to(device)
-                sentlabels = sentinel[1].unsqueeze(0).to(device)
 
-                buildings_data = buildings[0].unsqueeze(0).to(device)
-                labels = buildings[1].unsqueeze(0).to(device)
 
-                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = buildingsGeoDataset.windows[idx]
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
+# code for loading 5 channel wieghts
+# new_state_dict = OrderedDict()
+        # for 5 channels backbone
+        # for key, value in state_dict.items():
+        #     if key.startswith('segm_model.backbone.conv1'):  # Assuming conv1 is directly under backbone
+        #         # Modify the weights for the conv1 layer to adapt from 4 channels to 5 channels
+        #         if 'weight' in key:
+        #             # Assuming state_dict[key] has shape (64, 4, 7, 7)
+        #             original_weight = state_dict[key]
+        #             new_weight = torch.zeros((original_weight.shape[0], 5, original_weight.shape[2], original_weight.shape[3]), dtype=original_weight.dtype)
+        #             # Copy the weights for the existing 4 channels and duplicate the first channel weights for the new 5th channel
+        #             new_weight[:, :4, :, :] = original_weight
+        #             new_weight[:, 4:5, :, :] = original_weight[:, 0:1, :, :]
+        #             new_state_dict[key] = new_weight
+        #         else:
+        #             new_state_dict[key] = value
+        #     else:
+        #         new_state_dict[key] = value

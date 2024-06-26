@@ -12,3 +12,4 @@ src/models/wandb/
 *.ckpt
 vectorised_model_predictions/
 predictions.qgz
+src/wandb/
