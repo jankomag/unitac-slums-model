@@ -92,6 +92,7 @@ from rastervision.core.data import (
 )
 from typing import TYPE_CHECKING, List, Optional, Union
 import logging
+from src.models.model_definitions import (CustomGeoJSONVectorSource, BuildingsDeeplabv3, BuildingsSimpleSS)
 
 from rastervision.pipeline.file_system import download_if_needed
 from rastervision.core.box import Box
@@ -187,121 +188,6 @@ class PredictionsIterator:
         return iter(self.predictions)
     
 # Model definition
-class BuildingsOnlyDeeplabv3SegmentationModel(pl.LightningModule):
-    def __init__(self,
-                num_bands: int = 1,
-                learning_rate: float = 1e-4,
-                weight_decay: float = 1e-4,
-                # pos_weight: torch.Tensor = torch.tensor([1.0, 1.0], device='mps'),
-                pretrained_checkpoint: Optional[Path] = None) -> None:
-        super().__init__()
-
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        # self.pos_weight = pos_weight
-        self.segm_model = init_segm_model(num_bands)
-        
-        if pretrained_checkpoint:
-            pretrained_dict = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']
-            model_dict = self.state_dict()
-
-            # Filter out unnecessary keys and convert to float32
-            pretrained_dict = {k: v.float() if v.dtype == torch.float64 else v for k, v in pretrained_dict.items() if k in model_dict and 'backbone.conv1.weight' not in k}
-            model_dict.update(pretrained_dict)
-            self.load_state_dict(model_dict)
-
-            # Special handling for the first convolutional layer
-            if num_bands == 1:
-                conv1_weight = torch.load(pretrained_checkpoint, map_location='cpu')['state_dict']['segm_model.backbone.conv1.weight']
-                new_weight = conv1_weight.mean(dim=1, keepdim=True).float()  # Ensure float32 dtype
-                with torch.no_grad():
-                    self.segm_model.backbone.conv1.weight[:, 0] = new_weight.squeeze(1)
-
-        self.save_hyperparameters(ignore='pretrained_checkpoint')
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.segm_model(x)['out'].squeeze(dim=1)
-        # print(f"The shape of the model output before premutation {x.shape}")
-        # x = x.permute(0, 2, 3, 1)
-        # print(f"The shape of the model output after premutation  {x.shape}")
-        return x
-
-    def compute_mean_iou(self, preds, target):
-        preds = preds.bool()
-        target = target.bool()
-        smooth = 1e-6
-        intersection = (preds & target).float().sum((1, 2))
-        union = (preds | target).float().sum((1, 2))
-        iou = (intersection + smooth) / (union + smooth)
-        return iou.mean()
-
-    def training_step(self, batch, batch_idx):
-        img, groundtruth = batch
-        segmentation = self(img)
-        groundtruth = groundtruth.float()
-        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        loss = loss_fn(segmentation, groundtruth)
-
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, groundtruth)
-
-        self.log('train_loss', loss)
-        self.log('train_mean_iou', mean_iou)
-
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        img, groundtruth = batch
-        groundtruth = groundtruth.float()
-        segmentation = self(img)
-        
-        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
-        loss = loss_fn(segmentation, groundtruth)
-
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, groundtruth)
-
-        self.log('val_loss', loss)
-        self.log('val_mean_iou', mean_iou.item())
-
-
-    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
-        img, groundtruth = batch
-        segmentation = self(img.to(device))
-
-        informal_gt = groundtruth[:, 0, :, :].float().to(device)
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
-        loss = loss_fn(segmentation, informal_gt)
-
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, informal_gt)
-
-        self.log('test_loss', loss)
-        self.log('test_mean_iou', mean_iou)
-
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        optimizer = AdamW(
-            self.segm_model.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay
-        )
-
-        scheduler = MultiStepLR(optimizer, milestones=[6, 12], gamma=0.3)
-
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'epoch',
-                'frequency': 1
-            }
-        }
-        
 best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=09-val_loss=0.1590.ckpt"
 best_model = BuildingsOnlyDeeplabv3SegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()

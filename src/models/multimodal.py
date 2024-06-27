@@ -29,6 +29,9 @@ import torch.nn.functional as F
 from torchvision.models._utils import IntermediateLayerGetter
 from torch.utils.data import ConcatDataset
 
+from fvcore.nn import FlopCountAnalysis
+# from torchinfo import summary  # Optional, for detailed summary
+
 from typing import Self
 from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning import Trainer
@@ -328,13 +331,17 @@ class MultiModalDataModule(LightningDataModule):
 
     def val_dataloader(self):
         return self.val_loader
+    
+    def setup(self, stage=None):
+        # Setup is already done by initializing the loaders
+        pass
 
 # Initialize the data module
 data_module = MultiModalDataModule(train_loader, val_loader)
 
 # buildings encoder testing 
-buildings_encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)
-buildings_encoder.backbone
+# buildings_encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)
+# buildings_encoder.backbone
 
 # buildings_conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
 # buildings_bn1 = buildings_encoder.backbone.bn1
@@ -542,25 +549,203 @@ class MultiResolutionSegmentationModel(pl.LightningModule):
             }
         }
 
-model = MultiResolutionSegmentationModel(weight_decay=0.001,
+
+class MultiResolutionFPN(pl.LightningModule):
+    def __init__(self,
+                learning_rate: float = 1e-2,
+                weight_decay: float = 1e-1,
+                gamma: float = 0.1,
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
+        super().__init__()
+        super(MultiResolutionFPN, self).__init__()
+        
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.pos_weight = pos_weight
+        self.gamma = gamma
+        
+        
+        # Sentinel encoder
+        self.s1 = self._make_layer(4, 128) # 128x72x72
+        self.s2 = self._make_layer(128, 256) # 256x36x36
+        self.s3 = self._make_layer(256, 512) # 512x18x18
+        
+        self.s1_mid = nn.Conv2d(4, 64, kernel_size=1, stride=1, padding=0) # 64x144x144
+        
+        # Buildings encoder
+        self.e1 = self._make_layer(1, 64) # 64x144x144
+        self.e2 = self._make_layer(64, 128) # 128x72x72
+        self.e3 = self._make_layer(128, 256) # 256x36x36
+        self.e4 = self._make_layer(256, 512) # 512x18x18
+        
+        # Decoder
+        self.d1 = nn.ConvTranspose2d(1024, 512, kernel_size=3, stride=2, padding=1, output_padding=1) # 512x36x36
+        self.d2 = nn.ConvTranspose2d(1024, 256, kernel_size=3, stride=2, padding=1, output_padding=1) # 256x72x72
+        self.d3 = nn.ConvTranspose2d(512, 128, kernel_size=3, stride=2, padding=1, output_padding=1) # 128x144x144
+        self.d4 = nn.ConvTranspose2d(256, 1, kernel_size=3, stride=2, padding=1, output_padding=1) # 1x288x288
+        
+        self.feature_maps = {}
+        
+    def forward(self, batch):
+        sentinel_batch, buildings_batch = batch
+        buildings_data, buildings_labels = buildings_batch
+        sentinel_data, _ = sentinel_batch
+        
+        # Move data to the device
+        sentinel_input = sentinel_data.to(self.device)
+        buildings_input = buildings_data.to(self.device)
+        buildings_labels = buildings_labels.to(self.device)
+        
+        # Sentinel encoder
+        s1 = self.s1(sentinel_input)
+        s2 = self.s2(s1)
+        s3 = self.s3(s2)
+        s1_mid = self.s1_mid(sentinel_input)
+        
+        # Buildings encoder
+        e1 = self.e1(buildings_input)
+        e2 = self.e2(e1)
+        e3 = self.e3(e2)
+        e4 = self.e4(e3)
+        
+        # Lateral connections
+        l1 = torch.cat([s1_mid, e1], dim=1)
+        # print(f"l1 shape: {l1.shape}")
+        l2 = torch.cat([s1, e2], dim=1)
+        l3 = torch.cat([s2, e3], dim=1)
+        # print(f"l3 shape: {l3.shape}")
+        l4 = torch.cat([s3, e4], dim=1)
+        
+        # Decoder
+        d1 = self.d1(l4)
+        # print(f"d1 shape: {d1.shape}")
+        d2 = self.d2(torch.cat([d1, l3], dim=1))
+        d3 = self.d3(torch.cat([d2, l2], dim=1))
+        # print(f"d3 shape: {d3.shape}")
+        out = self.d4(torch.cat([d3, l1], dim=1))
+        # print(f"out shape: {out.shape}")
+        return out#.squeeze(1)
+    
+    def _make_layer(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+    def training_step(self, batch):
+        
+        _, buildings_batch = batch
+        _, buildings_labels = buildings_batch
+        
+        buildings_labels = buildings_labels.unsqueeze(1)
+
+        segmentation = self.forward(batch)
+        
+        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, buildings_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        
+        self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
+                
+        return loss
+    
+    def validation_step(self, batch):
+        _, buildings_batch = batch
+        _, buildings_labels = buildings_batch
+        buildings_labels = buildings_labels.unsqueeze(1)
+
+        segmentation = self.forward(batch)      
+        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        val_loss = loss_fn(segmentation, buildings_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        
+        self.log('val_mean_iou', mean_iou)
+        self.log('val_loss', val_loss, prog_bar=True, logger=True)
+        
+    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
+        _, buildings_batch = batch
+        _, buildings_labels = buildings_batch
+
+        segmentation = self.forward(batch)     
+        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        test_loss = loss_fn(segmentation, buildings_labels)
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+
+        self.log('test_loss', test_loss)
+        self.log('test_mean_iou', mean_iou)
+        
+    def compute_mean_iou(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        return iou.mean()
+
+    def configure_optimizers(self) -> dict:
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=10,  # adjust step_size to your needs
+            gamma=self.gamma      # adjust gamma to your needs
+        )
+
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+
+    def add_hooks(self):
+        def hook_fn(module, input, output):
+            self.feature_maps[module] = output
+
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Conv2d):
+                module.register_forward_hook(hook_fn)
+               
+model = MultiResolutionFPN(weight_decay=0.001,
                             learning_rate=0.0001,
-                            gamma=0.01,
-                            atrous_rates = (6,12,24),
+                            gamma=0,
                             pos_weight=torch.tensor(1.0, device='mps'))
 model.to(device)
 
 # for batch_idx, batch in enumerate(data_module.train_dataloader()):
-#     sentinel_batch, buildings_batch = batch
-#     buildings_data, buildings_labels = buildings_batch
-#     sentinel_data, _ = sentinel_batch
+#     # sentinel_batch, buildings_batch = batch
+#     # buildings_data, buildings_labels = buildings_batch
+#     # sentinel_data, _ = sentinel_batch
     
-#     sentinel_data = sentinel_data.to(device)
-#     buildings_data = buildings_data.to(device)
-#     outsent = model(batch)
-#     print(f"Sentinel data shape: {outsent.shape}")
+#     # sentinel_data = sentinel_data.to(device)
+#     # buildings_data = buildings_data.to(device)
+#     out = model(batch)
+#     # print(f"Sentinel data shape: {out.shape}")
 #     break
 
-output_dir = f'../UNITAC-trained-models/multi_modal/trained_SD_DLNAw/'
+
+output_dir = f'../UNITAC-trained-models/multi_modal/SD_FPN/'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-multi-modal')
@@ -574,7 +759,7 @@ checkpoint_callback = ModelCheckpoint(
     filename='multimodal_runid{run_id}-{batch_size:02d}-{epoch:02d}-{val_loss:.4f}',
     save_top_k=1,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=5)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=8)
 
 # Define trainer
 trainer = Trainer(
@@ -582,8 +767,8 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=5,
-    max_epochs=50,
+    min_epochs=12,
+    max_epochs=100,
     num_sanity_val_steps=3
 )
 
@@ -593,7 +778,7 @@ trainer.fit(model, datamodule=data_module)
 # # Use best model for evaluation
 # best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/trained_SD_sentinel_DLNAw/multimodal_runidrun_id=0-batch_size=00-epoch=22-val_loss=0.2262.ckpt"
 best_model_path = checkpoint_callback.best_model_path
-best_model = MultiResolutionSegmentationModel.load_from_checkpoint(best_model_path)
+best_model = MultiResolutionFPN.load_from_checkpoint(best_model_path)
 best_model.eval()
 
 buildingsGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(BuildingsScene_SD, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
@@ -637,3 +822,88 @@ plt.show()
 #     discrete_output = True)
 
 # pred_label_store.save(pred_labels)
+
+# Vis filters
+
+def visualize_filters(model, layer_name, num_filters=8):
+    # Get the layer by name
+    layer = dict(model.named_modules())[layer_name]
+    assert isinstance(layer, nn.Conv2d), "Layer should be of type nn.Conv2d"
+
+    # Get the weights of the filters
+    filters = layer.weight.data.clone().cpu().numpy()
+
+    # Normalize the filters to [0, 1] range for visualization
+    min_filter, max_filter = filters.min(), filters.max()
+    filters = (filters - min_filter) / (max_filter - min_filter)
+    
+    # Plot the filters
+    num_filters = min(num_filters, filters.shape[0])  # Limit to number of available filters
+    fig, axes = plt.subplots(1, num_filters, figsize=(20, 10))
+    
+    for i, ax in enumerate(axes):
+        filter_img = filters[i]
+        
+        # If the filter has more than one channel, average the channels for visualization
+        if filter_img.shape[0] > 1:
+            filter_img = np.mean(filter_img, axis=0)
+        
+        cax = ax.imshow(filter_img, cmap='viridis')
+        ax.axis('off')
+    
+    fig.subplots_adjust(right=0.8)
+    cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+    fig.colorbar(cax, cax=cbar_ax)
+
+    plt.show()
+    
+visualize_filters(best_model, 's1_mid', num_filters=8)
+
+best_model.add_hooks()
+
+model.to('mps')
+model.add_hooks()
+
+def visualize_feature_maps(model, layer_name, input_data, num_feature_maps=8):
+    # Perform a forward pass
+    model.eval()
+    with torch.no_grad():
+        model(input_data)
+
+    # Retrieve the feature maps from the specified layer
+    layer = dict(model.named_modules())[layer_name]
+    feature_maps = model.feature_maps[layer].cpu().numpy()
+
+    # Plot the feature maps
+    num_feature_maps = min(num_feature_maps, feature_maps.shape[1])  # Limit to number of available feature maps
+    fig, axes = plt.subplots(1, num_feature_maps, figsize=(20, 10))
+    
+    for i, ax in enumerate(axes):
+        feature_map_img = feature_maps[0, i]
+        cax = ax.imshow(feature_map_img, cmap='viridis')
+        ax.axis('off')
+    
+    fig.subplots_adjust(right=0.8)
+    cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+    fig.colorbar(cax, cax=cbar_ax)
+
+    plt.show()
+
+# Create some dummy input data
+sentinel_data = torch.randn(1, 4, 144, 144, device='mps')
+buildings_data = torch.randn(1, 1, 288, 288, device='mps')
+buildings_labels = torch.randn(1, 288, 288, device='mps')
+
+# Form the input batch
+input_batch = ((sentinel_data, None), (buildings_data, buildings_labels))
+
+# Visualize feature maps from the first convolutional layer
+visualize_feature_maps(model, 's2.0', input_batch, num_feature_maps=8)
+
+# FLOPS
+flops = FlopCountAnalysis(model, batch)
+
+print(flops.total())
+print(flops.by_module())
+
+print(parameter_count_table(model))
