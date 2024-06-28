@@ -262,6 +262,7 @@ class SentinelDeeplabv3(pl.LightningModule):
                 new_state_dict[new_key] = value                
 
         self.deeplab.load_state_dict(new_state_dict, strict=True)
+        self.save_hyperparameters()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
@@ -652,7 +653,7 @@ class BuildingsDeeplabv3(pl.LightningModule):
             }
         }
 
-class BuildingsSimpleSS(pl.LightningModule):
+class BuildingsUNET(pl.LightningModule):
     def __init__(self,
                 learning_rate: float = 1e-2,
                 weight_decay: float = 1e-1,
@@ -896,7 +897,207 @@ class MultiModalPredictionsIterator:
     def __iter__(self):
         return iter(self.predictions)
 
-# Train the model
+
+class MultiResolutionFPN(pl.LightningModule):
+    def __init__(self,
+                learning_rate: float = 1e-2,
+                weight_decay: float = 1e-1,
+                gamma: float = 0.1,
+                sched_step_size = 10,
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
+        super().__init__()
+        super(MultiResolutionFPN, self).__init__()
+        
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.pos_weight = pos_weight
+        self.gamma = gamma
+        self.sched_step_size = sched_step_size
+        
+        # Sentinel encoder
+        self.s1 = self._make_layer(4, 128) # 128x72x72
+        self.s2 = self._make_layer(128, 256) # 256x36x36
+        self.s3 = self._make_layer(256, 512) # 512x18x18
+        
+        self.s1_mid = nn.Conv2d(4, 64, kernel_size=1, stride=1, padding=0) # 64x144x144
+        
+        # Buildings encoder
+        self.e1 = self._make_layer(1, 64) # 64x144x144
+        self.e2 = self._make_layer(64, 128) # 128x72x72
+        self.e3 = self._make_layer(128, 256) # 256x36x36
+        self.e4 = self._make_layer(256, 512) # 512x18x18
+        
+        # Decoder
+        self.d1 = nn.ConvTranspose2d(1024, 512, kernel_size=3, stride=2, padding=1, output_padding=1) # 512x36x36
+        self.d2 = nn.ConvTranspose2d(1024, 256, kernel_size=3, stride=2, padding=1, output_padding=1) # 256x72x72
+        self.d3 = nn.ConvTranspose2d(512, 128, kernel_size=3, stride=2, padding=1, output_padding=1) # 128x144x144
+        self.d4 = nn.ConvTranspose2d(256, 1, kernel_size=3, stride=2, padding=1, output_padding=1) # 1x288x288
+        
+        self.feature_maps = {}
+        
+    def forward(self, batch):
+        sentinel_batch, buildings_batch = batch
+        buildings_data, buildings_labels = buildings_batch
+        sentinel_data, _ = sentinel_batch
+        
+        # Move data to the device
+        sentinel_input = sentinel_data.to(self.device)
+        buildings_input = buildings_data.to(self.device)
+        buildings_labels = buildings_labels.to(self.device)
+        
+        # Sentinel encoder
+        s1 = self.s1(sentinel_input)
+        s2 = self.s2(s1)
+        s3 = self.s3(s2)
+        s1_mid = self.s1_mid(sentinel_input)
+        
+        # Buildings encoder
+        e1 = self.e1(buildings_input)
+        e2 = self.e2(e1)
+        e3 = self.e3(e2)
+        e4 = self.e4(e3)
+        
+        # Lateral connections
+        l1 = torch.cat([s1_mid, e1], dim=1)
+        # print(f"l1 shape: {l1.shape}")
+        l2 = torch.cat([s1, e2], dim=1)
+        l3 = torch.cat([s2, e3], dim=1)
+        # print(f"l3 shape: {l3.shape}")
+        l4 = torch.cat([s3, e4], dim=1)
+        
+        # Decoder
+        d1 = self.d1(l4)
+        # print(f"d1 shape: {d1.shape}")
+        d2 = self.d2(torch.cat([d1, l3], dim=1))
+        d3 = self.d3(torch.cat([d2, l2], dim=1))
+        # print(f"d3 shape: {d3.shape}")
+        out = self.d4(torch.cat([d3, l1], dim=1))
+        # print(f"out shape: {out.shape}")
+        return out#.squeeze(1)
+    
+    def _make_layer(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+    def training_step(self, batch):
+        
+        _, buildings_batch = batch
+        _, buildings_labels = buildings_batch
+        
+        buildings_labels = buildings_labels.unsqueeze(1)
+        
+        segmentation = self.forward(batch)
+        
+        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, buildings_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        precision, recall = self.compute_precision_recall(preds, buildings_labels)
+
+        self.log('train_loss', loss)
+        self.log('train_precision', precision)
+        self.log('train_recall', recall)
+        self.log('train_mean_iou', mean_iou)
+                
+        return loss
+    
+    def validation_step(self, batch):
+        _, buildings_batch = batch
+        _, buildings_labels = buildings_batch
+        buildings_labels = buildings_labels.unsqueeze(1)
+
+        segmentation = self.forward(batch)      
+        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        val_loss = loss_fn(segmentation, buildings_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        precision, recall = self.compute_precision_recall(preds, buildings_labels)
+
+        self.log('val_mean_iou', mean_iou)
+        self.log('val_precision', precision)
+        self.log('val_recall', recall)
+        self.log('val_loss', val_loss, prog_bar=True, logger=True)
+        
+    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
+        _, buildings_batch = batch
+        _, buildings_labels = buildings_batch
+
+        segmentation = self.forward(batch)     
+        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        test_loss = loss_fn(segmentation, buildings_labels)
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        precision, recall = self.compute_precision_recall(preds, buildings_labels)
+
+        self.log('test_loss', test_loss)
+        self.log('test_mean_iou', mean_iou)
+        self.log('test_precision', precision)
+        self.log('test_recall', recall)
+        
+    def compute_mean_iou(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        return iou.mean()
+
+    def compute_precision_recall(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        true_positives = (preds & target).sum((1, 2))
+        predicted_positives = preds.sum((1, 2))
+        actual_positives = target.sum((1, 2))
+        
+        precision = true_positives.float() / (predicted_positives.float() + 1e-10)
+        recall = true_positives.float() / (actual_positives.float() + 1e-10)
+        
+        return precision.mean(), recall.mean()
+    
+    def configure_optimizers(self) -> dict:
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=self.sched_step_size,
+            gamma=self.gamma
+        )
+
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+
+    def add_hooks(self):
+        def hook_fn(module, input, output):
+            self.feature_maps[module] = output
+
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Conv2d):
+                module.register_forward_hook(hook_fn)
+
+
 class MultiModalSegmentationModel(pl.LightningModule):
     def __init__(self):
         super().__init__()

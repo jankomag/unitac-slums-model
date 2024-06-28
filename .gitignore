@@ -13,3 +13,5 @@ src/models/wandb/
 vectorised_model_predictions/
 predictions.qgz
 src/wandb/
+src/models/multiraster_model.py
+.DS_Store

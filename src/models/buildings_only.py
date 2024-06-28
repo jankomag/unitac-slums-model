@@ -85,7 +85,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
-from src.models.model_definitions import (BuildingsDeeplabv3, BuildingsSimpleSS, CustomVectorOutputConfig, BuildingsOnlyPredictionsIterator)
+from src.models.model_definitions import (BuildingsDeeplabv3, BuildingsUNET, CustomVectorOutputConfig, BuildingsOnlyPredictionsIterator)
 from deeplnafrica.deepLNAfrica import init_segm_model
 
 import folium
@@ -194,7 +194,7 @@ else:
     print("MPS is available.")
     
 # Train the model
-model = BuildingsSimpleSS(weight_decay=0.001,
+model = BuildingsUNET(weight_decay=0.001,
                             learning_rate=0.001,
                             gamma=0.01,
                             pos_weight=torch.tensor(5, device='mps'))
@@ -230,10 +230,11 @@ trainer = Trainer(
 trainer.fit(model, train_dl, val_dl)
 
 # Best deeplab model path val=0.3083
-# best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
+best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
 # best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=18-val_loss=0.1848.ckpt"
-best_model_path = checkpoint_callback.best_model_path
-best_model = BuildingsSimpleSS.load_from_checkpoint(best_model_path)
+best_model_path_unet = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/unet/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=14-val_loss=0.4913.ckpt"
+# best_model_path = checkpoint_callback.best_model_path
+best_model = BuildingsDeeplabv3.load_from_checkpoint(best_model_path_deeplab) # BuildingsDeeplabv3 BuildingsUNET
 best_model.eval()
 
 #  Make predictions

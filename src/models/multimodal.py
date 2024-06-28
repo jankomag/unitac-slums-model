@@ -218,21 +218,21 @@ BuildingsScene_SD = Scene(
         raster_source = rasterized_buildings_sourceSD,
         label_source = buildings_label_sourceSD)
 
-train_multiple_cities=False
+train_multiple_cities=True
 if train_multiple_cities:
-    # # Guatemala City
-    # sentinel_source_normalizedGC, sentinel_label_raster_sourceGC = create_sentinel_raster_source(image_uriGC, label_uriGC, class_config, clip_to_label_source=True)
-    # rasterized_buildings_sourceGC, buildings_label_sourceGC, crs_transformer_buildingsGC = create_buildings_raster_source(buildings_uriGC, image_uriGC, label_uriGC, class_config, resolution=5)    
+    # Guatemala City
+    sentinel_source_normalizedGC, sentinel_label_raster_sourceGC = create_sentinel_raster_source(image_uriGC, label_uriGC, class_config, clip_to_label_source=True)
+    rasterized_buildings_sourceGC, buildings_label_sourceGC, crs_transformer_buildingsGC = create_buildings_raster_source(buildings_uriGC, image_uriGC, label_uriGC, class_config, resolution=5)    
 
-    # BuildingsScene_GC = Scene(
-    #         id='GC_buildings',
-    #         raster_source = rasterized_buildings_sourceGC,
-    #         label_source = buildings_label_sourceGC)
+    BuildingsScene_GC = Scene(
+            id='GC_buildings',
+            raster_source = rasterized_buildings_sourceGC,
+            label_source = buildings_label_sourceGC)
             
-    # SentinelScene_GC = Scene(
-    #         id='GC_sentinel',
-    #         raster_source = sentinel_source_normalizedGC,
-    #         label_source = sentinel_label_raster_sourceGC)
+    SentinelScene_GC = Scene(
+            id='GC_sentinel',
+            raster_source = sentinel_source_normalizedGC,
+            label_source = sentinel_label_raster_sourceGC)
 
     # # Tegucigalpa
     # sentinel_source_normalizedTG, sentinel_label_raster_sourceTG = create_sentinel_raster_source(image_uriGC, label_uriTG, class_config, clip_to_label_source=True)
@@ -263,8 +263,8 @@ if train_multiple_cities:
     #     label_source=buildings_label_sourcePN)
     
     # Guatemala City
-    # buildingsGeoDataset_GC, train_buildings_dataset_GC, val_buildings_dataset_GC, test_buildings_dataset_GC = create_datasets(BuildingsScene_GC, imgsize=288, stride=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-    # sentinelGeoDataset_GC, train_sentinel_dataset_GC, val_sentinel_dataset_GC, test_sentinel_dataset_GC = create_datasets(SentinelScene_GC, imgsize=144, stride=144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+    buildingsGeoDataset_GC, train_buildings_dataset_GC, val_buildings_dataset_GC, test_buildings_dataset_GC = create_datasets(BuildingsScene_GC, imgsize=288, stride=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+    sentinelGeoDataset_GC, train_sentinel_dataset_GC, val_sentinel_dataset_GC, test_sentinel_dataset_GC = create_datasets(SentinelScene_GC, imgsize=144, stride=144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 
     # Tegucigalpa
     # buildingsGeoDataset_TG, train_buildings_dataset_TG, val_buildings_dataset_TG, test_buildings_dataset_TG = create_datasets(BuildingsScene_TG, imgsize=288, stride=288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
@@ -282,13 +282,13 @@ batch_size = 16
 buildingsGeoDataset_SD, train_buildings_dataset_SD, val_buildings_dataset_SD, test_buildings_dataset_SD = create_datasets(BuildingsScene_SD, imgsize=288, stride=288, padding=50, val_ratio=0.2, test_ratio=0.1, seed=42)
 sentinelGeoDataset_SD, train_sentinel_dataset_SD, val_sentinel_dataset_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=144, stride=144, padding=25, val_ratio=0.2, test_ratio=0.1, seed=42)
 
-all_cities_sentinel_train_ds = ConcatDataset([train_sentinel_dataset_SD]) #train_sentinel_dataset_GC, train_sentinel_dataset_TG, train_sentinel_dataset_PN
-all_cities_sentinel_val_ds = ConcatDataset([val_sentinel_dataset_SD]) # val_sentinel_dataset_GC, val_sentinel_dataset_TG, val_sentinel_dataset_PN
-all_cities_sentinel_test_ds = ConcatDataset([test_sentinel_dataset_SD]) # test_sentinel_dataset_GC, test_sentinel_dataset_TG, test_sentinel_dataset_PN
+all_cities_sentinel_train_ds = ConcatDataset([train_sentinel_dataset_SD, train_sentinel_dataset_GC]) #, train_sentinel_dataset_TG, train_sentinel_dataset_PN
+all_cities_sentinel_val_ds = ConcatDataset([val_sentinel_dataset_SD, val_sentinel_dataset_GC]) # , val_sentinel_dataset_TG, val_sentinel_dataset_PN
+all_cities_sentinel_test_ds = ConcatDataset([test_sentinel_dataset_SD, test_sentinel_dataset_GC]) # , test_sentinel_dataset_TG, test_sentinel_dataset_PN
 
-all_cities_build_train_ds = ConcatDataset([train_buildings_dataset_SD]) #train_buildings_dataset_GC train_buildings_dataset_TG, train_buildings_dataset_PN
-all_cities_build_val_ds = ConcatDataset([val_buildings_dataset_SD]) #val_buildings_dataset_GC, val_buildings_dataset_TG, val_buildings_dataset_PN
-all_cities_build_test_ds = ConcatDataset([test_buildings_dataset_SD]) #test_buildings_dataset_GC, test_buildings_dataset_TG, test_buildings_dataset_PN
+all_cities_build_train_ds = ConcatDataset([train_buildings_dataset_SD, train_buildings_dataset_GC]) # train_buildings_dataset_TG, train_buildings_dataset_PN
+all_cities_build_val_ds = ConcatDataset([val_buildings_dataset_SD, val_buildings_dataset_GC]) #, val_buildings_dataset_TG, val_buildings_dataset_PN
+all_cities_build_test_ds = ConcatDataset([test_buildings_dataset_SD, test_buildings_dataset_GC]) #, test_buildings_dataset_TG, test_buildings_dataset_PN
     
 train_dataset = MergeDataset(all_cities_sentinel_train_ds, all_cities_build_train_ds)
 val_dataset = MergeDataset(all_cities_sentinel_val_ds, all_cities_build_val_ds)
@@ -369,7 +369,7 @@ data_module = MultiModalDataModule(train_loader, val_loader)
 #     break
 
 # Train the model
-class MultiResolutionSegmentationModel(pl.LightningModule):
+class MultiResolutionDeepLabV3(pl.LightningModule):
     def __init__(self,
                 learning_rate: float = 1e-2,
                 weight_decay: float = 1e-1,
@@ -415,7 +415,7 @@ class MultiResolutionSegmentationModel(pl.LightningModule):
         self.sentinel_encoder.backbone.load_state_dict(final_state_dict, strict=True)
         
         # Intermediate Layer Getters
-        self.sentinel_encoder_backbone = IntermediateLayerGetter(self.sentinel_encoder.backbone, {'layer4': 'out'})#, 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
+        self.sentinel_encoder_backbone = IntermediateLayerGetter(self.sentinel_encoder.backbone, {'layer4': 'out', 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
         
         self.fusion_layer = nn.Conv2d(4096, 2048, kernel_size=1)
         
@@ -440,8 +440,15 @@ class MultiResolutionSegmentationModel(pl.LightningModule):
         
         sentinel_features = self.sentinel_encoder_backbone(sentinel_data)
         sentinel_out = sentinel_features['out']
-        # print(f"sentinel_features shape: {sentinel_features['out'].shape}")
-        
+        sent1 = sentinel_features['layer1']
+        print(f"sent1 shape: {sent1.shape}")
+
+        sent2 = sentinel_features['layer2']
+        print(f"sent2 shape: {sent2.shape}")
+
+        sent3 = sentinel_features['layer3']
+        print(f"sent3 shape: {sent3.shape}")
+
         x = self.buildings_conv1(buildings_data)
         x = self.buildings_bn1(x)
         x = self.relu(x)
@@ -549,12 +556,13 @@ class MultiResolutionSegmentationModel(pl.LightningModule):
             }
         }
 
-
 class MultiResolutionFPN(pl.LightningModule):
+    
     def __init__(self,
                 learning_rate: float = 1e-2,
                 weight_decay: float = 1e-1,
                 gamma: float = 0.1,
+                sched_step_size = 10,
                 pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
         super().__init__()
         super(MultiResolutionFPN, self).__init__()
@@ -563,7 +571,7 @@ class MultiResolutionFPN(pl.LightningModule):
         self.weight_decay = weight_decay
         self.pos_weight = pos_weight
         self.gamma = gamma
-        
+        self.sched_step_size = sched_step_size
         
         # Sentinel encoder
         self.s1 = self._make_layer(4, 128) # 128x72x72
@@ -581,9 +589,10 @@ class MultiResolutionFPN(pl.LightningModule):
         # Decoder
         self.d1 = nn.ConvTranspose2d(1024, 512, kernel_size=3, stride=2, padding=1, output_padding=1) # 512x36x36
         self.d2 = nn.ConvTranspose2d(1024, 256, kernel_size=3, stride=2, padding=1, output_padding=1) # 256x72x72
-        self.d3 = nn.ConvTranspose2d(512, 128, kernel_size=3, stride=2, padding=1, output_padding=1) # 128x144x144
-        self.d4 = nn.ConvTranspose2d(256, 1, kernel_size=3, stride=2, padding=1, output_padding=1) # 1x288x288
-        
+        self.upsample1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.d3 = nn.ConvTranspose2d(512, 128, kernel_size=1, stride=1, padding=0, output_padding=0)
+        self.d4 = nn.ConvTranspose2d(256, 1, kernel_size=1, stride=1, padding=0, output_padding=0) # 1x144x144
+        self.upsample2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.feature_maps = {}
         
     def forward(self, batch):
@@ -612,6 +621,7 @@ class MultiResolutionFPN(pl.LightningModule):
         l1 = torch.cat([s1_mid, e1], dim=1)
         # print(f"l1 shape: {l1.shape}")
         l2 = torch.cat([s1, e2], dim=1)
+        # print(f"l2 shape: {l2.shape}")
         l3 = torch.cat([s2, e3], dim=1)
         # print(f"l3 shape: {l3.shape}")
         l4 = torch.cat([s3, e4], dim=1)
@@ -620,10 +630,15 @@ class MultiResolutionFPN(pl.LightningModule):
         d1 = self.d1(l4)
         # print(f"d1 shape: {d1.shape}")
         d2 = self.d2(torch.cat([d1, l3], dim=1))
-        d3 = self.d3(torch.cat([d2, l2], dim=1))
+        # print(f"d2 shape: {d2.shape}")
+        upsamp1 = self.upsample1(torch.cat([d2, l2], dim=1))
+        d3 = self.d3(upsamp1)
         # print(f"d3 shape: {d3.shape}")
-        out = self.d4(torch.cat([d3, l1], dim=1))
-        # print(f"out shape: {out.shape}")
+        d4 = self.d4(torch.cat([d3, l1], dim=1))
+        # print(f"d4 shape: {d4.shape}")
+        out = self.upsample2(d4)
+        # print(f"upsample2 shape: {out.shape}")
+
         return out#.squeeze(1)
     
     def _make_layer(self, in_channels, out_channels):
@@ -639,7 +654,7 @@ class MultiResolutionFPN(pl.LightningModule):
         _, buildings_labels = buildings_batch
         
         buildings_labels = buildings_labels.unsqueeze(1)
-
+        
         segmentation = self.forward(batch)
         
         assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
@@ -649,8 +664,11 @@ class MultiResolutionFPN(pl.LightningModule):
         
         preds = torch.sigmoid(segmentation) > 0.5
         mean_iou = self.compute_mean_iou(preds, buildings_labels)
-        
+        precision, recall = self.compute_precision_recall(preds, buildings_labels)
+
         self.log('train_loss', loss)
+        self.log('train_precision', precision)
+        self.log('train_recall', recall)
         self.log('train_mean_iou', mean_iou)
                 
         return loss
@@ -668,8 +686,11 @@ class MultiResolutionFPN(pl.LightningModule):
         
         preds = torch.sigmoid(segmentation) > 0.5
         mean_iou = self.compute_mean_iou(preds, buildings_labels)
-        
+        precision, recall = self.compute_precision_recall(preds, buildings_labels)
+
         self.log('val_mean_iou', mean_iou)
+        self.log('val_precision', precision)
+        self.log('val_recall', recall)
         self.log('val_loss', val_loss, prog_bar=True, logger=True)
         
     def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
@@ -684,9 +705,12 @@ class MultiResolutionFPN(pl.LightningModule):
         
         preds = torch.sigmoid(segmentation) > 0.5
         mean_iou = self.compute_mean_iou(preds, buildings_labels)
+        precision, recall = self.compute_precision_recall(preds, buildings_labels)
 
         self.log('test_loss', test_loss)
         self.log('test_mean_iou', mean_iou)
+        self.log('test_precision', precision)
+        self.log('test_recall', recall)
         
     def compute_mean_iou(self, preds, target):
         preds = preds.bool()
@@ -697,6 +721,18 @@ class MultiResolutionFPN(pl.LightningModule):
         iou = (intersection + smooth) / (union + smooth)
         return iou.mean()
 
+    def compute_precision_recall(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        true_positives = (preds & target).sum((1, 2))
+        predicted_positives = preds.sum((1, 2))
+        actual_positives = target.sum((1, 2))
+        
+        precision = true_positives.float() / (predicted_positives.float() + 1e-10)
+        recall = true_positives.float() / (actual_positives.float() + 1e-10)
+        
+        return precision.mean(), recall.mean()
+    
     def configure_optimizers(self) -> dict:
         optimizer = torch.optim.AdamW(
             self.parameters(),
@@ -706,8 +742,8 @@ class MultiResolutionFPN(pl.LightningModule):
 
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer,
-            step_size=10,  # adjust step_size to your needs
-            gamma=self.gamma      # adjust gamma to your needs
+            step_size=self.sched_step_size,
+            gamma=self.gamma
         )
 
         return {
@@ -726,26 +762,25 @@ class MultiResolutionFPN(pl.LightningModule):
         for name, module in self.named_modules():
             if isinstance(module, nn.Conv2d):
                 module.register_forward_hook(hook_fn)
-               
-model = MultiResolutionFPN(weight_decay=0.001,
-                            learning_rate=0.0001,
-                            gamma=0,
-                            pos_weight=torch.tensor(1.0, device='mps'))
+
+model = MultiResolutionDeepLabV3(weight_decay=1e-5,
+                            learning_rate=1e-2,
+                            gamma=0.5,
+                            # sched_step_size = 15,
+                            pos_weight=torch.tensor(5.0, device='mps'))
 model.to(device)
 
 # for batch_idx, batch in enumerate(data_module.train_dataloader()):
 #     # sentinel_batch, buildings_batch = batch
 #     # buildings_data, buildings_labels = buildings_batch
 #     # sentinel_data, _ = sentinel_batch
-    
 #     # sentinel_data = sentinel_data.to(device)
 #     # buildings_data = buildings_data.to(device)
 #     out = model(batch)
 #     # print(f"Sentinel data shape: {out.shape}")
-#     break
+    # break
 
-
-output_dir = f'../UNITAC-trained-models/multi_modal/SD_FPN/'
+output_dir = f'../UNITAC-trained-models/multi_modal/SD_DLV3/'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-multi-modal')
@@ -776,7 +811,7 @@ trainer = Trainer(
 trainer.fit(model, datamodule=data_module)
 
 # # Use best model for evaluation
-# best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/trained_SD_sentinel_DLNAw/multimodal_runidrun_id=0-batch_size=00-epoch=22-val_loss=0.2262.ckpt"
+best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_FPN/multimodal_runidrun_id=0-batch_size=00-epoch=57-val_loss=2.3464.ckpt"
 best_model_path = checkpoint_callback.best_model_path
 best_model = MultiResolutionFPN.load_from_checkpoint(best_model_path)
 best_model.eval()
@@ -808,23 +843,22 @@ ax.set_title('infs Scores')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
-# # Saving predictions as GEOJSON
-# vector_output_config = CustomVectorOutputConfig(
-#     class_id=1,
-#     denoise=8,
-#     threshold=0.5)
+# Saving predictions as GEOJSON
+vector_output_config = CustomVectorOutputConfig(
+    class_id=1,
+    denoise=8,
+    threshold=0.5)
 
-# pred_label_store = SemanticSegmentationLabelStore(
-#     uri='../../vectorised_model_predictions/multi-modal/SD_pretrained_512/',
-#     crs_transformer = crs_transformer_buildings,
-#     class_config = class_config,
-#     vector_outputs = [vector_output_config],
-#     discrete_output = True)
+pred_label_store = SemanticSegmentationLabelStore(
+    uri='../../vectorised_model_predictions/multi-modal/SD_FPN/',
+    crs_transformer = crs_transformer_buildingsSD,
+    class_config = class_config,
+    vector_outputs = [vector_output_config],
+    discrete_output = True)
 
-# pred_label_store.save(pred_labels)
+pred_label_store.save(pred_labels)
 
 # Vis filters
-
 def visualize_filters(model, layer_name, num_filters=8):
     # Get the layer by name
     layer = dict(model.named_modules())[layer_name]
@@ -898,12 +932,12 @@ buildings_labels = torch.randn(1, 288, 288, device='mps')
 input_batch = ((sentinel_data, None), (buildings_data, buildings_labels))
 
 # Visualize feature maps from the first convolutional layer
-visualize_feature_maps(model, 's2.0', input_batch, num_feature_maps=8)
+visualize_feature_maps(model, 'e4.0', input_batch, num_feature_maps=8)
 
 # FLOPS
-flops = FlopCountAnalysis(model, batch)
+# flops = FlopCountAnalysis(model, batch)
 
-print(flops.total())
-print(flops.by_module())
+# print(flops.total())
+# print(flops.by_module())
 
-print(parameter_count_table(model))
+# print(parameter_count_table(model))

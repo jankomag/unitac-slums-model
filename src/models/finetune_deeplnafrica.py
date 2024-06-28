@@ -44,7 +44,7 @@ parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 
-from src.models.model_definitions import CustomGeoJSONVectorSource, CustomVectorOutputConfig #PredictionsIterator
+from src.models.model_definitions import CustomGeoJSONVectorSource, CustomVectorOutputConfig, SentinelSimpleSS, SentinelDeeplabv3
 from src.data.dataloaders import create_datasets, create_sentinel_raster_source
 from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
 from rastervision.core.data import (Scene,
@@ -168,16 +168,19 @@ trainer = Trainer(
 trainer.fit(model, train_dl, val_dl)
 
 # Make predictions
-best_model_path = checkpoint_callback.best_model_path
-best_model = SentinelSimpleSS.load_from_checkpoint(best_model_path)
+# best_model_path = checkpoint_callback.best_model_path
+best_unet_path = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/sentinel_only/UNET/"
+best_deeplab_path = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/sentinel_only/multimodal_runidrun_id=0-epoch=02-val_loss=0.3667.ckpt"
+best_model = SentinelDeeplabv3.load_from_checkpoint(best_deeplab_path) # SentinelSimpleSS SentinelDeeplabv3
 best_model.eval()
 
-label_uriGC = "../../data/SHP/Guatemala_PS.shp"
-image_uriGC = '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
-sentinel_source_normalizedGC, sentinel_label_raster_sourceGC = create_sentinel_raster_source(image_uriGC, label_uriGC, class_config, clip_to_label_source=True)
-SentinelScene_GC = Scene(id='GC_sentinel', raster_source = sentinel_source_normalizedGC)
 
-GC_ds, _, _, _ = create_datasets(SentinelScene_GC, imgsize=144, stride=72, padding=8, val_ratio=0.2, test_ratio=0.1, seed=42)
+# label_uriGC = "../../data/SHP/Guatemala_PS.shp"
+# image_uriGC = '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
+# sentinel_source_normalizedGC, sentinel_label_raster_sourceGC = create_sentinel_raster_source(image_uriGC, label_uriGC, class_config, clip_to_label_source=True)
+# SentinelScene_GC = Scene(id='GC_sentinel', raster_source = sentinel_source_normalizedGC)
+
+# GC_ds, _, _, _ = create_datasets(SentinelScene_GC, imgsize=144, stride=72, padding=8, val_ratio=0.2, test_ratio=0.1, seed=42)
 SD_ds, _, _, _ = create_datasets(SentinelScene_SD, imgsize=144, stride=72, padding=8, val_ratio=0.2, test_ratio=0.1, seed=42)
 
 predictions_iterator = PredictionsIterator(best_model, SD_ds, device=device)

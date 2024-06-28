@@ -39,11 +39,12 @@ from torch.utils.data import ConcatDataset
 # Project-specific imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-# grandparent_dir = os.path.dirname(parent_dir)
+grandparent_dir = os.path.dirname(parent_dir)
+sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
 from deeplnafrica.deepLNAfrica import init_segm_model
-
+from src.models.model_definitions import (BuildingsDeeplabv3, BuildingsUNET, CustomVectorOutputConfig, BuildingsOnlyPredictionsIterator, CustomGeoJSONVectorSource)
 from src.data.dataloaders import (
     create_datasets,
     create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
@@ -83,17 +84,12 @@ from rastervision.core.data import (VectorSource, XarraySource,
                                     IdentityCRSTransformer, RasterioCRSTransformer,
                                     RasterioCRSTransformer)
 
-
-# from src.models import BuildingsOnlyDeeplabv3SegmentationModel
-
 from rastervision.core.data import (
     ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
     VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
 )
 from typing import TYPE_CHECKING, List, Optional, Union
 import logging
-from src.models.model_definitions import (CustomGeoJSONVectorSource, BuildingsDeeplabv3, BuildingsSimpleSS)
-
 from rastervision.pipeline.file_system import download_if_needed
 from rastervision.core.box import Box
 from rastervision.core.data.vector_source.vector_source import VectorSource
@@ -115,53 +111,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 import duckdb
-
-class CustomVectorOutputConfig(Config):
-    """Config for vectorized semantic segmentation predictions."""
-    class_id: int = Field(
-        ...,
-        description='The prediction class that is to be turned into vectors.'
-    )
-    denoise: int = Field(
-        8,
-        description='Diameter of the circular structural element used to '
-        'remove high-frequency signals from the image. Smaller values will '
-        'reduce less noise and make vectorization slower and more memory '
-        'intensive (especially for large images). Larger values will remove '
-        'more noise and make vectorization faster but might also remove '
-        'legitimate detections.'
-    )
-    threshold: Optional[float] = Field(
-        None,
-        description='Probability threshold for creating the binary mask for '
-        'the pixels of this class. Pixels will be considered to belong to '
-        'this class if their probability for this class is >= ``threshold``. '
-        'Defaults to ``None``, which is equivalent to (1 / num_classes).'
-    )
-
-    def vectorize(self, mask: np.ndarray) -> Iterator['Polygon']:
-        """Vectorize binary mask representing the target class into polygons."""
-        # Apply denoising if necessary
-        if self.denoise > 0:
-            kernel = np.ones((self.denoise, self.denoise), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-        # Find contours
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        # Convert contours to polygons
-        for contour in contours:
-            if contour.size >= 6:  # Minimum number of points for a valid polygon
-                yield Polygon(contour.squeeze())
-
-    def get_uri(self, root: str, class_config: Optional['ClassConfig'] = None) -> str:
-        """Get the URI for saving the vector output."""
-        if class_config is not None:
-            class_name = class_config.get_name(self.class_id)
-            uri = join(root, f'class-{self.class_id}-{class_name}.json')
-        else:
-            uri = join(root, f'class-{self.class_id}.json')
-        return uri
 
 #  Original code for making predictions that works 
 class PredictionsIterator:
@@ -188,8 +137,11 @@ class PredictionsIterator:
         return iter(self.predictions)
     
 # Model definition
-best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=09-val_loss=0.1590.ckpt"
-best_model = BuildingsOnlyDeeplabv3SegmentationModel.load_from_checkpoint(best_model_path)
+best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
+best_model_path_unet = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/unet/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=14-val_loss=0.4913.ckpt"
+
+# BuildingsDeeplabv3 BuildingsUNET
+best_model = BuildingsDeeplabv3.load_from_checkpoint(best_model_path_deeplab)
 best_model.eval()
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
@@ -202,56 +154,6 @@ con.load_extension('httpfs')
 con.load_extension('spatial')
 con.execute("SET s3_region='us-west-2'")
 con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
-
-# implements loading gdf - class CustomGeoJSONVectorSource
-class CustomGeoJSONVectorSource(VectorSource):
-    """A :class:`.VectorSource` for reading GeoJSON files or GeoDataFrames."""
-
-    def __init__(self,
-                 crs_transformer: 'CRSTransformer',
-                 uris: Optional[Union[str, List[str]]] = None,
-                 gdf: Optional[gpd.GeoDataFrame] = None,
-                 vector_transformers: List['VectorTransformer'] = [],
-                 bbox: Optional[Box] = None):
-        """Constructor.
-
-        Args:
-            uris (Optional[Union[str, List[str]]]): URI(s) of the GeoJSON file(s).
-            gdf (Optional[gpd.GeoDataFrame]): A GeoDataFrame with vector data.
-            crs_transformer: A ``CRSTransformer`` to convert
-                between map and pixel coords. Normally this is obtained from a
-                :class:`.RasterSource`.
-            vector_transformers: ``VectorTransformers`` for transforming
-                geometries. Defaults to ``[]``.
-            bbox (Optional[Box]): User-specified crop of the extent. If None,
-                the full extent available in the source file is used.
-        """
-        self.uris = listify_uris(uris) if uris is not None else None
-        self.gdf = gdf
-        super().__init__(
-            crs_transformer,
-            vector_transformers=vector_transformers,
-            bbox=bbox)
-
-    def _get_geojson(self) -> dict:
-        if self.gdf is not None:
-            # Convert GeoDataFrame to GeoJSON
-            df = self.gdf.to_crs('epsg:4326')
-            geojson = df.__geo_interface__
-        elif self.uris is not None:
-            geojsons = [self._get_geojson_single(uri) for uri in self.uris]
-            geojson = merge_geojsons(geojsons)
-        else:
-            raise ValueError("Either 'uris' or 'gdf' must be provided.")
-        return geojson
-
-    def _get_geojson_single(self, uri: str) -> dict:
-        # download first so that it gets cached
-        path = download_if_needed(uri)
-        df: gpd.GeoDataFrame = gpd.read_file(path)
-        df = df.to_crs('epsg:4326')
-        geojson = df.__geo_interface__
-        return geojson
 
 def query_buildings_data(row, con):
     city_name = row['city_ascii']
@@ -345,7 +247,7 @@ gdf = gpd.read_parquet(sica_cities).to_crs("EPSG:4326")
 image_uri = '../../data/0/sentinel_Gee/HTI_Tabarre_2023.tif'
 label_uri = "../../data/0/SantoDomingo3857.geojson"
 crs_transformer_common = RasterioCRSTransformer.from_uri(image_uri)
-gdf = gdf.head(1)
+
 device='mps'
 for index, row in gdf.iterrows():
     buildings = query_buildings_data(row, con)
@@ -381,7 +283,7 @@ def merge_geojson_files(country_directory, output_file):
     print(f'Merged GeoJSON file saved to {output_file}')
 
 # Specify the country directory and the output file path
-country_directory = '../../vectorised_model_predictions/buildings_model_only_SDtrained/SLV/'
+country_directory = '../vectorised_model_predictions/deeplab_buildings_model_only/SLV/'
 output_file = os.path.join(country_directory, 'SLV_spatial_data.geojson')
 
 # Merge the GeoJSON files

@@ -53,7 +53,7 @@ from src.data.dataloaders import (
     create_datasets,
     create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
 )
-from src.models.model_definitions import (CustomGeoJSONVectorSource, MultiModalSegmentationModel)
+from src.models.model_definitions import (CustomGeoJSONVectorSource, MultiModalSegmentationModel, MultiResolutionFPN, CustomVectorOutputConfig)
 
 from rastervision.core.raster_stats import RasterStats
 from rastervision.core.data.raster_transformer import RasterTransformer
@@ -151,53 +151,6 @@ class PredictionsIterator:
     def __iter__(self):
         return iter(self.predictions)
     
-class CustomVectorOutputConfig(Config):
-    """Config for vectorized semantic segmentation predictions."""
-    class_id: int = Field(
-        ...,
-        description='The prediction class that is to be turned into vectors.'
-    )
-    denoise: int = Field(
-        8,
-        description='Diameter of the circular structural element used to '
-        'remove high-frequency signals from the image. Smaller values will '
-        'reduce less noise and make vectorization slower and more memory '
-        'intensive (especially for large images). Larger values will remove '
-        'more noise and make vectorization faster but might also remove '
-        'legitimate detections.'
-    )
-    threshold: Optional[float] = Field(
-        None,
-        description='Probability threshold for creating the binary mask for '
-        'the pixels of this class. Pixels will be considered to belong to '
-        'this class if their probability for this class is >= ``threshold``. '
-        'Defaults to ``None``, which is equivalent to (1 / num_classes).'
-    )
-
-    def vectorize(self, mask: np.ndarray) -> Iterator['Polygon']:
-        """Vectorize binary mask representing the target class into polygons."""
-        # Apply denoising if necessary
-        if self.denoise > 0:
-            kernel = np.ones((self.denoise, self.denoise), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-        # Find contours
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        # Convert contours to polygons
-        for contour in contours:
-            if contour.size >= 6:  # Minimum number of points for a valid polygon
-                yield Polygon(contour.squeeze())
-
-    def get_uri(self, root: str, class_config: Optional['ClassConfig'] = None) -> str:
-        """Get the URI for saving the vector output."""
-        if class_config is not None:
-            class_name = class_config.get_name(self.class_id)
-            uri = join(root, f'class-{self.class_id}-{class_name}.json')
-        else:
-            uri = join(root, f'class-{self.class_id}.json')
-        return uri
-
 class CustomStatsTransformer(RasterTransformer):
     def __init__(self,
                  means: Sequence[float],
@@ -372,8 +325,8 @@ def save_predictions(model, sent_ds, buil_ds, build_scene, crs_transformer, coun
         discrete_output = True)
 
     pred_label_store.save(pred_labels)
-best_model_path = '/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/trained_4Cit_sentinel_DLNAw_fusion_module/multimodal_runidrun_id=0-batch_size=00-epoch=06-val_loss=0.0918.ckpt'
-best_model = MultiModalSegmentationModel.load_from_checkpoint(best_model_path)
+# best_model_path = '/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/trained_4Cit_sentinel_DLNAw_fusion_module/multimodal_runidrun_id=0-batch_size=00-epoch=06-val_loss=0.0918.ckpt'
+# best_model = MultiModalSegmentationModel.load_from_checkpoint(best_model_path)
 best_model.eval()
 
 class_config = ClassConfig(names=['background', 'slums'], 
@@ -392,7 +345,8 @@ con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=htt
 sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
 gdf = gpd.read_parquet(sica_cities)
 gdf = gdf.to_crs('EPSG:3857')
-gdf = gdf[gdf['city_ascii'] == 'Tabarre']
+gdf = gdf.head(20)
+# gdf = gdf[gdf['city_ascii'] == 'Tabarre']
 
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
