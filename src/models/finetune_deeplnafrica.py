@@ -125,7 +125,7 @@ val_dl = DataLoader(val_sentinel_dataset_SD, batch_size=batch_size, shuffle=Fals
 # Create model
 model = SentinelSimpleSS(weight_decay=0.01,
         learning_rate=0.001,
-        gamma=0.01,
+        gamma=0.1,
         pos_weight=torch.tensor(2, device='mps'))
 model.to(device)
 

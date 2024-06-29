@@ -258,20 +258,20 @@ image = ax.imshow(scores_building)
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
-# # Saving predictions as GEOJSON
-# vector_output_config = CustomVectorOutputConfig(
-#     class_id=1,
-#     denoise=8,
-#     threshold=0.5)
+# Saving predictions as GEOJSON
+vector_output_config = CustomVectorOutputConfig(
+    class_id=1,
+    denoise=8,
+    threshold=0.5)
 
-# pred_label_store = SemanticSegmentationLabelStore(
-#     uri='../../vectorised_model_predictions/buildings_model_only/2/',
-#     crs_transformer = crs_transformer_SD,
-#     class_config = class_config,
-#     vector_outputs = [vector_output_config],
-#     discrete_output = True)
+pred_label_store = SemanticSegmentationLabelStore(
+    uri='../../vectorised_model_predictions/buildings_model_only/2/',
+    crs_transformer = crs_transformer_SD,
+    class_config = class_config,
+    vector_outputs = [vector_output_config],
+    discrete_output = True)
 
-# pred_label_store.save(pred_labels)
+pred_label_store.save(pred_labels)
 
 # # Evaluate predictions
 # from rastervision.core.evaluation import SemanticSegmentationEvaluator
