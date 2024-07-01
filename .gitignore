@@ -13,11 +13,11 @@ src/models/wandb/
 vectorised_model_predictions/
 predictions.qgz
 src/wandb/
-src/models/multiraster_model.py
 .DS_Store
-src/models/3resnet_model.py
+src/models/3res_model.py
 ananlysis/wandb/
 ananlysis/metrics/
 Dockerfile
 docker/
 src/Interactive-1.ipynb
+src/make_pred_pixelbased.py
