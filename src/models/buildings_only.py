@@ -132,9 +132,9 @@ def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_co
     return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
 
 ### Label source ###
-label_uri_SD = "../../data/0/SantoDomingo3857.geojson"
-image_uri_SD = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-buildings_uri_SD = '../../data/0/overture/santodomingo_buildings.geojson'
+label_uri_SD = "../data/0/SantoDomingo3857.geojson"
+image_uri_SD = '../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+buildings_uri_SD = '../data/0/overture/santodomingo_buildings.geojson'
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
@@ -192,7 +192,7 @@ if not torch.backends.mps.is_available():
 else:
     device = torch.device("mps")
     print("MPS is available.")
-    
+
 # Train the model
 model = BuildingsUNET(weight_decay=0.001,
                             learning_rate=0.001,

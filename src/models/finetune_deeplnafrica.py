@@ -99,8 +99,8 @@ class_config = ClassConfig(names=['background', 'slums'],
                            colors=['lightgray', 'darkred'],
                            null_class='background')
 
-label_uri = "../../data/0/SantoDomingo3857.geojson"
-image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+label_uri = "../data/0/SantoDomingo3857.geojson"
+image_uri = '../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
 
 sentinel_source_normalizedSD, sentinel_label_raster_sourceSD = create_sentinel_raster_source(image_uri, label_uri, class_config, clip_to_label_source=True)
 
@@ -169,7 +169,7 @@ trainer.fit(model, train_dl, val_dl)
 
 # Make predictions
 # best_model_path = checkpoint_callback.best_model_path
-best_unet_path = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/sentinel_only/UNET/"
+best_unet_path = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/sentinel_only/UNET/multimodal_runidrun_id=0-epoch=04-val_loss=0.6201.ckpt"
 best_deeplab_path = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/sentinel_only/multimodal_runidrun_id=0-epoch=02-val_loss=0.3667.ckpt"
 best_model = SentinelDeeplabv3.load_from_checkpoint(best_deeplab_path) # SentinelSimpleSS SentinelDeeplabv3
 best_model.eval()

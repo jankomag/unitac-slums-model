@@ -1,0 +1,61 @@
+2024-07-01 19:45:55,389 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Current SDK version is 0.17.1
+2024-07-01 19:45:55,389 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Configure stats pid to 97757
+2024-07-01 19:45:55,389 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Loading settings from /Users/janmagnuszewski/.config/wandb/settings
+2024-07-01 19:45:55,389 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Loading settings from /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/settings
+2024-07-01 19:45:55,389 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2024-07-01 19:45:55,389 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Applying setup settings: {'_disable_service': False}
+2024-07-01 19:45:55,389 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'analysis/morphology.py', 'program_abspath': '/Users/janmagnuszewski/dev/slums-model-unitac/analysis/morphology.py', 'program': '/Users/janmagnuszewski/dev/slums-model-unitac/analysis/morphology.py'}
+2024-07-01 19:45:55,389 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Applying login settings: {}
+2024-07-01 19:45:55,389 INFO    MainThread:97757 [wandb_init.py:_log_setup():520] Logging user logs to /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/run-20240701_194555-sx8qi0vh/logs/debug.log
+2024-07-01 19:45:55,390 INFO    MainThread:97757 [wandb_init.py:_log_setup():521] Logging internal logs to /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/run-20240701_194555-sx8qi0vh/logs/debug-internal.log
+2024-07-01 19:45:55,390 INFO    MainThread:97757 [wandb_init.py:_jupyter_setup():466] configuring jupyter hooks <wandb.sdk.wandb_init._WandbInit object at 0x32aba8ed0>
+2024-07-01 19:45:55,390 INFO    MainThread:97757 [wandb_init.py:init():560] calling init triggers
+2024-07-01 19:45:55,390 INFO    MainThread:97757 [wandb_init.py:init():567] wandb.init called with sweep_config: {}
+config: {'model': 'DLV3', 'train_cities': 'SD', 'batch_size': 16, 'use_deeplnafrica': True, 'labels_size': 128, 'buil_channels': 32, 'atrous_rates': (12, 24, 36), 'learning_rate': 0.001, 'weight_decay': 0.0001, 'gamma': 0.9, 'sched_step_size': 10, 'pos_weight': 2.0}
+2024-07-01 19:45:55,390 INFO    MainThread:97757 [wandb_init.py:init():610] starting backend
+2024-07-01 19:45:55,390 INFO    MainThread:97757 [wandb_init.py:init():614] setting up manager
+2024-07-01 19:45:55,392 INFO    MainThread:97757 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=spawn,fork,forkserver, using: spawn
+2024-07-01 19:45:55,394 INFO    MainThread:97757 [wandb_init.py:init():622] backend started and connected
+2024-07-01 19:45:55,402 INFO    MainThread:97757 [wandb_run.py:_label_probe_notebook():1334] probe notebook
+2024-07-01 19:45:55,402 INFO    MainThread:97757 [wandb_run.py:_label_probe_notebook():1344] Unable to probe notebook: 'NoneType' object has no attribute 'get'
+2024-07-01 19:45:55,402 INFO    MainThread:97757 [wandb_init.py:init():711] updated telemetry
+2024-07-01 19:45:55,432 INFO    MainThread:97757 [wandb_init.py:init():744] communicating run to backend with 90.0 second timeout
+2024-07-01 19:45:55,886 INFO    MainThread:97757 [wandb_run.py:_on_init():2402] communicating current version
+2024-07-01 19:45:56,119 INFO    MainThread:97757 [wandb_run.py:_on_init():2411] got version response upgrade_message: "wandb version 0.17.3 is available!  To upgrade, please run:\n $ pip install wandb --upgrade"
+
+2024-07-01 19:45:56,121 INFO    MainThread:97757 [wandb_init.py:init():795] starting run threads in backend
+2024-07-01 19:45:59,324 INFO    MainThread:97757 [wandb_run.py:_console_start():2380] atexit reg
+2024-07-01 19:45:59,324 INFO    MainThread:97757 [wandb_run.py:_redirect():2235] redirect: wrap_raw
+2024-07-01 19:45:59,324 INFO    MainThread:97757 [wandb_run.py:_redirect():2300] Wrapping output streams.
+2024-07-01 19:45:59,324 INFO    MainThread:97757 [wandb_run.py:_redirect():2325] Redirects installed.
+2024-07-01 19:45:59,326 INFO    MainThread:97757 [wandb_init.py:init():838] run started, returning control to user process
+2024-07-01 19:46:03,797 INFO    MainThread:97757 [jupyter.py:save_ipynb():372] not saving jupyter notebook
+2024-07-01 19:46:03,797 INFO    MainThread:97757 [wandb_init.py:_pause_backend():431] pausing backend
+2024-07-01 19:56:50,917 INFO    MainThread:97757 [wandb_init.py:_resume_backend():436] resuming backend
+2024-07-01 19:56:50,925 INFO    MainThread:97757 [jupyter.py:save_ipynb():372] not saving jupyter notebook
+2024-07-01 19:56:50,925 INFO    MainThread:97757 [wandb_init.py:_pause_backend():431] pausing backend
+2024-07-01 19:56:56,454 INFO    MainThread:97757 [wandb_init.py:_resume_backend():436] resuming backend
+2024-07-01 19:56:56,470 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Current SDK version is 0.17.1
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Configure stats pid to 97757
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Loading settings from /Users/janmagnuszewski/.config/wandb/settings
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Loading settings from /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/settings
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Applying setup settings: {'_disable_service': False}
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'analysis/morphology.py', 'program_abspath': '/Users/janmagnuszewski/dev/slums-model-unitac/analysis/morphology.py', 'program': '/Users/janmagnuszewski/dev/slums-model-unitac/analysis/morphology.py'}
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_setup.py:_flush():76] Applying login settings: {}
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_init.py:_log_setup():520] Logging user logs to /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/run-20240701_195656-9wk4h3as/logs/debug.log
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_init.py:_log_setup():521] Logging internal logs to /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/run-20240701_195656-9wk4h3as/logs/debug-internal.log
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_init.py:init():560] calling init triggers
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_init.py:init():567] wandb.init called with sweep_config: {}
+config: {'model': 'DLV3', 'train_cities': 'SD', 'batch_size': 16, 'use_deeplnafrica': True, 'labels_size': 144, 'buil_channels': 32, 'atrous_rates': (12, 24, 36), 'learning_rate': 0.001, 'weight_decay': 0.0001, 'gamma': 0.9, 'sched_step_size': 10, 'pos_weight': 2.0}
+2024-07-01 19:56:56,471 INFO    MainThread:97757 [wandb_init.py:init():585] re-initializing run, found existing run on stack: sx8qi0vh
+2024-07-01 19:56:56,473 INFO    MainThread:97757 [wandb_run.py:_finish():2109] finishing run jankomag/UNITAC-multi-modal/sx8qi0vh
+2024-07-01 19:56:56,473 INFO    MainThread:97757 [jupyter.py:save_history():444] not saving jupyter history
+2024-07-01 19:56:56,473 INFO    MainThread:97757 [jupyter.py:save_ipynb():372] not saving jupyter notebook
+2024-07-01 19:56:56,473 INFO    MainThread:97757 [wandb_init.py:_jupyter_teardown():448] cleaning up jupyter logic
+2024-07-01 19:56:56,473 INFO    MainThread:97757 [wandb_run.py:_atexit_cleanup():2349] got exitcode: 0
+2024-07-01 19:56:56,473 INFO    MainThread:97757 [wandb_run.py:_restore():2332] restore
+2024-07-01 19:56:56,473 INFO    MainThread:97757 [wandb_run.py:_restore():2338] restore done
+2024-07-01 19:57:01,644 INFO    MainThread:97757 [wandb_run.py:_footer_history_summary_info():4008] rendering history
+2024-07-01 19:57:01,645 INFO    MainThread:97757 [wandb_run.py:_footer_history_summary_info():4040] rendering summary
+2024-07-01 19:57:01,654 INFO    MainThread:97757 [wandb_run.py:_footer_sync_info():3967] logging synced files

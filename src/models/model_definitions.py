@@ -805,17 +805,7 @@ class BuildingsOnlyPredictionsIterator:
         return iter(self.predictions)
     
 
-# Mulitmodal Model and helpers definitions
-class MergeDataset(Dataset):
-    def __init__(self, *datasets):
-        self.datasets = datasets
-
-    def __getitem__(self, i):
-        return tuple(d[i] for d in self.datasets)
-
-    def __len__(self):
-        return min(len(d) for d in self.datasets)
-    
+# Mulitmodal Model and helpers definitions    
 class MultiModalPredictionsIterator:
     def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
         self.model = model
@@ -1266,7 +1256,6 @@ class MultiResolutionFPN(pl.LightningModule):
             if isinstance(module, nn.Conv2d):
                 module.register_forward_hook(hook_fn)
                 
-
 class MultiResolutionDeepLabV3(pl.LightningModule):
     def __init__(self,
                 use_deeplnafrica: bool = True,
