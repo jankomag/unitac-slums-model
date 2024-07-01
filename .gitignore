@@ -15,3 +15,6 @@ predictions.qgz
 src/wandb/
 src/models/multiraster_model.py
 .DS_Store
+src/models/3resnet_model.py
+ananlysis/wandb/
+ananlysis/metrics/

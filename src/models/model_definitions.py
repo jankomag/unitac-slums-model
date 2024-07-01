@@ -91,7 +91,7 @@ from deeplnafrica.deepLNAfrica import init_segm_model
 import folium
 
 from src.data.dataloaders import (
-    create_datasets,
+    create_datasets, CustomGeoJSONVectorSource,
     create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
 )
 
@@ -100,55 +100,6 @@ from rastervision.core.data import (
     VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
 )
 # implements loading gdf - class CustomGeoJSONVectorSource
-class CustomGeoJSONVectorSource(VectorSource):
-    """A :class:`.VectorSource` for reading GeoJSON files or GeoDataFrames."""
-
-    def __init__(self,
-                 crs_transformer: 'CRSTransformer',
-                 uris: Optional[Union[str, List[str]]] = None,
-                 gdf: Optional[gpd.GeoDataFrame] = None,
-                 vector_transformers: List['VectorTransformer'] = [],
-                 bbox: Optional[Box] = None):
-        """Constructor.
-
-        Args:
-            uris (Optional[Union[str, List[str]]]): URI(s) of the GeoJSON file(s).
-            gdf (Optional[gpd.GeoDataFrame]): A GeoDataFrame with vector data.
-            crs_transformer: A ``CRSTransformer`` to convert
-                between map and pixel coords. Normally this is obtained from a
-                :class:`.RasterSource`.
-            vector_transformers: ``VectorTransformers`` for transforming
-                geometries. Defaults to ``[]``.
-            bbox (Optional[Box]): User-specified crop of the extent. If None,
-                the full extent available in the source file is used.
-        """
-        self.uris = listify_uris(uris) if uris is not None else None
-        self.gdf = gdf
-        super().__init__(
-            crs_transformer,
-            vector_transformers=vector_transformers,
-            bbox=bbox)
-
-    def _get_geojson(self) -> dict:
-        if self.gdf is not None:
-            # Convert GeoDataFrame to GeoJSON
-            df = self.gdf.to_crs('epsg:4326')
-            geojson = df.__geo_interface__
-        elif self.uris is not None:
-            geojsons = [self._get_geojson_single(uri) for uri in self.uris]
-            geojson = merge_geojsons(geojsons)
-        else:
-            raise ValueError("Either 'uris' or 'gdf' must be provided.")
-        return geojson
-
-    def _get_geojson_single(self, uri: str) -> dict:
-        # download first so that it gets cached
-        path = download_if_needed(uri)
-        df: gpd.GeoDataFrame = gpd.read_file(path)
-        df = df.to_crs('epsg:4326')
-        geojson = df.__geo_interface__
-        return geojson
-
 class CustomVectorOutputConfig(Config):
     """Config for vectorized semantic segmentation predictions."""
     class_id: int = Field(
@@ -895,6 +846,36 @@ class MultiModalPredictionsIterator:
     def __iter__(self):
         return iter(self.predictions)
 
+class MultiRes144labPredictionsIterator:
+    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
+        self.model = model
+        self.sentinelGeoDataset = sentinelGeoDataset
+        self.dataset = buildingsGeoDataset
+        self.device = device
+        
+        self.predictions = []
+        
+        with torch.no_grad():
+            for idx in range(len(buildingsGeoDataset)):
+                buildings = buildingsGeoDataset[idx]
+                sentinel = sentinelGeoDataset[idx]
+                
+                sentinel_data = sentinel[0].unsqueeze(0).to(device)
+                sentlabels = sentinel[1].unsqueeze(0).to(device)
+
+                buildings_data = buildings[0].unsqueeze(0).to(device)
+                labels = buildings[1].unsqueeze(0).to(device)
+
+                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
+                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                window = sentinelGeoDataset.windows[idx] # here has to be sentinelGeoDataset to work
+                self.predictions.append((window, probabilities))
+
+    def __iter__(self):
+        return iter(self.predictions)
+
 class MultiResolutionDeepLabV3BuildingsOwnEncoder(pl.LightningModule):
     def __init__(self,
                 learning_rate: float = 1e-2,
@@ -1284,3 +1265,199 @@ class MultiResolutionFPN(pl.LightningModule):
         for name, module in self.named_modules():
             if isinstance(module, nn.Conv2d):
                 module.register_forward_hook(hook_fn)
+                
+
+class MultiResolutionDeepLabV3(pl.LightningModule):
+    def __init__(self,
+                use_deeplnafrica: bool = True,
+                labels_size: int = 256,
+                learning_rate: float = 1e-2,
+                weight_decay: float = 1e-1,
+                gamma: float = 0.1,
+                atrous_rates = (12, 24, 36),
+                sched_step_size = 10,
+                build_depth = 128,
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
+        super().__init__()
+        
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.atrous_rates = atrous_rates
+        self.gamma = gamma
+        self.pos_weight = pos_weight
+        self.sched_step_size = sched_step_size
+        self.labels_size = labels_size
+        
+        self.encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)     
+        
+        self.buildings_encoder = nn.Sequential(
+            nn.Conv2d(1, build_depth, kernel_size=(7, 7), stride=(1, 1), padding='same', bias=False),
+            nn.BatchNorm2d(build_depth),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(build_depth, 1, kernel_size=(3, 3), stride=(1, 1), padding=1, bias=False)
+        )
+        self.encoder.backbone.conv1 = nn.Conv2d(5, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+
+        if use_deeplnafrica:
+            allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
+            checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
+            original_state_dict = checkpoint["state_dict"]
+
+            # Convert any float64 weights to float32
+            for key, value in original_state_dict.items():
+                if value.dtype == torch.float64:
+                    original_state_dict[key] = value.to(torch.float32)
+                    
+            # removing prefix
+            state_dict = OrderedDict()
+            for key, value in original_state_dict.items():
+                if key.startswith('segm_model.backbone.'):
+                    new_key = key[len('segm_model.backbone.'):]
+                    state_dict[new_key] = value
+
+            # Extract the original weights of the first convolutional layer
+            original_conv1_weight = state_dict['conv1.weight']
+            new_conv1_weight = torch.zeros((64, 5, 7, 7))
+            new_conv1_weight[:, :4, :, :] = original_conv1_weight
+            new_conv1_weight[:, 4, :, :] = original_conv1_weight[:, 0, :, :]
+            new_conv1 = nn.Conv2d(5, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+            new_conv1.weight = nn.Parameter(new_conv1_weight)
+            new_state_dict = state_dict.copy()
+            new_state_dict['conv1.weight'] = new_conv1.weight
+
+            self.encoder.backbone.load_state_dict(new_state_dict, strict=True)
+        
+        # Intermediate Layer Getter
+        self.encoder = IntermediateLayerGetter(self.encoder.backbone, {'layer4': 'out'})
+        self.segmentation_head = DeepLabHead(in_channels=2048, num_classes=1, atrous_rates=self.atrous_rates)
+        
+    def forward(self, batch):
+        sentinel_batch, buildings_batch = batch
+        buildings_data, _ = buildings_batch
+        sentinel_data, _ = sentinel_batch
+        # Move data to the device
+        sentinel_data = sentinel_data.to(self.device)
+        buildings_data = buildings_data.to(self.device)
+        
+        b_out = self.buildings_encoder(buildings_data)
+        concatenated = torch.cat([sentinel_data, b_out], dim=1)    
+
+        encoder_outputs = self.encoder(concatenated)
+        out = encoder_outputs['out']
+
+        segmentation = self.segmentation_head(out)
+        # print(segmentation.shape, "segmentation shape")
+        segmentation = F.interpolate(segmentation, size=self.labels_size, mode="bilinear", align_corners=False)
+        # print(segmentation.shape, "segmentation shape after interpolation")
+        return segmentation.squeeze(1)
+    
+    def training_step(self, batch):
+        sentinel_batch, _ = batch
+        _, sentinel_labels = sentinel_batch
+        sentinel_labels = sentinel_labels.to(self.device)
+        sentinel_labels = sentinel_labels.squeeze(-1)
+
+        segmentation = self.forward(batch)
+        
+        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, sentinel_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+        
+        self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
+        self.log('train_precision', mean_precision)
+        self.log('train_recall', mean_recall)
+                
+        return loss
+    
+    def validation_step(self, batch):
+        sentinel_batch, _ = batch
+        _, sentinel_labels = sentinel_batch
+        sentinel_labels = sentinel_labels.to(self.device)
+        sentinel_labels = sentinel_labels.squeeze(-1)
+
+        segmentation = self.forward(batch)      
+        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        val_loss = loss_fn(segmentation, sentinel_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+        
+        self.log('val_mean_iou', mean_iou)
+        self.log('val_loss', val_loss, prog_bar=True, logger=True)
+        self.log('val_precision', mean_precision)
+        self.log('val_recall', mean_recall)
+    
+    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
+        sentinel_batch, _ = batch
+        _, sentinel_labels = sentinel_batch
+        sentinel_labels = sentinel_labels.to(self.device)
+        sentinel_labels = sentinel_labels.squeeze(-1)
+
+        segmentation = self.forward(batch)     
+        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        test_loss = loss_fn(segmentation, sentinel_labels)
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+
+        self.log('test_loss', test_loss)
+        self.log('test_mean_iou', mean_iou)
+        self.log('test_precision', mean_precision)
+        self.log('test_recall', mean_recall)
+        
+    def compute_metrics(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        
+        # IoU computation
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        mean_iou = iou.mean()
+        
+        # Precision and Recall computation
+        true_positives = (preds & target).sum((1, 2))
+        predicted_positives = preds.sum((1, 2))
+        actual_positives = target.sum((1, 2))
+        
+        precision = true_positives.float() / (predicted_positives.float() + 1e-10)
+        recall = true_positives.float() / (actual_positives.float() + 1e-10)
+        
+        mean_precision = precision.mean()
+        mean_recall = recall.mean()
+        
+        return mean_iou, mean_precision, mean_recall
+
+    def configure_optimizers(self) -> dict:
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=self.sched_step_size,  # adjust step_size to your needs
+            gamma=self.gamma      # adjust gamma to your needs
+        )
+
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+        

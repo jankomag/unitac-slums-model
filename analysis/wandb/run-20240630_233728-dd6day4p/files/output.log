@@ -1,0 +1,13 @@
+GPU available: True (mps), used: True
+TPU available: False, using: 0 TPU cores
+HPU available: False, using: 0 HPUs
+  | Name              | Type                    | Params | Mode
+----------------------------------------------------------------------
+0 | encoder           | IntermediateLayerGetter | 23.5 M | train
+1 | buildings_encoder | Sequential              | 7.7 K  | train
+2 | segmentation_head | DeepLabHead             | 16.1 M | train
+----------------------------------------------------------------------
+39.6 M    Trainable params
+0         Non-trainable params
+39.6 M    Total params
+158.591   Total estimated model params size (MB)

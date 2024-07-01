@@ -1,0 +1,31 @@
+2024-07-01 10:45:03,674 INFO    MainThread:46217 [wandb_setup.py:_flush():76] Current SDK version is 0.17.1
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_setup.py:_flush():76] Configure stats pid to 46217
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_setup.py:_flush():76] Loading settings from /Users/janmagnuszewski/.config/wandb/settings
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_setup.py:_flush():76] Loading settings from /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/settings
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_setup.py:_flush():76] Applying setup settings: {'_disable_service': False}
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'analysis/morphology.py', 'program_abspath': '/Users/janmagnuszewski/dev/slums-model-unitac/analysis/morphology.py', 'program': '/Users/janmagnuszewski/dev/slums-model-unitac/analysis/morphology.py'}
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_setup.py:_flush():76] Applying login settings: {}
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_init.py:_log_setup():520] Logging user logs to /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/run-20240701_104503-cri0hd2j/logs/debug.log
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_init.py:_log_setup():521] Logging internal logs to /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/run-20240701_104503-cri0hd2j/logs/debug-internal.log
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_init.py:_jupyter_setup():466] configuring jupyter hooks <wandb.sdk.wandb_init._WandbInit object at 0x39c9e5390>
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_init.py:init():560] calling init triggers
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_init.py:init():567] wandb.init called with sweep_config: {}
+config: {'model': 'DLV3', 'train_cities': 'SD', 'batch_size': 16, 'use_deeplnafrica': True, 'labels_size': 256, 'build_depth': 64, 'atrous_rates': (12, 24, 36), 'learning_rate': 0.0001, 'weight_decay': 1e-06, 'gamma': 0.5, 'sched_step_size': 10, 'pos_weight': 1.0}
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_init.py:init():610] starting backend
+2024-07-01 10:45:03,675 INFO    MainThread:46217 [wandb_init.py:init():614] setting up manager
+2024-07-01 10:45:03,676 INFO    MainThread:46217 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=spawn,fork,forkserver, using: spawn
+2024-07-01 10:45:03,677 INFO    MainThread:46217 [wandb_init.py:init():622] backend started and connected
+2024-07-01 10:45:03,683 INFO    MainThread:46217 [wandb_run.py:_label_probe_notebook():1334] probe notebook
+2024-07-01 10:45:03,683 INFO    MainThread:46217 [wandb_run.py:_label_probe_notebook():1344] Unable to probe notebook: 'NoneType' object has no attribute 'get'
+2024-07-01 10:45:03,683 INFO    MainThread:46217 [wandb_init.py:init():711] updated telemetry
+2024-07-01 10:45:03,712 INFO    MainThread:46217 [wandb_init.py:init():744] communicating run to backend with 90.0 second timeout
+2024-07-01 10:45:04,137 INFO    MainThread:46217 [wandb_run.py:_on_init():2402] communicating current version
+2024-07-01 10:45:04,342 INFO    MainThread:46217 [wandb_run.py:_on_init():2411] got version response upgrade_message: "wandb version 0.17.3 is available!  To upgrade, please run:\n $ pip install wandb --upgrade"
+
+2024-07-01 10:45:04,344 INFO    MainThread:46217 [wandb_init.py:init():795] starting run threads in backend
+2024-07-01 10:45:07,639 INFO    MainThread:46217 [wandb_run.py:_console_start():2380] atexit reg
+2024-07-01 10:45:07,639 INFO    MainThread:46217 [wandb_run.py:_redirect():2235] redirect: wrap_raw
+2024-07-01 10:45:07,640 INFO    MainThread:46217 [wandb_run.py:_redirect():2300] Wrapping output streams.
+2024-07-01 10:45:07,640 INFO    MainThread:46217 [wandb_run.py:_redirect():2325] Redirects installed.
+2024-07-01 10:45:07,641 INFO    MainThread:46217 [wandb_init.py:init():838] run started, returning control to user process

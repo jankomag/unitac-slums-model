@@ -51,6 +51,30 @@ cities = {
     'TegucigalpaHND': {
         'image_path': '../../data/0/sentinel_Gee/HND_Comayaguela_2023.tif',
         'labels_path': '../../data/SHP/Tegucigalpa_PS.shp'
+    },
+    'SantoDomingoDOM': {
+        'image_path': '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif',
+        'labels_path': '../../data/SHP/Tegucigalpa_PS.shp'
+    },
+    'GuatemalaCity': {
+        'image_path': '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif',
+        'labels_path': '../data/0/Guatemala_PS.shp'
+    },
+    'Managua': {
+        'image_path': '../../data/0/sentinel_Gee/NIC_Tipitapa_2023.tif',
+        'labels_path': '../data/0/Managua_PS.shp'
+    },
+    'Panama': {
+        'image_path': '../../data/0/sentinel_Gee/PAN_San_Miguelito_2023.tif',
+        'labels_path': '../data/0/Panama_PS.shp'
+    },
+    'SanSalvador_PS': {
+        'image_path': '../../data/0/sentinel_Gee/SLV_Delgado_2023.tif',
+        'labels_path': '../data/0/SanSalvador_PS.shp'
+    },
+    'BelizeCity': {
+        'image_path': '../../data/0/sentinel_Gee/HND__2023.tif',
+        'labels_path': '../data/0/BelizeCity_PS.shp'
     }
 }
 

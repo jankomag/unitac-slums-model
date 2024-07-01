@@ -10,6 +10,8 @@ import torch.nn as nn
 import cv2
 from os.path import join
 import pandas as pd
+from collections import OrderedDict
+
 import json
 import rasterio as rio
 from tqdm import tqdm
@@ -55,7 +57,7 @@ from src.data.dataloaders import (
     create_datasets,
     create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
 )
-from src.models.model_definitions import (CustomGeoJSONVectorSource, MultiModalPredictionsIterator, MultiResolutionDeepLabV3, CustomVectorOutputConfig)
+from src.models.model_definitions import (CustomGeoJSONVectorSource, MultiRes144labPredictionsIterator, MultiResolutionDeepLabV3, CustomVectorOutputConfig)
 
 from rastervision.core.raster_stats import RasterStats
 from rastervision.core.data.raster_transformer import RasterTransformer
@@ -295,11 +297,11 @@ def build_datasets(rasterized_buildings_source, sentinel_source):
             out_size=144,
             padding=0)
     
-    return build_ds, sent_ds, build_scene
+    return build_ds, sent_ds, build_scene, sent_scene
 
-def save_predictions(model, sent_ds, buil_ds, build_scene, crs_transformer, country_code, city_name):
+def save_predictions(model, sent_ds, buil_ds, build_scene, sent_scene, crs_transformer, country_code, city_name):
     device = 'mps'
-    predictions_iterator = MultiModalPredictionsIterator(model, sent_ds, buil_ds, device=device)
+    predictions_iterator = MultiRes144labPredictionsIterator(model, sent_ds, buil_ds, device=device)
     windows, predictions = zip(*predictions_iterator)
     print("Got predictions for: ", city_name, country_code)
 
@@ -310,7 +312,7 @@ def save_predictions(model, sent_ds, buil_ds, build_scene, crs_transformer, coun
     pred_labels = SemanticSegmentationLabels.from_predictions(
         windows,
         predictions,
-        extent=build_scene.extent,
+        extent=sent_scene.extent,
         num_classes=len(class_config),
         smooth=True
     )
@@ -319,6 +321,10 @@ def save_predictions(model, sent_ds, buil_ds, build_scene, crs_transformer, coun
     class_id=1,
     denoise=8,
     threshold=0.5)
+
+    crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
+    affine_transform_buildings = Affine(10, 0, common_xmin_3857, 0, -10, common_ymax_3857)
+    crs_transformer.transform = affine_transform_buildings
 
     pred_label_store = SemanticSegmentationLabelStore(
         uri=f'../../vectorised_model_predictions/multi-modal/DLV3/{country_code}/{city_name}_{country_code}',
@@ -329,228 +335,17 @@ def save_predictions(model, sent_ds, buil_ds, build_scene, crs_transformer, coun
 
     pred_label_store.save(pred_labels)
 
-def get_sentinel_item(bbox_geometry, bbox):
-    items = catalog.search(
-        intersects=bbox_geometry,
-        collections=['sentinel-2-c1-l2a'],
-        datetime='2023-01-01/2024-06-27',
-        query={'eo:cloud_cover': {'lt': 3}},
-        max_items=1,
-    ).item_collection()
-    
-    if not items:
-        print("No items found for this city.")
-        return None
-    
-    sentinel_source_unnormalized = XarraySource.from_stac(
-        items,
-        bbox_map_coords=tuple(bbox),
-        stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
-        allow_streaming=True,
-    )
-
-    stats_tf = CustomStatsTransformer.from_raster_sources([sentinel_source_unnormalized],max_stds=3)
-
-    sentinel_source = XarraySource.from_stac(
-        items,
-        bbox_map_coords=tuple(bbox),
-        raster_transformers=[stats_tf],
-        stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
-        allow_streaming=True,
-        channel_order=[2, 1, 0, 3],
-    )
-    
-    print(f"Loaded Sentinel data of size {sentinel_source.shape}, and dtype: {sentinel_source.dtype}")
-    
-    chip = sentinel_source[:, :, [0, 1, 2]]
-    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-    ax.imshow(chip)
-    plt.show()
-    
-    return sentinel_source
-
-class MultiResolutionDeepLabV3(pl.LightningModule):
-    def __init__(self,
-                use_deeplnafrica: bool = True,
-                learning_rate: float = 1e-2,
-                weight_decay: float = 1e-1,
-                gamma: float = 0.1,
-                atrous_rates = (6, 12, 24),
-                sched_step_size = 10,
-                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
-        super().__init__()
-        
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.atrous_rates = atrous_rates
-        self.gamma = gamma
-        self.pos_weight = pos_weight
-        self.sched_step_size = sched_step_size
-        
-        self.encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)     
-        
-        self.bconv1 = nn.Conv2d(1, 1, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-
-        # self.bconv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(1, 1), padding=(2, 2), bias=False)
-        # self.bconv2 = nn.Conv2d(64, 1, kernel_size=(3, 3), stride=(2, 2), padding=(2, 2), bias=False)
-        
-        self.encoder.backbone.conv1 = nn.Conv2d(5, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-
-        if use_deeplnafrica:
-            allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
-            checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
-            original_state_dict = checkpoint["state_dict"]
-
-            # Convert any float64 weights to float32
-            for key, value in original_state_dict.items():
-                if value.dtype == torch.float64:
-                    original_state_dict[key] = value.to(torch.float32)
-                    
-            # removing prefix
-            state_dict = OrderedDict()
-            for key, value in original_state_dict.items():
-                if key.startswith('segm_model.backbone.'):
-                    new_key = key[len('segm_model.backbone.'):]
-                    state_dict[new_key] = value
-
-            # Extract the original weights of the first convolutional layer
-            original_conv1_weight = state_dict['conv1.weight']
-            new_conv1_weight = torch.zeros((64, 5, 7, 7))
-            new_conv1_weight[:, :4, :, :] = original_conv1_weight
-            new_conv1_weight[:, 4, :, :] = original_conv1_weight[:, 0, :, :]
-            new_conv1 = nn.Conv2d(5, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-            new_conv1.weight = nn.Parameter(new_conv1_weight)
-            new_state_dict = state_dict.copy()
-            new_state_dict['conv1.weight'] = new_conv1.weight
-
-            self.encoder.backbone.load_state_dict(new_state_dict, strict=True)
-        
-        # Intermediate Layer Getter
-        self.encoder = IntermediateLayerGetter(self.encoder.backbone, {'layer4': 'out'})#, 'layer3': 'layer3','layer2': 'layer2','layer1': 'layer1'})
-        self.segmentation_head = DeepLabHead(in_channels=2048, num_classes=1, atrous_rates=self.atrous_rates)
-           
-    def forward(self, batch):
-
-        sentinel_batch, buildings_batch = batch
-        buildings_data, buildings_labels = buildings_batch
-        sentinel_data, _ = sentinel_batch
-        
-        # Move data to the device
-        sentinel_data = sentinel_data.to(self.device)
-        buildings_data = buildings_data.to(self.device)
-        buildings_labels = buildings_labels.to(self.device)
-        
-        b_out1 = self.bconv1(buildings_data)
-        # b_out2 = self.bconv2(b_out1)
-        
-        concatenated = torch.cat([sentinel_data, b_out1], dim=1)    
-        # print(concatenated.shape, "concatenated shape")
-        out = self.encoder(concatenated)
-        out = out['out']
-
-        segmentation = self.segmentation_head(out)
-        
-        segmentation = F.interpolate(segmentation, size=288, mode="bilinear", align_corners=False)
-        
-        return segmentation.squeeze(1)
-    
-    def training_step(self, batch):
-        
-        _, buildings_batch = batch
-        _, buildings_labels = buildings_batch
-
-        segmentation = self.forward(batch)
-        
-        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
-        loss = loss_fn(segmentation, buildings_labels.float())
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, buildings_labels)
-        
-        self.log('train_loss', loss)
-        self.log('train_mean_iou', mean_iou)
-                
-        return loss
-    
-    def validation_step(self, batch):
-        _, buildings_batch = batch
-        _, buildings_labels = buildings_batch
-
-        segmentation = self.forward(batch)      
-        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
-        val_loss = loss_fn(segmentation, buildings_labels.float())
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, buildings_labels)
-        
-        self.log('val_mean_iou', mean_iou)
-        self.log('val_loss', val_loss, prog_bar=True, logger=True)
-        
-    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
-        _, buildings_batch = batch
-        _, buildings_labels = buildings_batch
-
-        segmentation = self.forward(batch)     
-        assert segmentation.shape == buildings_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {buildings_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        test_loss = loss_fn(segmentation, buildings_labels)
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, buildings_labels)
-
-        self.log('test_loss', test_loss)
-        self.log('test_mean_iou', mean_iou)
-        
-    def compute_mean_iou(self, preds, target):
-        preds = preds.bool()
-        target = target.bool()
-        smooth = 1e-6
-        intersection = (preds & target).float().sum((1, 2))
-        union = (preds | target).float().sum((1, 2))
-        iou = (intersection + smooth) / (union + smooth)
-        return iou.mean()
-
-    def configure_optimizers(self) -> dict:
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay
-        )
-
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=self.sched_step_size,  # adjust step_size to your needs
-            gamma=self.gamma      # adjust gamma to your needs
-        )
-
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'epoch',
-                'frequency': 1
-            }
-        }
-
-# best_model_path_fpn = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_runidrun_id=0-epoch=12-val_loss=0.2195.ckpt"
+# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_DLV3/best"
+# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_runidrun_id=0-epoch=09-val_loss=0.5749.ckpt"
 best_model_path_dplv3 = checkpoint_callback.best_model_path
 best_model = MultiResolutionDeepLabV3.load_from_checkpoint(best_model_path_dplv3) #MultiResolutionDeepLabV3 MultiResolutionFPN
-
-
-# best_model = MultiResolutionDeepLabV3.load_from_checkpoint(best_model_path_fpn)
-# best_model.eval()
+best_model.eval()
 
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
-con = duckdb.connect("../../data/0/data.db")
-
+con = duckdb.connect("../data/0/data.db")
 con.install_extension('httpfs')
 con.install_extension('spatial')
 con.load_extension('httpfs')
@@ -561,14 +356,13 @@ con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=htt
 sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
 gdf = gpd.read_parquet(sica_cities)
 gdf = gdf.to_crs('EPSG:3857')
-# gdf = gdf.head(20)
+# gdf = gdf.tail(2)
 # gdf = gdf[gdf['city_ascii'] == 'Tabarre']
 
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
     country_code = row['iso3']
-    print("Doing predictions for: ", city_name, country_code)
-    image_uri =  f"../../data/0/sentinel_Gee/{country_code}_{city_name}_2023.tif"
+    image_uri =  f"../data/0/sentinel_Gee/{country_code}_{city_name}_2023.tif"
     
     # Check if the image_uri exists
     if not os.path.exists(image_uri):
@@ -604,12 +398,15 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
 
     sentinel_source = get_sentinel_source(image_uri, buildings_extent)
     
-    buil_ds, sent_ds, build_scene = build_datasets(rasterized_buildings_source, sentinel_source)
+    buil_ds, sent_ds, build_scene, sent_scene = build_datasets(rasterized_buildings_source, sentinel_source)
     print("Got datasets extent for: ", city_name, country_code)
 
-    save_predictions(best_model, sent_ds, buil_ds, build_scene, crs_transformer_buildings, country_code, city_name)
+    save_predictions(best_model, sent_ds, buil_ds, build_scene, sent_scene, crs_transformer_buildings, country_code, city_name)
     print(f"Saved predictions data for {city_name}, {country_code}")
-    
+
+# con.close()
+
+
 # # Merge geojson for cities
 # def merge_geojson_files(country_directory, output_file):
 #     # Create an empty GeoDataFrame with an appropriate schema
@@ -657,48 +454,105 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
 # URL = 'https://earth-search.aws.element84.com/v1'
 # catalog = pystac_client.Client.open(URL)
 
-# for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
-    city_name = row['city_ascii']
-    country_code = row['iso3']
-    print("Doing predictions for: ", city_name, country_code)
+# from stackstac import mosaic
+# def mosaic_sentinel_images(items, bbox):
+#     # Convert items to XarraySource
+#     sentinel_source_unnormalized = XarraySource.from_stac(
+#         items,
+#         bbox_map_coords=tuple(bbox),
+#         stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
+#         allow_streaming=True,
+#     )
     
-    gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = row['geometry'].bounds
+#     # Mosaic the images
+#     mosaic_image = mosaic(sentinel_source_unnormalized.data_array, reverse=True)
     
-    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    xmin_4326, ymin_4326 = transformer.transform(gdf_xmin, gdf_ymin)
-    xmax_4326, ymax_4326 = transformer.transform(gdf_xmax, gdf_ymax)
+#     return mosaic_image
 
-    bbox = Box(ymin=ymin_4326, xmin=xmin_4326, ymax=ymax_4326, xmax=xmax_4326)
-    bbox_geometry = {
-        'type': 'Polygon',
-        'coordinates': [
-            [
-                (xmin_4326, ymin_4326),
-                (xmin_4326, ymax_4326),
-                (xmax_4326, ymax_4326),
-                (xmax_4326, ymin_4326),
-                (xmin_4326, ymin_4326)
-            ]
-        ]
-    }
+# def get_sentinel_item(bbox_geometry, bbox):
+#     items = catalog.search(
+#         intersects=bbox_geometry,
+#         collections=['sentinel-2-c1-l2a'],
+#         datetime='2023-01-01/2024-06-27',
+#         query={'eo:cloud_cover': {'lt': 3}},
+#         max_items=1,
+#     ).item_collection()
     
-    # Getting Sentinel data
-    try:
-        sentinel_source = get_sentinel_item(bbox_geometry, bbox)
-        if sentinel_source is None:
-            continue
-    except Exception as e:
-        print(f"An error occurred for {city_name}, {country_code}: {e}")
-        continue
+#     if not items:
+#         print("No items found for this city.")
+#         return None
     
-    # Getting Buildings data    
-    buildings = query_buildings_data(con, xmin_4326, ymin_4326, xmax_4326, ymax_4326)
-    print("Got buildings for: ", city_name, country_code)
+#     sentinel_source_unnormalized = XarraySource.from_stac(
+#         items,
+#         bbox_map_coords=tuple(bbox),
+#         stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
+#         allow_streaming=True,
+#     )
 
-    rasterized_buildings_source, buildings_extent, crs_transformer_buildings = rasterise_buildings(image_uri, buildings, gdf_xmin, gdf_ymax)
+#     stats_tf = CustomStatsTransformer.from_raster_sources([sentinel_source_unnormalized],max_stds=3)
+
+#     sentinel_source = XarraySource.from_stac(
+#         items,
+#         bbox_map_coords=tuple(bbox),
+#         raster_transformers=[stats_tf],
+#         stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
+#         allow_streaming=True,
+#         channel_order=[2, 1, 0, 3],
+#     )
     
-    buil_ds, sent_ds, build_scene = build_datasets(rasterized_buildings_source, sentinel_source)
-    print("Got datasets extent for: ", city_name, country_code)
+#     print(f"Loaded Sentinel data of size {sentinel_source.shape}, and dtype: {sentinel_source.dtype}")
     
-    save_predictions(best_model, sent_ds, buil_ds, build_scene, crs_transformer_buildings, country_code, city_name)
-    print(f"Saved predictions data for {city_name}, {country_code}")
+#     chip = sentinel_source[:, :, [0, 1, 2]]
+#     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+#     ax.imshow(chip)
+#     plt.show()
+    
+#     return sentinel_source
+
+
+
+# # for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
+#     city_name = row['city_ascii']
+#     country_code = row['iso3']
+#     print("Doing predictions for: ", city_name, country_code)
+    
+#     gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = row['geometry'].bounds
+    
+#     transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+#     xmin_4326, ymin_4326 = transformer.transform(gdf_xmin, gdf_ymin)
+#     xmax_4326, ymax_4326 = transformer.transform(gdf_xmax, gdf_ymax)
+
+#     bbox = Box(ymin=ymin_4326, xmin=xmin_4326, ymax=ymax_4326, xmax=xmax_4326)
+#     bbox_geometry = {
+#         'type': 'Polygon',
+#         'coordinates': [
+#             [
+#                 (xmin_4326, ymin_4326),
+#                 (xmin_4326, ymax_4326),
+#                 (xmax_4326, ymax_4326),
+#                 (xmax_4326, ymin_4326),
+#                 (xmin_4326, ymin_4326)
+#             ]
+#         ]
+#     }
+    
+#     # Getting Sentinel data
+#     try:
+#         sentinel_source = get_sentinel_item(bbox_geometry, bbox)
+#         if sentinel_source is None:
+#             continue
+#     except Exception as e:
+#         print(f"An error occurred for {city_name}, {country_code}: {e}")
+#         continue
+    
+#     # Getting Buildings data    
+#     buildings = query_buildings_data(con, xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+#     print("Got buildings for: ", city_name, country_code)
+
+#     rasterized_buildings_source, buildings_extent, crs_transformer_buildings = rasterise_buildings(image_uri, buildings, gdf_xmin, gdf_ymax)
+    
+#     buil_ds, sent_ds, build_scene = build_datasets(rasterized_buildings_source, sentinel_source)
+#     print("Got datasets extent for: ", city_name, country_code)
+    
+#     save_predictions(best_model, sent_ds, buil_ds, build_scene, crs_transformer_buildings, country_code, city_name)
+#     print(f"Saved predictions data for {city_name}, {country_code}")
