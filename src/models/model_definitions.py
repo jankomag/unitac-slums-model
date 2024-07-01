@@ -1276,7 +1276,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
                 gamma: float = 0.1,
                 atrous_rates = (12, 24, 36),
                 sched_step_size = 10,
-                build_depth = 128,
+                buil_channels = 128,
                 pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
         super().__init__()
         
@@ -1287,18 +1287,21 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         self.pos_weight = pos_weight
         self.sched_step_size = sched_step_size
         self.labels_size = labels_size
+        self.buil_channels = buil_channels
         
+        # Main encoder - 4 sentinel channels + 1 buildings channel
         self.encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)     
-        
-        self.buildings_encoder = nn.Sequential(
-            nn.Conv2d(1, build_depth, kernel_size=(7, 7), stride=(1, 1), padding='same', bias=False),
-            nn.BatchNorm2d(build_depth),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(build_depth, 1, kernel_size=(3, 3), stride=(1, 1), padding=1, bias=False)
-        )
         self.encoder.backbone.conv1 = nn.Conv2d(5, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
 
+        # Buildings footprint encoder
+        self.buildings_encoder = nn.Sequential(
+            nn.Conv2d(1, self.buil_channels, kernel_size=(7, 7), stride=(1, 1), padding='same', bias=False),
+            nn.BatchNorm2d(self.buil_channels),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(self.buil_channels, 1, kernel_size=(3, 3), stride=(1, 1), padding=1, bias=False)
+        )
+        # load pretrained weights
         if use_deeplnafrica:
             allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
             checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
@@ -1347,9 +1350,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         out = encoder_outputs['out']
 
         segmentation = self.segmentation_head(out)
-        # print(segmentation.shape, "segmentation shape")
         segmentation = F.interpolate(segmentation, size=self.labels_size, mode="bilinear", align_corners=False)
-        # print(segmentation.shape, "segmentation shape after interpolation")
         return segmentation.squeeze(1)
     
     def training_step(self, batch):

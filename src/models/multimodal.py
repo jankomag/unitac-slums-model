@@ -424,7 +424,7 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
-    'build_depth': 64,
+    'buil_channels': 64,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-4,
     'weight_decay': 1e-6,
@@ -441,6 +441,7 @@ model = MultiResolutionDeepLabV3(
     gamma=hyperparameters['gamma'],
     atrous_rates=hyperparameters['atrous_rates'],
     sched_step_size=hyperparameters['sched_step_size'],
+    buil_channels = hyperparameters['buil_channels'],
     pos_weight=torch.tensor(hyperparameters['pos_weight'], device='mps')
 )
 model.to(device)
