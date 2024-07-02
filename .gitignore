@@ -22,3 +22,4 @@ docker/
 src/Interactive-1.ipynb
 src/make_pred_pixelbased.py
 src/models/pixel-based-model.py
+rastervision/
