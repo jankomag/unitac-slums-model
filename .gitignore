@@ -15,9 +15,10 @@ predictions.qgz
 src/wandb/
 .DS_Store
 src/models/3res_model.py
-ananlysis/wandb/
+ananlysis/wandb/*
 ananlysis/metrics/
 Dockerfile
 docker/
 src/Interactive-1.ipynb
 src/make_pred_pixelbased.py
+src/models/pixel-based-model.py

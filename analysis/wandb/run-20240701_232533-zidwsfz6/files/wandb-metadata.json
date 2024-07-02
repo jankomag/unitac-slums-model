@@ -1,0 +1,49 @@
+{
+    "os": "macOS-14.4.1-arm64-arm-64bit",
+    "python": "3.11.9",
+    "heartbeatAt": "2024-07-01T22:25:42.226708",
+    "startedAt": "2024-07-01T22:25:33.049115",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/Users/janmagnuszewski/dev/slums-model-unitac/analysis/morphology.py",
+    "codePathLocal": "morphology.py",
+    "codePath": "analysis/morphology.py",
+    "git": {
+        "remote": "https://github.com/jankomag/unitac-slums-model.git",
+        "commit": "90a5608aeca86be99a6c26c4f420fa527b4e503f"
+    },
+    "email": "jan@magnuszewski.com",
+    "root": "/Users/janmagnuszewski/dev/slums-model-unitac",
+    "host": "Jans-MacBook-Pro.local",
+    "username": "janmagnuszewski",
+    "executable": "/opt/miniconda3/envs/rv/bin/python",
+    "cpu_count": 11,
+    "cpu_count_logical": 11,
+    "cpu_freq": {
+        "current": 4056,
+        "min": 696,
+        "max": 4056
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 4056,
+            "min": 696,
+            "max": 4056
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 926.3517189025879,
+            "used": 437.7330436706543
+        }
+    },
+    "gpuapple": {
+        "type": "Apple M3 Pro",
+        "vendor": "sppci_vendor_Apple"
+    },
+    "memory": {
+        "total": 18.0
+    }
+}

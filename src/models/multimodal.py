@@ -220,7 +220,7 @@ sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, tes
 
 sent_train_ds_SD = ConcatDataset([train_sentinel_datasetSD, train_sentinel_datasetSD_aug])
 sent_val_ds_SD = ConcatDataset([val_sent_ds_SD, val_sent_ds_SD_aug])
-
+len(sent_train_ds_SD)
 # From STAC
 # BANDS = [
 #     'blue', # B02
@@ -307,7 +307,7 @@ buildingsGeoDataset_SD_aug, train_buil_datasetSD_aug, val_buil_ds_SD_aug, test_b
 
 build_train_ds_SD = ConcatDataset([train_buil_datasetSD, train_buil_datasetSD_aug])
 build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
-
+len(build_train_ds_SD)
 # def create_full_image(source) -> np.ndarray:
 #     extent = source.extent
 #     chip = source.get_label_arr(extent)    
@@ -334,13 +334,13 @@ build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
 
 batch_size = 16
 
-train_multiple_cities=True
+train_multiple_cities=False
 
 if train_multiple_cities:
     
-    label_uriGC = "../../data/SHP/Guatemala_PS.shp"
-    image_uriGC = '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
-    buildings_uriGC = '../../data/0/overture/GT_buildings3857.geojson'
+    label_uriGC = "../data/SHP/Guatemala_PS.shp"
+    image_uriGC = '../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
+    buildings_uriGC = '../data/0/overture/GT_buildings3857.geojson'
 
     label_uriTG = "../../data/SHP/Tegucigalpa_PS.shp"
     image_uriTG = '../../data/0/sentinel_Gee/HND_Comayaguela_2023.tif'
@@ -414,9 +414,6 @@ if train_multiple_cities:
 
     train_dataset = MergeDataset(all_cities_sentinel_train_ds, all_cities_build_train_ds)
     val_dataset = MergeDataset(all_cities_sentinel_val_ds, all_cities_build_val_ds)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 else:
     # when only SD for training:
     train_dataset = MergeDataset(sent_train_ds_SD, build_train_ds_SD)
@@ -425,21 +422,18 @@ else:
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
-channel_display_groups_sent = {'RGB': (0,1,2), 'NIR': (3, )}
-channel_display_groups_build = {'Buildings': (0,)}
-
 vis_sent = SemanticSegmentationVisualizer(
     class_names=class_config.names, class_colors=class_config.colors,
-    channel_display_groups=channel_display_groups_sent)
+    channel_display_groups={'RGB': (0,1,2), 'NIR': (3, )})
 
 vis_build = SemanticSegmentationVisualizer(
     class_names=class_config.names, class_colors=class_config.colors,
-    channel_display_groups=channel_display_groups_build)
+    channel_display_groups={'Buildings': (0,)})
 
-x, y = vis_sent.get_batch(sentinelGeoDataset_SD, 2)
+x, y = vis_sent.get_batch(sentinelGeoDataset_GC, 10)
 vis_sent.plot_batch(x, y, show=True)
 
-x, y = vis_build.get_batch(buildingsGeoDataset_SD, 2)
+x, y = vis_build.get_batch(buildingsGeoDataset_GC, 2)
 vis_build.plot_batch(x, y, show=True)
 x, y = vis_build.get_batch(buildingsGeoDataset_SD_aug, 2)
 vis_build.plot_batch(x, y, show=True)
@@ -465,17 +459,17 @@ data_module = MultiModalDataModule(train_loader, val_loader)
 # Train the model 
 hyperparameters = {
     'model': 'DLV3',
-    'train_cities': 'SDGC',
+    'train_cities': 'SD',
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
-    'buil_channels': 64,
+    'buil_channels': 128,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-3,
+    'learning_rate': 1e-4,
     'weight_decay': 1e-4,
     'gamma': 0.8,
     'sched_step_size': 10,
-    'pos_weight': 2.0,
+    'pos_weight': 1.0,
 }
 
 output_dir = f'../UNITAC-trained-models/multi_modal/SD_DLV3/'
@@ -494,7 +488,7 @@ checkpoint_callback = ModelCheckpoint(
     filename='multimodal_{buil_channels}-{epoch:02d}-{val_loss:.4f}',
     save_top_k=3,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=35)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=40)
 
 # trained_models = train_with_cross_validation(MultiResolutionDeepLabV3, hyperparameters, train_val_sentinel_datasetSD, train_val_buildings_dataset, seed=42)
 
@@ -528,7 +522,7 @@ trainer = Trainer(
     log_every_n_steps=1,
     logger=[wandb_logger],
     min_epochs=30,
-    max_epochs=200,
+    max_epochs=150,
     num_sanity_val_steps=3
 )
 
@@ -536,10 +530,10 @@ trainer = Trainer(
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation # best dlv3 
-best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_runidrun_id=0-epoch=09-val_loss=0.5749.ckpt"
+# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/best"
 # best_model_path_fpn = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_FPN/multimodal_runidrun_id=0-epoch=60-val_loss=0.3382.ckpt"
-# best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=32) #MultiResolutionDeepLabV3 MultiResolutionFPN
+best_model_path_dplv3 = checkpoint_callback.best_model_path
+best_model = MultiResolutionDeepLabV3(buil_channels=128) #MultiResolutionDeepLabV3 MultiResolutionFPN
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict)

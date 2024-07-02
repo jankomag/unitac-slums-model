@@ -274,15 +274,15 @@ pred_label_store = SemanticSegmentationLabelStore(
 pred_label_store.save(pred_labels)
 
 # # Evaluate predictions
-# from rastervision.core.evaluation import SemanticSegmentationEvaluator
+from rastervision.core.evaluation import SemanticSegmentationEvaluator
 
-# evaluator = SemanticSegmentationEvaluator(class_config)
-# gt_labels = BuildingsScenceSD.label_source.get_labels()
-# evaluation = evaluator.evaluate_predictions(
-#     ground_truth=gt_labels, predictions=pred_labels)
-# eval_metrics_dict = evaluation.class_to_eval_item[0]
-# f1_score = eval_metrics_dict.f1
-# f1_score
+evaluator = SemanticSegmentationEvaluator(class_config)
+gt_labels = BuildingsScenceSD.label_source.get_labels()
+evaluation = evaluator.evaluate_predictions(
+    ground_truth=gt_labels, predictions=pred_labels)
+eval_metrics_dict = evaluation.class_to_eval_item[0]
+f1_score = eval_metrics_dict.f1
+f1_score
 
 # # Map interactive visualization
 # predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/2/vector_output/class-1-slums.json'
