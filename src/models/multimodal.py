@@ -1,54 +1,32 @@
 import os
 import sys
 from datetime import datetime
-from typing import Any, Optional, Tuple, Union, Sequence, Dict, Iterator, Literal, List
-from shapely.geometry import Polygon
 
-import multiprocessing
+# import multiprocessing
 # multiprocessing.set_start_method('fork')
-import cv2
-import pytorch_lightning as pl
 import numpy as np
 import geopandas as gpd
-import pandas as pd
 import matplotlib.pyplot as plt
 import torch
-from rastervision.core.box import Box
-import rasterio
 from affine import Affine
-from pyproj import Transformer
-from rasterio.transform import rowcol, xy
-from rasterio.features import rasterize
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import MultiStepLR
-from typing import TYPE_CHECKING
 import wandb
 from torchvision.models.segmentation import deeplabv3_resnet50
 import torch.nn as nn
-import stackstac
-import pystac_client
+# import stackstac
+# import pystac_client
 import albumentations as A
-
-import folium
-from shapely.geometry import MultiPolygon
-from shapely.geometry import Polygon
-import torch.nn.functional as F
-from torchvision.models._utils import IntermediateLayerGetter
+# import folium
 from torch.utils.data import ConcatDataset
 import math
-from sklearn.model_selection import KFold
+# from sklearn.model_selection import KFold
 
-from fvcore.nn import FlopCountAnalysis
+# from fvcore.nn import FlopCountAnalysis
 # from torchinfo import summary  # Optional, for detailed summary
 
-from typing import Self
 from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from torch.utils.data import DataLoader, Dataset
-from torchvision.models.segmentation.deeplabv3 import DeepLabHead
-from collections import OrderedDict
-
 
 # Project-specific imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -72,61 +50,10 @@ from rastervision.core.data import (Scene, ClassConfig, RasterioCRSTransformer, 
                                     RasterioSource, GeoJSONVectorSource,
                                     ClassInferenceTransformer, RasterizedSource,
                                     SemanticSegmentationLabelSource, VectorSource)
-from rastervision.pytorch_learner import SemanticSegmentationSlidingWindowGeoDataset
-from rastervision.core.raster_stats import RasterStats
-from rastervision.core.data.raster_transformer import RasterTransformer
-from rastervision.core.data.utils import listify_uris, merge_geojsons
-from rastervision.pipeline.file_system import (
-    get_local_path, json_to_file, make_dir, sync_to_dir, file_exists,
-    download_if_needed, NotReadableError, get_tmp_dir)
-import matplotlib.colors as mcolors
-import matplotlib.patches as mpatches
 
-from rastervision.pytorch_learner.dataset.visualizer import Visualizer  # NOQA
-from rastervision.pytorch_learner.utils import (
-    color_to_triple, plot_channel_groups, channel_groups_to_imgs)
+from rastervision.core.data.label_store import (LabelStoreConfig, SemanticSegmentationLabelStore)
 
-from typing import (TYPE_CHECKING, Sequence, Optional, List, Dict, Union,
-                    Tuple, Any)
-from abc import ABC, abstractmethod
-
-from torch import Tensor
-import albumentations as A
-
-from rastervision.pipeline.file_system import make_dir
-from rastervision.core.data import ClassConfig
-from rastervision.pytorch_learner.utils import (
-    deserialize_albumentation_transform, validate_albumentation_transform,
-    MinMaxNormalize)
-from rastervision.pytorch_learner.learner_config import (
-    RGBTuple,
-    ChannelInds,
-    validate_channel_display_groups,
-    get_default_channel_display_groups,
-)
-
-if TYPE_CHECKING:
-    from torch.utils.data import Dataset
-    from matplotlib.figure import Figure
-
-from typing import TYPE_CHECKING, Iterator, List, Optional
-from os.path import join
-
-from rastervision.pipeline.config import register_config, Config, Field
-from rastervision.core.data.label_store import (LabelStoreConfig,
-                                                SemanticSegmentationLabelStore)
-from rastervision.core.data.utils import (denoise, mask_to_building_polygons,
-                                          mask_to_polygons)
-
-if TYPE_CHECKING:
-    import numpy as np
-    from shapely.geometry.base import BaseGeometry
-
-    from rastervision.core.box import Box
-    from rastervision.core.data import (ClassConfig, CRSTransformer,
-                                        SceneConfig)
-    from rastervision.core.rv_pipeline import RVPipelineConfig
-
+# Check if MPS is available
 if not torch.backends.mps.is_available():
     if not torch.backends.mps.is_built():
         print("MPS not available because the current PyTorch install was not built with MPS enabled.")
@@ -144,6 +71,7 @@ class_config = ClassConfig(names=['background', 'slums'],
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
+# Santo Domingo
 # SD labels
 gdf = gpd.read_file(label_uriSD)
 gdf = gdf.to_crs('EPSG:4326')
@@ -164,7 +92,7 @@ xmin4326, ymin4326, xmax4326, ymax4326 = labels4326.total_bounds
 labels3857 = labels4326.to_crs('EPSG:3857')
 xmin3857, _, _, ymax3857 = labels3857.total_bounds
 
-# Santo Domingo
+# Santo Domingo Sentinel
 sentinel_source_normalizedSD, sentinel_label_raster_sourceSD = create_sentinel_raster_source(image_uriSD, label_uriSD, class_config, clip_to_label_source=True)
 crs_transformer = RasterioCRSTransformer.from_uri(image_uriSD)
 label_vector_source = CustomGeoJSONVectorSource(
@@ -179,7 +107,6 @@ chip = sentinel_source_normalizedSD[:, :, [0, 1, 2]]
 fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 ax.imshow(chip)
 plt.show()
-
 
 SentinelScene_SD = Scene(
         id='santodomingo_sentinel',
@@ -305,7 +232,7 @@ len(build_train_ds_SD)
 # window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
 # show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
-batch_size = 16
+batch_size = 8
 
 train_multiple_cities=False
 
@@ -421,7 +348,7 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
-    'buil_channels': 32,
+    'buil_channels': 16,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-4,
     'weight_decay': 1e-4,
@@ -491,7 +418,7 @@ trainer.fit(model, datamodule=data_module)
 # best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/best"
 # best_model_path_fpn = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_FPN/multimodal_runidrun_id=0-epoch=60-val_loss=0.3382.ckpt"
 best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=32) #MultiResolutionDeepLabV3 MultiResolutionFPN
+best_model = MultiResolutionDeepLabV3(buil_channels=16) #MultiResolutionDeepLabV3 MultiResolutionFPN
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict)

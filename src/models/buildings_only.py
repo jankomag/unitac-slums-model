@@ -132,9 +132,9 @@ def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_co
     return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
 
 ### Label source ###
-label_uri_SD = "../data/0/SantoDomingo3857.geojson"
-image_uri_SD = '../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-buildings_uri_SD = '../data/0/overture/santodomingo_buildings.geojson'
+label_uri_SD = "../../data/0/SantoDomingo3857.geojson"
+image_uri_SD = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+buildings_uri_SD = '../../data/0/overture/santodomingo_buildings.geojson'
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
@@ -238,7 +238,7 @@ best_model = BuildingsDeeplabv3.load_from_checkpoint(best_model_path_deeplab) # 
 best_model.eval()
 
 #  Make predictions
-buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScenceSD, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScenceSD, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, augment = False, seed=42)
 predictions_iterator = BuildingsOnlyPredictionsIterator(best_model, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 
@@ -259,19 +259,19 @@ cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
 # Saving predictions as GEOJSON
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
+# vector_output_config = CustomVectorOutputConfig(
+#     class_id=1,
+#     denoise=8,
+#     threshold=0.5)
 
-pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/buildings_model_only/2/',
-    crs_transformer = crs_transformer_SD,
-    class_config = class_config,
-    vector_outputs = [vector_output_config],
-    discrete_output = True)
+# pred_label_store = SemanticSegmentationLabelStore(
+#     uri='../../vectorised_model_predictions/buildings_model_only/2/',
+#     crs_transformer = crs_transformer_SD,
+#     class_config = class_config,
+#     vector_outputs = [vector_output_config],
+#     discrete_output = True)
 
-pred_label_store.save(pred_labels)
+# pred_label_store.save(pred_labels)
 
 # # Evaluate predictions
 from rastervision.core.evaluation import SemanticSegmentationEvaluator

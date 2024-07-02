@@ -1300,7 +1300,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
 
         # Buildings footprint encoder
         self.buildings_encoder = nn.Sequential(
-            nn.Conv2d(1, self.buil_channels, kernel_size=(7, 7), stride=(1, 1), padding='same', bias=False),
+            nn.Conv2d(1, self.buil_channels, kernel_size=(5, 5), stride=(1, 1), padding='same', bias=False),
             nn.BatchNorm2d(self.buil_channels),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
