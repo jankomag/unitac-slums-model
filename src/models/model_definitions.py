@@ -1282,6 +1282,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
                 atrous_rates = (12, 24, 36),
                 sched_step_size = 10,
                 buil_channels = 128,
+                buil_kernel1 = 5,
                 pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
         super().__init__()
         
@@ -1293,6 +1294,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         self.sched_step_size = sched_step_size
         self.labels_size = labels_size
         self.buil_channels = buil_channels
+        self.buil_kernel1 = buil_kernel1
         
         # Main encoder - 4 sentinel channels + 1 buildings channel
         self.encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)     
@@ -1300,7 +1302,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
 
         # Buildings footprint encoder
         self.buildings_encoder = nn.Sequential(
-            nn.Conv2d(1, self.buil_channels, kernel_size=(5, 5), stride=(1, 1), padding='same', bias=False),
+            nn.Conv2d(1, self.buil_channels, kernel_size=self.buil_kernel1, stride=(1, 1), padding='same', bias=False),
             nn.BatchNorm2d(self.buil_channels),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),

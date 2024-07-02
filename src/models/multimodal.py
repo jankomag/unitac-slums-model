@@ -348,13 +348,14 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
-    'buil_channels': 16,
+    'buil_channels': 32,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-4,
+    'learning_rate': 1e-3,
     'weight_decay': 1e-4,
     'gamma': 0.5,
     'sched_step_size': 5,
     'pos_weight': 2.0,
+    'buil_kernel1': 3
 }
 
 output_dir = f'../UNITAC-trained-models/multi_modal/SD_DLV3/'
@@ -370,7 +371,7 @@ checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     save_last=True,
     dirpath=output_dir,
-    filename='multimodal_{buil_channels}-{epoch:02d}-{val_loss:.4f}',
+    filename='multimodal_{epoch:02d}-{val_loss:.4f}',
     save_top_k=3,
     mode='min')
 early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=20)
@@ -386,6 +387,7 @@ model = MultiResolutionDeepLabV3(
     atrous_rates=hyperparameters['atrous_rates'],
     sched_step_size=hyperparameters['sched_step_size'],
     buil_channels = hyperparameters['buil_channels'],
+    buil_kernel = hyperparameters['buil_kernel1'],
     pos_weight=torch.tensor(hyperparameters['pos_weight'], device='mps')
 )
 model.to(device)
@@ -414,11 +416,11 @@ trainer = Trainer(
 # Train the model
 trainer.fit(model, datamodule=data_module)
 
-# Use best model for evaluation # best dlv3 
-# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/best"
+# Use best model for evaluation # best dlv3 multimodal_buil_channels=0-epoch=13-val_loss=0.5869.ckpt
+best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_DLV3/last-v1.ckpt"
 # best_model_path_fpn = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_FPN/multimodal_runidrun_id=0-epoch=60-val_loss=0.3382.ckpt"
-best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=16) #MultiResolutionDeepLabV3 MultiResolutionFPN
+# best_model_path_dplv3 = checkpoint_callback.best_model_path
+best_model = MultiResolutionDeepLabV3(buil_channels=32, buil_kernel=3) #MultiResolutionDeepLabV3 MultiResolutionFPN
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict)
@@ -449,10 +451,6 @@ ax.axis('off')
 ax.set_title('probability map')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
-
-
-
-
 
 
 
