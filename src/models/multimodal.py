@@ -46,7 +46,6 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from torch.utils.data import DataLoader, Dataset
-from pytorch_lightning import LightningDataModule
 from torchvision.models.segmentation.deeplabv3 import DeepLabHead
 from collections import OrderedDict
 
@@ -58,7 +57,10 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import CustomGeoJSONVectorSource, CustomVectorOutputConfig, CustomGeoJSONVectorSource, MultiResolutionDeepLabV3, MultiRes144labPredictionsIterator, MultiResolutionFPN
+from src.models.model_definitions import (CustomGeoJSONVectorSource, CustomVectorOutputConfig, 
+                                          CustomGeoJSONVectorSource, MultiResolutionDeepLabV3, 
+                                          MultiRes144labPredictionsIterator, MultiResolutionFPN, 
+                                          MultiResSentLabelPredictionsIterator, MultiModalDataModule)
 from deeplnafrica.deepLNAfrica import (Deeplabv3SegmentationModel, init_segm_model, 
                                        CustomDeeplabv3SegmentationModel)
 from src.data.dataloaders import (create_sentinel_raster_source, create_buildings_raster_source,
@@ -134,9 +136,9 @@ else:
     device = torch.device("mps")
     print("MPS is available.")
 
-label_uriSD = "../data/0/SantoDomingo3857.geojson"
-image_uriSD = '../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-buildings_uri = '../data/0/overture/santodomingo_buildings.geojson'
+label_uriSD = "../../data/0/SantoDomingo3857.geojson"
+image_uriSD = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
 
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
@@ -184,36 +186,7 @@ SentinelScene_SD = Scene(
         raster_source = sentinel_source_normalizedSD,
         label_source = sentinel_label_raster_sourceSD)
         # aoi_polygons=[pixel_polygon])
-        
-def create_datasets(scene, imgsize=256, stride = 256, padding=50, val_ratio=0.2, test_ratio=0.1, augment = True, seed=42):
-  
-    data_augmentation_transform = A.Compose([
-        A.HorizontalFlip(p=1.0), # Flip every image horizontally
-        A.Rotate(limit=(180, 180), p=1.0), # Rotate every image by exactly 180 degrees
-    ])
-    
-    if augment:
-        full_dataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
-            scene=scene,
-            size=imgsize,
-            stride=stride,
-            out_size=imgsize,
-            padding=padding,
-            transform=data_augmentation_transform)
-    else:
-        full_dataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
-            scene=scene,
-            size=imgsize,
-            stride=stride,
-            out_size=imgsize,
-            padding=padding)
-
-    # Splitting dataset into train, validation, and test
-    train_dataset, val_dataset, test_dataset = full_dataset.split_train_val_test(
-        val_ratio=val_ratio, test_ratio=test_ratio, seed=seed)
-
-    return full_dataset, train_dataset, val_dataset, test_dataset
-
+       
 # From Sentinel
 sentinelGeoDataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
 sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, test_sentinel_dataset_SD_aug = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=True, seed=12)
@@ -419,7 +392,7 @@ else:
     train_dataset = MergeDataset(sent_train_ds_SD, build_train_ds_SD)
     val_dataset = MergeDataset(sent_val_ds_SD, build_val_ds_SD)
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
 vis_sent = SemanticSegmentationVisualizer(
@@ -430,28 +403,13 @@ vis_build = SemanticSegmentationVisualizer(
     class_names=class_config.names, class_colors=class_config.colors,
     channel_display_groups={'Buildings': (0,)})
 
-x, y = vis_sent.get_batch(sentinelGeoDataset_GC, 10)
+x, y = vis_sent.get_batch(sentinelGeoDataset_SD, 10)
 vis_sent.plot_batch(x, y, show=True)
 
-x, y = vis_build.get_batch(buildingsGeoDataset_GC, 2)
+x, y = vis_build.get_batch(buildingsGeoDataset_SD, 2)
 vis_build.plot_batch(x, y, show=True)
 x, y = vis_build.get_batch(buildingsGeoDataset_SD_aug, 2)
 vis_build.plot_batch(x, y, show=True)
-
-class MultiModalDataModule(LightningDataModule):
-    def __init__(self, train_loader, val_loader):
-        super().__init__()
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-
-    def train_dataloader(self):
-        return self.train_loader
-
-    def val_dataloader(self):
-        return self.val_loader
-    
-    def setup(self, stage=None):
-        pass
 
 # Initialize the data module
 data_module = MultiModalDataModule(train_loader, val_loader)
@@ -463,13 +421,13 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
-    'buil_channels': 128,
+    'buil_channels': 32,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-4,
     'weight_decay': 1e-4,
-    'gamma': 0.8,
-    'sched_step_size': 10,
-    'pos_weight': 1.0,
+    'gamma': 0.5,
+    'sched_step_size': 5,
+    'pos_weight': 2.0,
 }
 
 output_dir = f'../UNITAC-trained-models/multi_modal/SD_DLV3/'
@@ -488,7 +446,7 @@ checkpoint_callback = ModelCheckpoint(
     filename='multimodal_{buil_channels}-{epoch:02d}-{val_loss:.4f}',
     save_top_k=3,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=40)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=20)
 
 # trained_models = train_with_cross_validation(MultiResolutionDeepLabV3, hyperparameters, train_val_sentinel_datasetSD, train_val_buildings_dataset, seed=42)
 
@@ -533,42 +491,12 @@ trainer.fit(model, datamodule=data_module)
 # best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/best"
 # best_model_path_fpn = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_FPN/multimodal_runidrun_id=0-epoch=60-val_loss=0.3382.ckpt"
 best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=128) #MultiResolutionDeepLabV3 MultiResolutionFPN
+best_model = MultiResolutionDeepLabV3(buil_channels=32) #MultiResolutionDeepLabV3 MultiResolutionFPN
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict)
 
 best_model.eval()
-
-class MultiResSentLabelPredictionsIterator:
-    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
-        self.model = model
-        self.sentinelGeoDataset = sentinelGeoDataset
-        self.dataset = buildingsGeoDataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(buildingsGeoDataset)):
-                buildings = buildingsGeoDataset[idx]
-                sentinel = sentinelGeoDataset[idx]
-                
-                sentinel_data = sentinel[0].unsqueeze(0).to(device)
-                sentlabels = sentinel[1].unsqueeze(0).to(device)
-
-                buildings_data = buildings[0].unsqueeze(0).to(device)
-                labels = buildings[1].unsqueeze(0).to(device)
-
-                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = sentinelGeoDataset.windows[idx] # here has to be sentinelGeoDataset to work
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
 
 buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScene_SD, imgsize=512, stride = 256, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 sentinelGeoDataset, _, _, _ = create_datasets(SentinelScene_SD, imgsize=256, stride = 128, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)

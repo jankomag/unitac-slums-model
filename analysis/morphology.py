@@ -1,3 +1,4 @@
+import sys
 import geopandas as gpd
 import pandas as pd
 import momepy as mm
@@ -7,11 +8,18 @@ from shapely.geometry import MultiPolygon
 import libpysal
 from shapely.validation import make_valid
 from shapely.errors import TopologicalError, GEOSException
-import duckdb
 import os
 import seaborn as sns
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
-# Your existing cities dictionary
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+grandparent_dir = os.path.dirname(parent_dir)
+# sys.path.append(grandparent_dir)
+sys.path.append(parent_dir)
+
+from src.data.dataloaders import query_buildings_data
+
 cities = {
     'SanJoseCRI': {'labels_path': '../data/SHP/SanJose_PS.shp'},
     'TegucigalpaHND': {'labels_path': '../data/SHP/Tegucigalpa_PS.shp'},
@@ -42,38 +50,6 @@ if missing_files:
     print("Please ensure all files exist before running the analysis.")
 
 print("All files exist. Proceeding with the analysis.")
-
-def query_buildings_data(con, xmin, ymin, xmax, ymax):
-    
-    query = f"""
-        SELECT *
-        FROM buildings
-        WHERE bbox.xmin > {xmin}
-          AND bbox.xmax < {xmax}
-          AND bbox.ymin > {ymin}
-          AND bbox.ymax < {ymax};
-    """
-    buildings_df = pd.read_sql(query, con=con)
-
-    if not buildings_df.empty:
-        buildings = gpd.GeoDataFrame(buildings_df, geometry=gpd.GeoSeries.from_wkb(buildings_df.geometry.apply(bytes)), crs='EPSG:4326')
-        buildings = buildings[['id', 'geometry']]
-        buildings = buildings.to_crs("EPSG:3857")
-        buildings['class_id'] = 1
-    else:
-        print("No buildings found in the specified area.")
-
-    return buildings
-
-all_city_results = []
-
-con = duckdb.connect("../data/0/data.db")
-con.install_extension('httpfs')
-con.install_extension('spatial')
-con.load_extension('httpfs')
-con.load_extension('spatial')
-con.execute("SET s3_region='us-west-2'")
-con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
 
 def calculate_city_morphometrics(slum_buildings, all_slums):
     # Function to check and fix geometry
@@ -155,7 +131,7 @@ for city_name, city_data in cities.items():
     xmin, ymin, xmax, ymax = slums.total_bounds
 
     # Query buildings data
-    buildings = query_buildings_data(con, xmin, ymin, xmax, ymax)
+    buildings = query_buildings_data(xmin, ymin, xmax, ymax)
 
     # Reproject to Web Mercator
     slums = slums.to_crs(epsg=3857)
@@ -177,12 +153,9 @@ for city_name, city_data in cities.items():
     else:
         print(f"Failed to calculate metrics for {city_name}")
 
-# Close the database connection
-con.close()
-
 # Save each city's DataFrame to a separate CSV file
 for city_name, df in city_dataframes.items():
-    df.to_csv(f"{city_name}_slum_morphometrics.csv", index=False)
+    df.to_csv(f"metrics/{city_name}_slum_morphometrics.csv", index=False)
     print(f"Results for {city_name} saved to {city_name}_slum_morphometrics.csv")
 
 # If you want to combine all cities into one large DataFrame
@@ -195,9 +168,7 @@ for city_name, df in city_dataframes.items():
     print(f"\nSummary statistics for {city_name}:")
     print(df.describe())
 
-
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-
+# Examine boxplots of the standardized numeric columns
 numeric_cols = ['tessellation_car', 'buildings_wall', 'buildings_adjacency','buildings_neighbour_distance']
 df=all_cities_df
 # Standardize the numeric columns

@@ -12,6 +12,7 @@ import torch.nn as nn
 import cv2
 from os.path import join
 from collections import OrderedDict
+from pytorch_lightning import LightningDataModule
 
 import json
 from shapely.geometry import shape, mapping
@@ -805,7 +806,22 @@ class BuildingsOnlyPredictionsIterator:
         return iter(self.predictions)
     
 
-# Mulitmodal Model and helpers definitions    
+# Mulitmodal Model and helpers definitions
+class MultiModalDataModule(LightningDataModule):
+    def __init__(self, train_loader, val_loader):
+        super().__init__()
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+
+    def train_dataloader(self):
+        return self.train_loader
+
+    def val_dataloader(self):
+        return self.val_loader
+    
+    def setup(self, stage=None):
+        pass
+    
 class MultiModalPredictionsIterator:
     def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
         self.model = model
@@ -1451,3 +1467,33 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
             }
         }
         
+class MultiResSentLabelPredictionsIterator:
+    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
+        self.model = model
+        self.sentinelGeoDataset = sentinelGeoDataset
+        self.dataset = buildingsGeoDataset
+        self.device = device
+        
+        self.predictions = []
+        
+        with torch.no_grad():
+            for idx in range(len(buildingsGeoDataset)):
+                buildings = buildingsGeoDataset[idx]
+                sentinel = sentinelGeoDataset[idx]
+                
+                sentinel_data = sentinel[0].unsqueeze(0).to(device)
+                sentlabels = sentinel[1].unsqueeze(0).to(device)
+
+                buildings_data = buildings[0].unsqueeze(0).to(device)
+                labels = buildings[1].unsqueeze(0).to(device)
+
+                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
+                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                window = sentinelGeoDataset.windows[idx] # here has to be sentinelGeoDataset to work
+                self.predictions.append((window, probabilities))
+
+    def __iter__(self):
+        return iter(self.predictions)
+
