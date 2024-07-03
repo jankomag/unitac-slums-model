@@ -1271,7 +1271,37 @@ class MultiResolutionFPN(pl.LightningModule):
         for name, module in self.named_modules():
             if isinstance(module, nn.Conv2d):
                 module.register_forward_hook(hook_fn)
+
+class MultiResSentLabelPredictionsIterator:
+    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
+        self.model = model
+        self.sentinelGeoDataset = sentinelGeoDataset
+        self.dataset = buildingsGeoDataset
+        self.device = device
+        
+        self.predictions = []
+        
+        with torch.no_grad():
+            for idx in range(len(buildingsGeoDataset)):
+                buildings = buildingsGeoDataset[idx]
+                sentinel = sentinelGeoDataset[idx]
                 
+                sentinel_data = sentinel[0].unsqueeze(0).to(device)
+                sentlabels = sentinel[1].unsqueeze(0).to(device)
+
+                buildings_data = buildings[0].unsqueeze(0).to(device)
+                labels = buildings[1].unsqueeze(0).to(device)
+
+                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
+                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                window = sentinelGeoDataset.windows[idx] # here has to be sentinelGeoDataset to work
+                self.predictions.append((window, probabilities))
+
+    def __iter__(self):
+        return iter(self.predictions)
+
 class MultiResolutionDeepLabV3(pl.LightningModule):
     def __init__(self,
                 use_deeplnafrica: bool = True,
@@ -1299,6 +1329,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         # Main encoder - 4 sentinel channels + 1 buildings channel
         self.encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)     
         self.encoder.backbone.conv1 = nn.Conv2d(5, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        self.encoder.classifier = DeepLabHead(in_channels=2048, num_classes=1, atrous_rates=self.atrous_rates)
 
         # Buildings footprint encoder
         self.buildings_encoder = nn.Sequential(
@@ -1308,6 +1339,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Conv2d(self.buil_channels, 1, kernel_size=(3, 3), stride=(1, 1), padding=1, bias=False)
         )
+        
         # load pretrained weights
         if use_deeplnafrica:
             allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
@@ -1318,29 +1350,25 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
             for key, value in original_state_dict.items():
                 if value.dtype == torch.float64:
                     original_state_dict[key] = value.to(torch.float32)
-                    
+                
             # removing prefix
             state_dict = OrderedDict()
             for key, value in original_state_dict.items():
-                if key.startswith('segm_model.backbone.'):
-                    new_key = key[len('segm_model.backbone.'):]
+                if key.startswith('segm_model.'):
+                    new_key = key[len('segm_model.'):]
                     state_dict[new_key] = value
 
             # Extract the original weights of the first convolutional layer
-            original_conv1_weight = state_dict['conv1.weight']
+            original_conv1_weight = state_dict['backbone.conv1.weight']
             new_conv1_weight = torch.zeros((64, 5, 7, 7))
             new_conv1_weight[:, :4, :, :] = original_conv1_weight
             new_conv1_weight[:, 4, :, :] = original_conv1_weight[:, 0, :, :]
-            new_conv1 = nn.Conv2d(5, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-            new_conv1.weight = nn.Parameter(new_conv1_weight)
-            new_state_dict = state_dict.copy()
-            new_state_dict['conv1.weight'] = new_conv1.weight
-
-            self.encoder.backbone.load_state_dict(new_state_dict, strict=True)
+            state_dict['backbone.conv1.weight'] = new_conv1_weight
+                
+            self.encoder.load_state_dict(state_dict, strict=False)
         
-        # Intermediate Layer Getter
-        self.encoder = IntermediateLayerGetter(self.encoder.backbone, {'layer4': 'out'})
-        self.segmentation_head = DeepLabHead(in_channels=2048, num_classes=1, atrous_rates=self.atrous_rates)
+            # Intermediate Layer Getter
+            # self.encoder.backbone = IntermediateLayerGetter(self.encoder.backbone, {'layer4': 'out'})
         
     def forward(self, batch):
         sentinel_batch, buildings_batch = batch
@@ -1353,11 +1381,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         b_out = self.buildings_encoder(buildings_data)
         concatenated = torch.cat([sentinel_data, b_out], dim=1)    
 
-        encoder_outputs = self.encoder(concatenated)
-        out = encoder_outputs['out']
-
-        segmentation = self.segmentation_head(out)
-        segmentation = F.interpolate(segmentation, size=self.labels_size, mode="bilinear", align_corners=False)
+        segmentation = self.encoder(concatenated)['out']
         return segmentation.squeeze(1)
     
     def training_step(self, batch):
@@ -1468,34 +1492,3 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
                 'frequency': 1
             }
         }
-        
-class MultiResSentLabelPredictionsIterator:
-    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
-        self.model = model
-        self.sentinelGeoDataset = sentinelGeoDataset
-        self.dataset = buildingsGeoDataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(buildingsGeoDataset)):
-                buildings = buildingsGeoDataset[idx]
-                sentinel = sentinelGeoDataset[idx]
-                
-                sentinel_data = sentinel[0].unsqueeze(0).to(device)
-                sentlabels = sentinel[1].unsqueeze(0).to(device)
-
-                buildings_data = buildings[0].unsqueeze(0).to(device)
-                labels = buildings[1].unsqueeze(0).to(device)
-
-                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = sentinelGeoDataset.windows[idx] # here has to be sentinelGeoDataset to work
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
-

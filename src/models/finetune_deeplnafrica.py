@@ -99,8 +99,8 @@ class_config = ClassConfig(names=['background', 'slums'],
                            colors=['lightgray', 'darkred'],
                            null_class='background')
 
-label_uri = "../data/0/SantoDomingo3857.geojson"
-image_uri = '../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
+label_uri = "../../data/0/SantoDomingo3857.geojson"
+image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
 
 sentinel_source_normalizedSD, sentinel_label_raster_sourceSD = create_sentinel_raster_source(image_uri, label_uri, class_config, clip_to_label_source=True)
 
@@ -220,17 +220,17 @@ pred_label_store = SemanticSegmentationLabelStore(
 
 pred_label_store.save(pred_labels)
 
-# # Evaluate against labels:
-# gt_labels = scene.label_source.get_labels()
-# gt_extent = gt_labels.extent
-# pred_extent = pred_labels.extent
-# print(f"Ground truth extent: {gt_extent}")
-# print(f"Prediction extent: {pred_extent}")
+# Evaluate against labels:
+gt_labels = SentinelScene_SD.label_source.get_labels()
+gt_extent = gt_labels.extent
+pred_extent = pred_labels.extent
+print(f"Ground truth extent: {gt_extent}")
+print(f"Prediction extent: {pred_extent}")
 
-# evaluator = SemanticSegmentationEvaluator(class_config)
-# evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels)
+evaluator = SemanticSegmentationEvaluator(class_config)
+evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels)
 
-# evaluation.class_to_eval_item[0]
+evaluation.class_to_eval_item[0]
 # evaluation.class_to_eval_item[1]
 
 # # Discrete labels

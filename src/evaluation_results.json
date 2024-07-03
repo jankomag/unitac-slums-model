@@ -1,0 +1,328 @@
+{
+    "deeplabv3_buildings": {
+        "SanJoseCRI": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    62402395.0,
+                    0.0
+                ],
+                [
+                    269405.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 269405.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "TegucigalpaHND": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    4953284.0,
+                    0.0
+                ],
+                [
+                    563514.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 563514.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "SantoDomingoDOM": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    4953284.0,
+                    0.0
+                ],
+                [
+                    563514.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 563514.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "GuatemalaCity": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    22871097.0,
+                    0.0
+                ],
+                [
+                    538863.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 538863.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "Managua": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    1821795.0,
+                    0.0
+                ],
+                [
+                    21677.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 21677.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "Panama": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    53270215.0,
+                    0.0
+                ],
+                [
+                    156926.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 156926.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "SanSalvador_PS": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    50278913.0,
+                    0.0
+                ],
+                [
+                    4617583.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 4617583.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        }
+    },
+    "deeplabv3_multimodal": {
+        "SanJoseCRI": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    15649777.0,
+                    0.0
+                ],
+                [
+                    18173.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 18173.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "TegucigalpaHND": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    1096864.0,
+                    0.0
+                ],
+                [
+                    282842.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 282842.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "SantoDomingoDOM": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    1096864.0,
+                    0.0
+                ],
+                [
+                    282842.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 282842.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "GuatemalaCity": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    5805809.0,
+                    0.0
+                ],
+                [
+                    47865.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 47865.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "Managua": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    449137.0,
+                    0.0
+                ],
+                [
+                    13670.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 13670.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "Panama": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    13320558.0,
+                    0.0
+                ],
+                [
+                    35666.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 35666.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
+        "SanSalvador_PS": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    12709933.0,
+                    0.0
+                ],
+                [
+                    1014191.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 1014191.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        }
+    }
+}

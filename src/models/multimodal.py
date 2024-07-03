@@ -12,9 +12,14 @@ from affine import Affine
 import wandb
 from torchvision.models.segmentation import deeplabv3_resnet50
 import torch.nn as nn
-# import stackstac
-# import pystac_client
+import stackstac
+import pystac_client
 import albumentations as A
+from rastervision.core.box import Box
+import rasterio
+from rasterio.transform import from_bounds
+import tempfile
+import seaborn as sns
 # import folium
 from torch.utils.data import ConcatDataset
 import math
@@ -47,7 +52,7 @@ from src.data.dataloaders import (create_sentinel_raster_source, create_building
 from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.pytorch_learner import SemanticSegmentationVisualizer
 from rastervision.core.data import (Scene, ClassConfig, RasterioCRSTransformer, XarraySource,
-                                    RasterioSource, GeoJSONVectorSource,
+                                    RasterioSource, GeoJSONVectorSource, StatsTransformer,
                                     ClassInferenceTransformer, RasterizedSource,
                                     SemanticSegmentationLabelSource, VectorSource)
 
@@ -92,7 +97,7 @@ xmin4326, ymin4326, xmax4326, ymax4326 = labels4326.total_bounds
 labels3857 = labels4326.to_crs('EPSG:3857')
 xmin3857, _, _, ymax3857 = labels3857.total_bounds
 
-# Santo Domingo Sentinel
+# Santo Domingo Sentinel original code from file
 sentinel_source_normalizedSD, sentinel_label_raster_sourceSD = create_sentinel_raster_source(image_uriSD, label_uriSD, class_config, clip_to_label_source=True)
 crs_transformer = RasterioCRSTransformer.from_uri(image_uriSD)
 label_vector_source = CustomGeoJSONVectorSource(
@@ -102,99 +107,62 @@ label_vector_source = CustomGeoJSONVectorSource(
         ClassInferenceTransformer(
             default_class_id=class_config.get_class_id('slums'))])
 sentinel_label_raster_sourceSD = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-# sentinel_label_sourceSD = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
-chip = sentinel_source_normalizedSD[:, :, [0, 1, 2]]
-fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-ax.imshow(chip)
+
+
+# Density plot
+chip = sentinel_source_normalizedSD[:,:,[0,1,2,3]]
+num_bands = chip.shape[-1]
+plt.figure(figsize=(8, 6))
+for band in range(num_bands):
+    band_data = chip[..., band].flatten()
+    sns.kdeplot(band_data, shade=True, label=f'Band {band}', color=plt.cm.viridis(band / num_bands))
+plt.legend()
+plt.grid(True)
 plt.show()
 
 SentinelScene_SD = Scene(
         id='santodomingo_sentinel',
         raster_source = sentinel_source_normalizedSD,
-        label_source = sentinel_label_raster_sourceSD)
-        # aoi_polygons=[pixel_polygon])
-       
-# From Sentinel
-sentinelGeoDataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
-sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, test_sentinel_dataset_SD_aug = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=True, seed=12)
+        label_source = sentinel_label_raster_sourceSD)       
+
+sentinelGeoDataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=128, stride=128, padding=50, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
+sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, test_sentinel_dataset_SD_aug = create_datasets(SentinelScene_SD, imgsize=128, stride=128, padding=50, val_ratio=0.2, test_ratio=0.1, augment=True, seed=12)
+
+def create_full_image(source) -> np.ndarray:
+    extent = source.extent
+    chip = source._get_chip(extent)    
+    return chip
+
+img_full = create_full_image(sentinelGeoDataset_SD.scene.label_source)
+train_windows = train_sentinel_datasetSD.windows
+val_windows = val_sent_ds_SD.windows
+test_windows = test_sentinel_dataset_SD.windows
+window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 sent_train_ds_SD = ConcatDataset([train_sentinel_datasetSD, train_sentinel_datasetSD_aug])
 sent_val_ds_SD = ConcatDataset([val_sent_ds_SD, val_sent_ds_SD_aug])
 len(sent_train_ds_SD)
-# From STAC
-# BANDS = [
-#     'blue', # B02
-#     'green', # B03
-#     'red', # B04
-#     'nir', # B08
-# ]
-# URL = 'https://earth-search.aws.element84.com/v1'
-# catalog = pystac_client.Client.open(URL)
-# bbox = Box(ymin=ymin4326, xmin=xmin4326, ymax=ymax4326, xmax=xmax4326)
-# bbox_geometry = {
-#         'type': 'Polygon',
-#         'coordinates': [
-#             [
-#                 (xmin4326, ymin4326),
-#                 (xmin4326, ymax4326),
-#                 (xmax4326, ymax4326),
-#                 (xmax4326, ymin4326),
-#                 (xmin4326, ymin4326)
-#             ]
-#         ]
-#     }
-# def get_sentinel_item(bbox_geometry, bbox):
-#     items = catalog.search(
-#         intersects=bbox_geometry,
-#         collections=['sentinel-2-c1-l2a'],
-#         datetime='2023-01-01/2024-06-27',
-#         query={'eo:cloud_cover': {'lt': 5}},
-#         max_items=1,
-#     ).item_collection()
-    
-#     if not items:
-#         print("No items found for this city.")
-#         return None
-    
-#     sentinel_source_unnormalized = XarraySource.from_stac(
-#         items,
-#         bbox_map_coords=tuple(bbox),
-#         stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
-#         allow_streaming=True,
-#     )
-
-#     stats_tf = CustomStatsTransformer.from_raster_sources([sentinel_source_unnormalized],max_stds=3)
-
-#     sentinel_source = XarraySource.from_stac(
-#         items,
-#         bbox_map_coords=tuple(bbox),
-#         raster_transformers=[stats_tf],
-#         stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
-#         allow_streaming=True,
-#         channel_order=[2, 1, 0, 3],
-#     )
-    
-#     print(f"Loaded Sentinel data of size {sentinel_source.shape}, and dtype: {sentinel_source.dtype}")
-    
-#     chip = sentinel_source[:, :, [0, 1, 2]]
-#     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-#     ax.imshow(chip)
-#     plt.show()
-    
-#     return sentinel_source
-# sentinel_source_normalizedSD = get_sentinel_item(bbox_geometry, bbox)
 
 # Rasterised buildings
-rasterized_buildings_sourceSD, _, crs_transformer_buildingsSD = create_buildings_raster_source(buildings_uri, image_uriSD, label_uriSD, class_config, resolution=5)    
+rasterized_buildings_sourceSD, _, _ = create_buildings_raster_source(buildings_uri, image_uriSD, label_uriSD, class_config, resolution=5)    
+gdf = gpd.read_file(buildings_uri)
+gdf = gdf.to_crs('EPSG:3857')
+xmin, _, _, ymax = gdf.total_bounds
+
+crs_transformer_buildings = crs_transformer
+affine_transform_buildings = Affine(5, 0, xmin, 0, -5, ymax)
+crs_transformer_buildings.transform = affine_transform_buildings
+
 label_vector_source = CustomGeoJSONVectorSource(
     gdf = gdf_filled,
-    crs_transformer = crs_transformer_buildingsSD,
+    crs_transformer = crs_transformer_buildings,
     vector_transformers=[
         ClassInferenceTransformer(
             default_class_id=class_config.get_class_id('slums'))])
+
 label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
 buildings_label_sourceSD = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
-
 
 BuildingsScene_SD = Scene(
         id='santodomingo_buildings',
@@ -202,37 +170,26 @@ BuildingsScene_SD = Scene(
         label_source = buildings_label_sourceSD)
 
 # create datasets
-buildingsGeoDataset_SD, train_buil_datasetSD, val_buil_ds_SD, test_buil_dataset_SD = create_datasets(BuildingsScene_SD, imgsize=512, stride=512, padding=0, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
-buildingsGeoDataset_SD_aug, train_buil_datasetSD_aug, val_buil_ds_SD_aug, test_buil_dataset_SD_aug = create_datasets(BuildingsScene_SD, imgsize=512, stride=512, padding=0, val_ratio=0.2, test_ratio=0.1, augment = True, seed=12)
+buildingsGeoDataset_SD, train_buil_datasetSD, val_buil_ds_SD, test_buil_dataset_SD = create_datasets(BuildingsScene_SD, imgsize=256, stride=256, padding=100, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
+buildingsGeoDataset_SD_aug, train_buil_datasetSD_aug, val_buil_ds_SD_aug, test_buil_dataset_SD_aug = create_datasets(BuildingsScene_SD, imgsize=256, stride=256, padding=100, val_ratio=0.2, test_ratio=0.1, augment = True, seed=12)
+
+def create_full_image(source) -> np.ndarray:
+    extent = source.extent
+    chip = source.get_label_arr(extent)    
+    return chip
+
+img_full = create_full_image(buildingsGeoDataset_SD.scene.label_source)
+train_windows = train_buil_datasetSD.windows
+val_windows = val_buil_ds_SD.windows
+test_windows = test_buil_dataset_SD.windows
+window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 build_train_ds_SD = ConcatDataset([train_buil_datasetSD, train_buil_datasetSD_aug])
 build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
 len(build_train_ds_SD)
-# def create_full_image(source) -> np.ndarray:
-#     extent = source.extent
-#     chip = source.get_label_arr(extent)    
-#     return chip
 
-# img_full = create_full_image(buildingsGeoDataset_SD.scene.label_source)
-# train_windows = train_buildings_datasetSD.windows
-# val_windows = val_buil_ds_SD.windows
-# test_windows = test_buildings_dataset_SD.windows
-# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
-
-# def create_full_image(source) -> np.ndarray:
-#     extent = source.extent
-#     chip = source._get_chip(extent)    
-#     return chip
-
-# img_full = create_full_image(sentinelGeoDataset_SD.scene.label_source)
-# train_windows = train_sentinel_datasetSD.windows
-# val_windows = val_sent_ds_SD.windows
-# test_windows = test_sentinel_dataset_SD.windows
-# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
-
-batch_size = 8
+batch_size = 16
 
 train_multiple_cities=False
 
@@ -318,7 +275,7 @@ else:
     # when only SD for training:
     train_dataset = MergeDataset(sent_train_ds_SD, build_train_ds_SD)
     val_dataset = MergeDataset(sent_val_ds_SD, build_val_ds_SD)
-
+len(train_dataset)
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
@@ -330,11 +287,13 @@ vis_build = SemanticSegmentationVisualizer(
     class_names=class_config.names, class_colors=class_config.colors,
     channel_display_groups={'Buildings': (0,)})
 
-x, y = vis_sent.get_batch(sentinelGeoDataset_SD, 10)
+# x, y = vis_sent.get_batch(sentinelGeoDataset_SD, 10)
+# vis_sent.plot_batch(x, y, show=True)
+x, y = vis_sent.get_batch(sentinelGeoDataset_SD_aug, 10)
 vis_sent.plot_batch(x, y, show=True)
 
-x, y = vis_build.get_batch(buildingsGeoDataset_SD, 2)
-vis_build.plot_batch(x, y, show=True)
+# x, y = vis_build.get_batch(buildingsGeoDataset_SD, 2)
+# vis_build.plot_batch(x, y, show=True)
 x, y = vis_build.get_batch(buildingsGeoDataset_SD_aug, 2)
 vis_build.plot_batch(x, y, show=True)
 
@@ -347,15 +306,15 @@ hyperparameters = {
     'train_cities': 'SD',
     'batch_size': batch_size,
     'use_deeplnafrica': True,
-    'labels_size': 256,
-    'buil_channels': 32,
+    'labels_size': 128,
+    'buil_channels': 64,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-3,
-    'weight_decay': 1e-4,
-    'gamma': 0.5,
-    'sched_step_size': 5,
-    'pos_weight': 2.0,
-    'buil_kernel1': 3
+    'weight_decay': 0,
+    'gamma': 1,
+    'sched_step_size': 20,
+    'pos_weight': 1.0,
+    'buil_kernel1': 5
 }
 
 output_dir = f'../UNITAC-trained-models/multi_modal/SD_DLV3/'
@@ -369,14 +328,12 @@ buil_channels = hyperparameters['buil_channels']
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
-    save_last=True,
+    save_last=False,
     dirpath=output_dir,
     filename='multimodal_{epoch:02d}-{val_loss:.4f}',
-    save_top_k=3,
+    save_top_k=1,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=20)
-
-# trained_models = train_with_cross_validation(MultiResolutionDeepLabV3, hyperparameters, train_val_sentinel_datasetSD, train_val_buildings_dataset, seed=42)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=30)
 
 model = MultiResolutionDeepLabV3(
     use_deeplnafrica=hyperparameters['use_deeplnafrica'],
@@ -385,11 +342,12 @@ model = MultiResolutionDeepLabV3(
     weight_decay=hyperparameters['weight_decay'],
     gamma=hyperparameters['gamma'],
     atrous_rates=hyperparameters['atrous_rates'],
-    sched_step_size=hyperparameters['sched_step_size'],
+    sched_step_size = hyperparameters['sched_step_size'],
     buil_channels = hyperparameters['buil_channels'],
-    buil_kernel = hyperparameters['buil_kernel1'],
+    buil_kernel1 = hyperparameters['buil_kernel1'],
     pos_weight=torch.tensor(hyperparameters['pos_weight'], device='mps')
 )
+# model = MultiResolutionFPN()
 model.to(device)
 
 # for idx, batch in enumerate(data_module.train_dataloader()):
@@ -408,28 +366,62 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=30,
+    min_epochs=20,
     max_epochs=150,
-    num_sanity_val_steps=3
-)
+    num_sanity_val_steps=3,
+    # overfit_batches=0.25, # debugging args
+    # detect_anomaly=False, # debugging args
+    )
 
 # Train the model
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation # best dlv3 multimodal_buil_channels=0-epoch=13-val_loss=0.5869.ckpt
-best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_DLV3/last-v1.ckpt"
+best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_epoch=10-val_loss=0.1890.ckpt"
 # best_model_path_fpn = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_FPN/multimodal_runidrun_id=0-epoch=60-val_loss=0.3382.ckpt"
 # best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=32, buil_kernel=3) #MultiResolutionDeepLabV3 MultiResolutionFPN
+best_model = MultiResolutionDeepLabV3(buil_channels=64, buil_kernel1=5) #MultiResolutionDeepLabV3 MultiResolutionFPN
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict)
-
 best_model.eval()
+# original predictions code
 
-buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScene_SD, imgsize=512, stride = 256, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-sentinelGeoDataset, _, _, _ = create_datasets(SentinelScene_SD, imgsize=256, stride = 128, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-predictions_iterator = MultiResSentLabelPredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
+class MultiResSentLabelPredictionsIterator:
+    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
+        self.model = model
+        self.sentinelGeoDataset = sentinelGeoDataset
+        self.dataset = buildingsGeoDataset
+        self.device = device
+        
+        self.predictions = []
+        
+        with torch.no_grad():
+            for idx in range(len(buildingsGeoDataset)):
+                # print(f"Predicting for window {idx+1}/{len(buildingsGeoDataset)}")
+                buildings = buildingsGeoDataset[idx]
+                sentinel = sentinelGeoDataset[idx]
+                
+                sentinel_data = sentinel[0].unsqueeze(0).to(device)
+                sentlabels = sentinel[1].unsqueeze(0).to(device)
+
+                buildings_data = buildings[0].unsqueeze(0).to(device)
+                labels = buildings[1].unsqueeze(0).to(device)
+
+                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
+                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                window = sentinelGeoDataset.windows[idx] # here has to be sentinelGeoDataset to work
+                self.predictions.append((window, probabilities))
+
+    def __iter__(self):
+        return iter(self.predictions)
+
+buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScene_SD, imgsize=256, stride = 128, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+sentinelGeoDataset, _, _, _ = create_datasets(SentinelScene_SD, imgsize=128, stride = 72, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+predictions_iterator = MultiRes144labPredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 assert len(windows) == len(predictions)
 
@@ -451,9 +443,6 @@ ax.axis('off')
 ax.set_title('probability map')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
-
-
-
 
 
 
@@ -491,65 +480,7 @@ show_windows(img_full, train_windows + val_windows + test_windows, window_labels
 
 
 
-### Make Cval predictions ###
-class CVMultiResSentLabelPredictionsIterator:
-    def __init__(self, models, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
-        self.models = models
-        self.sentinelGeoDataset = sentinelGeoDataset
-        self.buildingsGeoDataset = buildingsGeoDataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(buildingsGeoDataset)):
-                buildings = buildingsGeoDataset[idx]
-                sentinel = sentinelGeoDataset[idx]
-                
-                sentinel_data = sentinel[0].unsqueeze(0).to(device)
-                sentlabels = sentinel[1].unsqueeze(0).to(device)
-                
-                buildings_data = buildings[0].unsqueeze(0).to(device)
-                labels = buildings[1].unsqueeze(0).to(device)
-                
-                fold_predictions = []
-                for model in self.models:
-                    output = model(((sentinel_data,sentlabels), (buildings_data,labels)))
-                    probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                    fold_predictions.append(probabilities)
-                
-                # Average predictions from all folds
-                avg_prediction = np.mean(fold_predictions, axis=0)
-                
-                # Store predictions along with window coordinates
-                window = sentinelGeoDataset.windows[idx]
-                self.predictions.append((window, avg_prediction))
-    
-    def __iter__(self):
-        return iter(self.predictions)
 
-# Generate predictions
-predictions_iterator = CVMultiResSentLabelPredictionsIterator(trained_models, test_sentinel_dataset, test_buildings_dataset, device=device)
-windows, predictions = zip(*predictions_iterator)
-
-# Create SemanticSegmentationLabels from predictions
-pred_labels = SemanticSegmentationLabels.from_predictions(
-    windows,
-    predictions,
-    extent=SentinelScene_SD.extent,
-    num_classes=len(class_config),
-    smooth=True
-)
-
-# Visualize predictions
-scores = pred_labels.get_score_arr(pred_labels.extent)
-scores_building = scores[0]
-fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-image = ax.imshow(scores_building)
-ax.axis('off')
-ax.set_title('probability map')
-cbar = fig.colorbar(image, ax=ax)
-plt.show()
 
 # Visualise feature maps
 class FeatureMapVisualization:

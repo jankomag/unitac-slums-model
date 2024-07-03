@@ -4,6 +4,7 @@ import torch
 from affine import Affine
 import geopandas as gpd
 import matplotlib.pyplot as plt
+import json
 
 from rastervision.core.evaluation import SemanticSegmentationEvaluator
 from rastervision.core.data import (ClassConfig, Scene, StatsTransformer, ClassInferenceTransformer,
@@ -14,7 +15,7 @@ from rastervision.core.data.label import SemanticSegmentationLabels
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
-# sys.path.append(grandparent_dir)
+sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
 from src.models.model_definitions import (BuildingsDeeplabv3, BuildingsOnlyPredictionsIterator, CustomGeoJSONVectorSource, MultiResSentLabelPredictionsIterator, MultiResolutionDeepLabV3)
@@ -39,7 +40,7 @@ models = {
     'deeplabv3_multimodal': {
         'name': 'deeplabv3_multimodal',
         'framework': 'pytorch',
-        'weights_path': ''
+        'weights_path': "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_buil_channels=0-epoch=13-val_loss=0.5869.ckpt"
     }#, 'pixel_based_RF': {
     #     'framework': 'scikit_learn',
     #     'weights_path': ''
@@ -75,8 +76,8 @@ cities = {
         'image_path': '../data/0/sentinel_Gee/SLV_Delgado_2023.tif',
         'labels_path': '../data/SHP/SanSalvador_PS.shp'
     }#,
-    # 'BelizeCity': {'image_path': '../../data/0/sentinel_Gee/HND__2023.tif','labels_path': '../data/SHP/BelizeCity_PS.shp'},
-    # 'Belmopan': {'image_path': '../../data/0/sentinel_Gee/HND__2023.tif','labels_path': '../data/SHP/Belmopan_PS.shp'}
+    # 'BelizeCity': {'image_path': '../data/0/sentinel_Gee/HND__2023.tif','labels_path': '../data/SHP/BelizeCity_PS.shp'},
+    # 'Belmopan': {'image_path': '../data/0/sentinel_Gee/HND__2023.tif','labels_path': '../data/SHP/Belmopan_PS.shp'}
 }
 
 class_config = ClassConfig(names=['background', 'slums'], 
@@ -157,19 +158,19 @@ def prepare_data_for_deeplabv3_multimodal(image_path, labels_path, buildings_ras
     affine_transform_buildings = Affine(5, 0, xmin, 0, -5, ymax)
     crs_transformer_buildings.transform = affine_transform_buildings
     
-    # label_vector_source = GeoJSONVectorSource(labels_path,
-    #     crs_transformer_buildings,
-    #     vector_transformers=[ClassInferenceTransformer(default_class_id=class_config.get_class_id('slums'))])
+    label_vector_source = GeoJSONVectorSource(labels_path,
+        crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=class_config.get_class_id('slums'))])
     
-    # label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-    # label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
+    label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
+    label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
     
     BuilScene = Scene(
         id='buildings',
         raster_source = buildings_raster)
         # label_source = label_source)
-    
-    location_labels = SentinelScene.label_source.get_labels()
+        
+    location_labels = label_source.get_labels()
     scenes = (SentinelScene, BuilScene)
     return (scenes, location_labels)
 
@@ -233,7 +234,7 @@ def evaluate_model(pred_labels, labels):
         ground_truth=labels,
         predictions=pred_labels)
     
-    eval_metrics_dict = evaluation.class_to_eval_item[0]
+    eval_metrics_dict = evaluation.class_to_eval_item[1]
     f1_score = eval_metrics_dict.f1
     print("F1 score: ", f1_score)
     
@@ -245,7 +246,7 @@ def load_model(model_info):
         
         if model_info['name'] == 'deeplabv3_multimodal':
             
-            model = MultiResolutionDeepLabV3(buil_channels=64)
+            model = MultiResolutionDeepLabV3(buil_channels=16, buil_kernel1=3)
             checkpoint = torch.load(model_info['weights_path'])
             state_dict = checkpoint['state_dict']
             model.load_state_dict(state_dict)
@@ -264,8 +265,15 @@ def load_model(model_info):
 def run_evaluations(locations, models):
     results = {}
     
-    # takes longest to rasterise only do it once here
-    buildings_raster = make_buildings_raster(image_path, labels_path)
+    # Cache to store precomputed building rasters for each location
+    building_rasters = {}
+    
+    # Precompute building rasters for each location
+    for location_name, paths in locations.items():
+        print(f"Precomputing building raster for {location_name}")
+        image_path = paths['image_path']
+        labels_path = paths['labels_path']
+        building_rasters[location_name] = make_buildings_raster(image_path, labels_path)
     
     for model_name, model_info in models.items():
         model = load_model(model_info)
@@ -275,6 +283,9 @@ def run_evaluations(locations, models):
             print(f"Evaluating {model_name} on {location_name}")
             image_path = paths['image_path']
             labels_path = paths['labels_path']
+            
+            # Retrieve precomputed buildings raster
+            buildings_raster = building_rasters[location_name]
             
             # Prepare data for the specific model
             if model_name == 'pixel_based_RF':
@@ -289,10 +300,12 @@ def run_evaluations(locations, models):
             inputs, location_labels = data
             
             # Make predictions
-            if model_info['framework'] == 'pytorch':
+            if model_name == 'deeplabv3_buildings':
                 pred_labels = make_predictions_buildings(model, inputs)
+            elif model_name == 'deeplabv3_multimodal':
+                pred_labels = make_predictions_multimodal(model, inputs)
             elif model_info['framework'] == 'scikit_learn':
-                predictions = model.predict(inputs)
+                pred_labels = model.predict(inputs)
             else:
                 raise ValueError("Unsupported framework")
             
@@ -308,13 +321,45 @@ def run_evaluations(locations, models):
     
     return results
 
-def save_evaluations(results, output_path):
-    import json
-    with open(output_path, 'w') as f:
-        json.dump(results, f)
-
+def save_evaluations(results):
+    structured_results = {}
+    
+    for model_name, model_results in results.items():
+        structured_results[model_name] = {}
+        for result in model_results:
+            location = result['location']
+            metrics = result['metrics']
+            
+            # Convert ClassEvaluationItem to a dictionary
+            metrics_dict = {
+                'class_id': metrics.class_id,
+                'class_name': metrics.class_name,
+                'conf_mat': metrics.conf_mat.tolist(),  # Convert numpy array to list
+                # 'conf_mat_frac': metrics.conf_mat_frac.tolist(),  # Convert numpy array to list
+                # 'conf_mat_frac_dict': metrics.conf_mat_frac_dict,
+                # 'count_error': metrics.count_error,
+                'gt_count': metrics.gt_count,
+                'metrics': {
+                    'f1': metrics.f1,
+                    'precision': metrics.precision,
+                    'recall': metrics.recall,
+                    'sensitivity': metrics.sensitivity,
+                    'specificity': metrics.specificity
+                },
+                'pred_count': metrics.pred_count,
+                # 'relative_frequency': metrics.relative_frequency
+            }
+            
+            structured_results[model_name][location] = metrics_dict
+    
+    # Save as JSON file
+    with open('evaluation_results.json', 'w') as f:
+        json.dump(structured_results, f, indent=4)
+    
+    print("Evaluation results saved to evaluation_results.json")
+    
 # Run evaluations
 results = run_evaluations(cities, models)
     
 # Save the evaluation results
-save_evaluations(results, 'evaluation_results.json')
+save_evaluations(results)
