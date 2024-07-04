@@ -40,10 +40,7 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import (CustomGeoJSONVectorSource, CustomVectorOutputConfig, make_buildings_raster,
-                                          CustomGeoJSONVectorSource, MultiResolutionDeepLabV3,
-                                          MultiRes144labPredictionsIterator, MultiResolutionFPN,
-                                          MultiResSentLabelPredictionsIterator, MultiModalDataModule)
+from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResSentLabelPredictionsIterator, MultiModalDataModule)
 from deeplnafrica.deepLNAfrica import (Deeplabv3SegmentationModel, init_segm_model, 
                                        CustomDeeplabv3SegmentationModel)
 from src.data.dataloaders import (buil_create_full_image, show_windows, cities,
@@ -90,7 +87,7 @@ build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
 train_dataset = MergeDataset(sent_train_ds_SD, build_train_ds_SD)
 val_dataset = MergeDataset(sent_val_ds_SD, build_val_ds_SD)
 
-batch_size = 4
+batch_size = 6
 train_multiple_cities=False
 
 if train_multiple_cities:
@@ -184,15 +181,15 @@ hyperparameters = {
     'labels_size': 256,
     'buil_channels': 16,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-3,
+    'learning_rate': 1e-2,
     'weight_decay': 0,
-    'gamma': 0.5,
+    'gamma': 1,
     'sched_step_size': 40,
     'pos_weight': 2.0,
     'buil_kernel1': 3
 }
 
-output_dir = f'../../UNITAC-trained-models/multi_modal/SD_DLV3/'
+output_dir = f'../UNITAC-trained-models/multi_modal/SD_DLV3/'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-multi-modal', config=hyperparameters)
@@ -206,9 +203,9 @@ checkpoint_callback = ModelCheckpoint(
     save_last=False,
     dirpath=output_dir,
     filename=f'multimodal_builchan{buil_channels}_{{epoch:02d}}-{{val_loss:.4f}}',
-    save_top_k=1,
+    save_top_k=3,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=20)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=30)
 
 model = MultiResolutionDeepLabV3(
     use_deeplnafrica=hyperparameters['use_deeplnafrica'],
@@ -229,19 +226,19 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=30,
+    min_epochs=20,
     max_epochs=150,
     num_sanity_val_steps=3,
-    overfit_batches=0.35)
+    # overfit_batches=0.35
+)
 
 # Train the model
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation # best multimodal_epoch=09-val_loss=0.2434.ckpt
-best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_epoch=13-val_loss=0.1777.ckpt"
-# best_model_path_fpn = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_FPN/multimodal_runidrun_id=0-epoch=60-val_loss=0.3382.ckpt"
-# best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=64, buil_kernel1=5) #MultiResolutionDeepLabV3 MultiResolutionFPN
+# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_builchan16_epoch=03-val_loss=0.7799.ckpt"
+best_model_path_dplv3 = checkpoint_callback.best_model_path
+best_model = MultiResolutionDeepLabV3(buil_channels=16, buil_kernel1=3) #MultiResolutionDeepLabV3 MultiResolutionFPN
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict)

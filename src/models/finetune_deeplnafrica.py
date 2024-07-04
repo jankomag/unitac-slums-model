@@ -46,8 +46,8 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import CustomVectorOutputConfig, SentinelDeeplabv3, PredictionsIterator
-from src.data.dataloaders import create_datasets, create_sentinel_scene, cities, senitnel_create_full_image, CustomGeoJSONVectorSource
+from src.models.model_definitions import CustomVectorOutputConfig, SentinelDeepLabV3, PredictionsIterator
+from src.data.dataloaders import create_datasets, create_sentinel_scene, cities, senitnel_create_full_image, show_windows
 from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
 from rastervision.core.data import (Scene, ClassInferenceTransformer, RasterizedSource,
     ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
@@ -60,7 +60,6 @@ from rastervision.pytorch_learner import (
 from rastervision.core.data.utils import make_ss_scene
 from rastervision.core.evaluation import SemanticSegmentationEvaluator
 from deeplnafrica.deepLNAfrica import Deeplabv3SegmentationModel, init_segm_model, CustomDeeplabv3SegmentationModel
-from src.data.dataloaders import create_full_image, show_windows
 from rastervision.core.data.utils import get_polygons_from_uris
 
 # Define device
@@ -89,14 +88,13 @@ class_config = ClassConfig(names=['background', 'slums'],
 
 SentinelScene_SD = create_sentinel_scene(cities['SantoDomingoDOM'], class_config)
 
-sentinelGeoDataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=50, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
-sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, test_sentinel_dataset_SD_aug = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=50, val_ratio=0.2, test_ratio=0.1, augment=True, seed=12)
+sentinelGeoDataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
+sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, test_sentinel_dataset_SD_aug = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=True, seed=22)
 
 sent_train_ds_SD = ConcatDataset([train_sentinel_datasetSD, train_sentinel_datasetSD_aug])
 sent_val_ds_SD = ConcatDataset([val_sent_ds_SD, val_sent_ds_SD_aug])
 
-
-batch_size = 16
+batch_size = 8
 train_multiple_cities = False
 
 if train_multiple_cities:
@@ -127,12 +125,12 @@ train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_me
 val_dl = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)    
 
 # Preview sliding window
-# img_full = senitnel_create_full_image(sentinelGeoDataset_SD.scene.label_source)
-# train_windows = train_sentinel_datasetSD.windows
-# val_windows = val_sent_ds_SD.windows
-# test_windows = test_sentinel_dataset_SD.windows
-# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+img_full = senitnel_create_full_image(sentinelGeoDataset_SD.scene.label_source)
+train_windows = train_sentinel_datasetSD.windows
+val_windows = val_sent_ds_SD.windows
+test_windows = test_sentinel_dataset_SD.windows
+window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 # Create model
 hyperparameters = {
@@ -141,14 +139,14 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-4,
-    'weight_decay': 0.00001,
-    'gamma': 0.5,
+    'learning_rate': 1e-3,
+    'weight_decay': 0,
+    'gamma': 1,
     'sched_step_size': 15,
     'pos_weight': torch.tensor(2.0, device='mps')
 }
 
-model = SentinelDeeplabv3(use_deeplnafrica = hyperparameters['use_deeplnafrica'],
+model = SentinelDeepLabV3(use_deeplnafrica = hyperparameters['use_deeplnafrica'],
                     learning_rate = hyperparameters['learning_rate'],
                     weight_decay = hyperparameters['weight_decay'],
                     gamma = hyperparameters['gamma'],
@@ -157,13 +155,7 @@ model = SentinelDeeplabv3(use_deeplnafrica = hyperparameters['use_deeplnafrica']
                     pos_weight = hyperparameters['pos_weight'])
 model.to(device)
 
-for batch in train_dl:
-    x, y = batch
-    out = model(x)
-    print(out.shape)
-    break
-
-output_dir = f'../../UNITAC-trained-models/sentinel_only/DLV3'
+output_dir = f'../UNITAC-trained-models/sentinel_only/DLV3'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-finetune-sentinel-only', config=hyperparameters)
@@ -177,7 +169,7 @@ checkpoint_callback = ModelCheckpoint(
     filename='multimodal_runid{run_id}-{epoch:02d}-{val_loss:.4f}',
     save_top_k=1,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=35)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=30)
 
 # Define trainer
 trainer = Trainer(
@@ -185,19 +177,19 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=40,
+    min_epochs=30,
     max_epochs=150,
-    num_sanity_val_steps=3
+    num_sanity_val_steps=3,
+    # overfit_batches=0.5
 )
 
 # Train the model
 trainer.fit(model, train_dl, val_dl)
 
 # Make predictions
-# best_model_path = checkpoint_callback.best_model_path
-# best_unet_path = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/sentinel_only/UNET/multimodal_runidrun_id=0-epoch=04-val_loss=0.6201.ckpt"
-best_deeplab_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/multimodal_runidrun_id=0-epoch=27-val_loss=0.1693.ckpt"
-best_model = SentinelDeeplabv3.load_from_checkpoint(best_deeplab_path) # SentinelSimpleSS SentinelDeeplabv3
+best_model_path = checkpoint_callback.best_model_path
+best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/multimodal_runidrun_id=0-epoch=27-val_loss=0.1693.ckpt"
+best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path) # SentinelSimpleSS SentinelDeeplabv3
 best_model.eval()
 
 # label_uriGC = "../../data/SHP/Guatemala_PS.shp"
@@ -230,30 +222,30 @@ ax.set_title('infs Scores')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
-# # Saving predictions as GEOJSON
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
+# # # Saving predictions as GEOJSON
+# vector_output_config = CustomVectorOutputConfig(
+#     class_id=1,
+#     denoise=8,
+#     threshold=0.5)
 
-gdf = gpd.read_file('../data/0/SantoDomingo3857_buffered.geojson')
-gdf = gdf.to_crs('EPSG:3857')
-xmin, ymin, xmax, ymax = gdf.total_bounds
+# gdf = gpd.read_file('../data/0/SantoDomingo3857_buffered.geojson')
+# gdf = gdf.to_crs('EPSG:3857')
+# xmin, ymin, xmax, ymax = gdf.total_bounds
 
-crs_transformer_buildings = RasterioCRSTransformer.from_uri('../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif')
-affine_transform_buildings = Affine(10, 0, xmin, 0, -10, ymax)
-crs_transformer_buildings.transform = affine_transform_buildings
+# crs_transformer_buildings = RasterioCRSTransformer.from_uri('../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif')
+# affine_transform_buildings = Affine(10, 0, xmin, 0, -10, ymax)
+# crs_transformer_buildings.transform = affine_transform_buildings
 
-crs_transformer = RasterioCRSTransformer.from_uri('../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif')
+# crs_transformer = RasterioCRSTransformer.from_uri('../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif')
 
-pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/sentinel_only/DLV3_!/',
-    crs_transformer = crs_transformer_buildings,
-    class_config = class_config,
-    vector_outputs = [vector_output_config],
-    discrete_output = True)
+# pred_label_store = SemanticSegmentationLabelStore(
+#     uri='../../vectorised_model_predictions/sentinel_only/DLV3_!/',
+#     crs_transformer = crs_transformer_buildings,
+#     class_config = class_config,
+#     vector_outputs = [vector_output_config],
+#     discrete_output = True)
 
-pred_label_store.save(pred_labels)
+# pred_label_store.save(pred_labels)
 
 # Evaluate against labels:
 gt_labels = SentinelScene_SD.label_source.get_labels()

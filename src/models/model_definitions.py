@@ -120,7 +120,7 @@ def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_co
     return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
 
 # Sentinel Only Models
-class SentinelDeeplabv3(pl.LightningModule):
+class SentinelDeepLabV3(pl.LightningModule):
     def __init__(self,
                 use_deeplnafrica: bool = True,
                 learning_rate: float = 1e-2,
@@ -166,13 +166,8 @@ class SentinelDeeplabv3(pl.LightningModule):
             self.save_hyperparameters()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        
-        # Move data to the device
         x = x.to(self.device)
-
         x = self.deeplab(x)['out'].squeeze(dim=1)
-        # x = x.permute(0, 2, 3, 1)
-
         return x
 
     def compute_metrics(self, preds, target):
@@ -299,7 +294,7 @@ class PredictionsIterator:
         return iter(self.predictions)
     
 # Buildings Only Models
-class BuildingsDeeplabv3(pl.LightningModule):
+class BuildingsDeepLabV3(pl.LightningModule):
     def __init__(self,
                 use_deeplnafrica: bool = True,
                 learning_rate: float = 1e-2,
@@ -494,36 +489,6 @@ class MultiModalPredictionsIterator:
                 
                 # Store predictions along with window coordinates
                 window = buildingsGeoDataset.windows[idx]
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
-
-class MultiRes144labPredictionsIterator:
-    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
-        self.model = model
-        self.sentinelGeoDataset = sentinelGeoDataset
-        self.dataset = buildingsGeoDataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(buildingsGeoDataset)):
-                buildings = buildingsGeoDataset[idx]
-                sentinel = sentinelGeoDataset[idx]
-                
-                sentinel_data = sentinel[0].unsqueeze(0).to(device)
-                sentlabels = sentinel[1].unsqueeze(0).to(device)
-
-                buildings_data = buildings[0].unsqueeze(0).to(device)
-                labels = buildings[1].unsqueeze(0).to(device)
-
-                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = sentinelGeoDataset.windows[idx] # here has to be sentinelGeoDataset to work
                 self.predictions.append((window, probabilities))
 
     def __iter__(self):
