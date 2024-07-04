@@ -30,8 +30,13 @@ if not torch.backends.mps.is_available():
 else:
     device = torch.device("mps")
     print("MPS is available.")
-    
+
 models = {
+    'deeplabv3_sentinel': {
+        'name': 'deeplabv3_sentinel',
+        'framework': 'pytorch',
+        'weights_path': "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/"
+    },
     'deeplabv3_buildings': {
         'name': 'deeplabv3_buildings',
         'framework': 'pytorch',

@@ -85,7 +85,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
-from src.models.model_definitions import (BuildingsDeeplabv3, BuildingsUNET, CustomVectorOutputConfig, BuildingsOnlyPredictionsIterator)
+from src.models.model_definitions import (BuildingsDeeplabv3, BuildingsUNET, CustomVectorOutputConfig, BuildingsOnlyPredictionsIterator, CustomGeoJSONVectorSource)
 from deeplnafrica.deepLNAfrica import init_segm_model
 
 import folium
@@ -100,87 +100,69 @@ from rastervision.core.data import (
     VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
 )
 
-def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5):
-    gdf = gpd.read_file(buildings_uri)
-    gdf = gdf.to_crs('EPSG:3857')
-    xmin, _, _, ymax = gdf.total_bounds
-    
-    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymax)
-    crs_transformer_buildings.transform = affine_transform_buildings
+### raster source ###
+label_uriSD = "../../data/0/SantoDomingo3857.geojson"
+buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
+image_uriSD = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
 
-    buildings_vector_source = GeoJSONVectorSource(
-        buildings_uri,
-        crs_transformer_buildings,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-    
-    rasterized_buildings_source = RasterizedSource(
-        buildings_vector_source,
-        background_class_id=0)
-
-    print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
-
-    label_vector_source = GeoJSONVectorSource(label_uri,
-        crs_transformer_buildings,
-        vector_transformers=[
-            ClassInferenceTransformer(
-                default_class_id=class_config.get_class_id('slums'))])
-
-    label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-    buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
-
-    return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
-
-### Label source ###
-label_uri_SD = "../../data/0/SantoDomingo3857.geojson"
-image_uri_SD = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-buildings_uri_SD = '../../data/0/overture/santodomingo_buildings.geojson'
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
-rasterized_buildings_sourceSD, buildings_label_sourceSD, crs_transformer_SD = create_buildings_raster_source(buildings_uri_SD, image_uri_SD, label_uri_SD, class_config, resolution=5)
+gdf = gpd.read_file(label_uriSD)
+gdf = gdf.to_crs('EPSG:4326')
+gdf_filled = gdf.copy()
+gdf_filled["geometry"] = gdf_filled.geometry.buffer(0.00008)
 
-# label_uri_GC = "../../data/SHP/Guatemala_PS.shp"
-# image_uri_GC = '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
-# buildings_uri_GC = '../../data/0/overture/GT_buildings3857.geojson'
-# gpd.read_file(buildings_uri_GC)
-# rasterized_buildings_sourceGC, buildings_label_sourceGC, crs_transformer_GC = create_buildings_raster_source(buildings_uri_GC, image_uri_GC, label_uri_GC, class_config, resolution=5)
-# BuildingsScenceGC = Scene(
-#         id='guatemalacity_buildings',
-#         raster_source = rasterized_buildings_sourceGC,
-#         label_source = buildings_label_sourceGC)
-# buildingsGeoDatasetGC, train_buildings_datasetGC, val_buildings_datasetGC, test_buildings_datasetGC = create_datasets(
-#     BuildingsScenceGC, imgsize=288, stride = 288, padding=0, val_ratio=0.3, test_ratio=0.1, seed=42)
+rasterized_buildings_sourceSD, _, _ = create_buildings_raster_source(buildings_uri, image_uriSD, label_uriSD, class_config, resolution=5)    
+gdf = gpd.read_file(buildings_uri)
+gdf = gdf.to_crs('EPSG:3857')
+xmin, _, _, ymax = gdf.total_bounds
 
-BuildingsScenceSD = Scene(
+crs_transformer = RasterioCRSTransformer.from_uri(image_uriSD)
+
+crs_transformer_buildings = crs_transformer
+affine_transform_buildings = Affine(5, 0, xmin, 0, -5, ymax)
+crs_transformer_buildings.transform = affine_transform_buildings
+
+label_vector_source = CustomGeoJSONVectorSource(
+    gdf = gdf_filled,
+    crs_transformer = crs_transformer_buildings,
+    vector_transformers=[
+        ClassInferenceTransformer(
+            default_class_id=class_config.get_class_id('slums'))])
+
+label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
+buildings_label_sourceSD = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
+
+BuildingsScene_SD = Scene(
         id='santodomingo_buildings',
         raster_source = rasterized_buildings_sourceSD,
         label_source = buildings_label_sourceSD)
 
-buildingsGeoDatasetSD, train_buildings_datasetSD, val_buildings_datasetSD, test_buildings_datasetSD = create_datasets(
-    BuildingsScenceSD, imgsize=288, stride = 288, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-
-# combined_train_dataset = ConcatDataset([train_buildings_datasetSD, train_buildings_datasetGC])
-# combined_val_dataset = ConcatDataset([val_buildings_datasetSD, val_buildings_datasetGC])
-# combined_val_dataset = ConcatDataset([test_buildings_datasetSD, test_buildings_datasetGC])
+# create datasets
+buildingsGeoDataset_SD, train_buil_datasetSD, val_buil_ds_SD, test_buil_dataset_SD = create_datasets(BuildingsScene_SD, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
+buildingsGeoDataset_SD_aug, train_buil_datasetSD_aug, val_buil_ds_SD_aug, test_buil_dataset_SD_aug = create_datasets(BuildingsScene_SD, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = True, seed=12)
 
 def create_full_image(source) -> np.ndarray:
     extent = source.extent
     chip = source.get_label_arr(extent)    
     return chip
 
-img_full = create_full_image(buildingsGeoDatasetSD.scene.label_source)
-train_windows = train_buildings_datasetSD.windows
-val_windows = val_buildings_datasetSD.windows
-test_windows = test_buildings_datasetSD.windows
+img_full = create_full_image(buildingsGeoDataset_SD.scene.label_source)
+train_windows = train_buil_datasetSD.windows
+val_windows = val_buil_ds_SD.windows
+test_windows = test_buil_dataset_SD.windows
 window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
 show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
+build_train_ds_SD = ConcatDataset([train_buil_datasetSD, train_buil_datasetSD_aug])
+build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
+len(build_train_ds_SD)
+
 batch_size=8
-train_dl = DataLoader(train_buildings_datasetSD, batch_size=batch_size, shuffle=True)
-val_dl = DataLoader(val_buildings_datasetSD, batch_size=batch_size, shuffle=False)
-test_dl = DataLoader(test_buildings_datasetSD, batch_size=batch_size, shuffle=False)
+train_dl = DataLoader(build_train_ds_SD, batch_size=batch_size, shuffle=True)
+val_dl = DataLoader(build_val_ds_SD, batch_size=batch_size, shuffle=False)
 
 # Fine-tune the model
 # Define device
@@ -194,10 +176,14 @@ else:
     print("MPS is available.")
 
 # Train the model
-model = BuildingsUNET(weight_decay=0.001,
-                            learning_rate=0.001,
-                            gamma=0.01,
-                            pos_weight=torch.tensor(5, device='mps'))
+model = BuildingsDeeplabv3(
+    use_deeplnafrica = True,
+    learning_rate = 1e-2,
+    weight_decay = 1e-1,
+    gamma = 0.1,
+    atrous_rates = (12, 24, 36),
+    sched_step_size = 10,
+    pos_weight = torch.tensor(1.0, device='mps'))
 model.to(device)
 
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -233,12 +219,12 @@ trainer.fit(model, train_dl, val_dl)
 best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
 # best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=18-val_loss=0.1848.ckpt"
 best_model_path_unet = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/unet/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=14-val_loss=0.4913.ckpt"
-# best_model_path = checkpoint_callback.best_model_path
-best_model = BuildingsDeeplabv3.load_from_checkpoint(best_model_path_deeplab) # BuildingsDeeplabv3 BuildingsUNET
+best_model_path = checkpoint_callback.best_model_path
+best_model = BuildingsDeeplabv3.load_from_checkpoint(best_model_path) # BuildingsDeeplabv3 BuildingsUNET
 best_model.eval()
 
-#  Make predictions
-buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScenceSD, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, augment = False, seed=42)
+# Make predictions
+buildingsGeoDataset, _, _, _ = create_datasets(BuildingsScene_SD, imgsize=512, stride = 256, padding=50, val_ratio=0.2, test_ratio=0.1, augment = False, seed=42)
 predictions_iterator = BuildingsOnlyPredictionsIterator(best_model, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 

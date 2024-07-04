@@ -93,7 +93,8 @@ import folium
 
 from src.data.dataloaders import (
     create_datasets, CustomGeoJSONVectorSource,
-    create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
+    create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset, query_buildings_data, 
+    make_buildings_raster
 )
 
 from rastervision.core.data import (
@@ -182,47 +183,55 @@ def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_co
 # Sentinel Only Models
 class SentinelDeeplabv3(pl.LightningModule):
     def __init__(self,
+                use_deeplnafrica: bool = True,
                 learning_rate: float = 1e-2,
                 weight_decay: float = 1e-1,
                 gamma: float = 0.1,
-                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')) -> None:
+                atrous_rates = (12, 24, 36),
+                sched_step_size = 10,
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
         super().__init__()
-
+        
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+        self.atrous_rates = atrous_rates
         self.gamma = gamma
         self.pos_weight = pos_weight
-        
+        self.sched_step_size = sched_step_size
+                
+        # Main encoder - 4 sentinel channels
         self.deeplab = deeplabv3_resnet50(pretrained=False, progress=False)
         self.deeplab.backbone.conv1 = nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         self.deeplab.classifier = DeepLabHead(2048, 1, atrous_rates = (12, 24, 36))
         
-        allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
-        checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
-        state_dict = checkpoint["state_dict"]
-            
-        # Convert any float64 weights to float32
-        for key, value in state_dict.items():
-            if value.dtype == torch.float64:
-                state_dict[key] = value.to(torch.float32)
+        # load pretrained weights
+        if use_deeplnafrica:
+            allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
+            checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
+            state_dict = checkpoint["state_dict"]
+                
+            # Convert any float64 weights to float32
+            for key, value in state_dict.items():
+                if value.dtype == torch.float64:
+                    state_dict[key] = value.to(torch.float32)
 
-        new_state_dict = OrderedDict()
-        for key, value in state_dict.items():
-            # Remove the prefix 'segm_model.'
-            new_key = key.replace('segm_model.', '')
-            # Exclude keys starting with 'aux_classifier'
-            if not new_key.startswith('aux_classifier'):
-                new_state_dict[new_key] = value                
+            new_state_dict = OrderedDict()
+            for key, value in state_dict.items():
+                # Remove the prefix 'segm_model.'
+                new_key = key.replace('segm_model.', '')
+                # Exclude keys starting with 'aux_classifier'
+                if not new_key.startswith('aux_classifier'):
+                    new_state_dict[new_key] = value                
 
-        self.deeplab.load_state_dict(new_state_dict, strict=True)
-        self.save_hyperparameters()
+            self.deeplab.load_state_dict(new_state_dict, strict=True)
+            self.save_hyperparameters()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
         # Move data to the device
         x = x.to(self.device)
 
-        x = self.deeplab(x)['out']#.squeeze(dim=1)
+        x = self.deeplab(x)['out']
         x = x.permute(0, 2, 3, 1)
 
         return x
@@ -242,7 +251,7 @@ class SentinelDeeplabv3(pl.LightningModule):
         groundtruth = groundtruth.float().to(self.device)
         assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
 
-        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(self.pos_weight))
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
         loss = loss_fn(segmentation, groundtruth)
 
         preds = torch.sigmoid(segmentation) > 0.5
@@ -275,7 +284,7 @@ class SentinelDeeplabv3(pl.LightningModule):
 
         informal_gt = groundtruth[:, 0, :, :].float().to(self.device)
 
-        loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
         loss = loss_fn(segmentation, informal_gt)
 
         preds = torch.sigmoid(segmentation) > 0.5
@@ -484,43 +493,49 @@ class SentinelSimpleSS(pl.LightningModule):
 # Buildings Only Models
 class BuildingsDeeplabv3(pl.LightningModule):
     def __init__(self,
+                use_deeplnafrica: bool = True,
                 learning_rate: float = 1e-2,
                 weight_decay: float = 1e-1,
                 gamma: float = 0.1,
-                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')) -> None:
+                atrous_rates = (12, 24, 36),
+                sched_step_size = 10,
+                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
         super().__init__()
-
+        
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+        self.atrous_rates = atrous_rates
         self.gamma = gamma
         self.pos_weight = pos_weight
+        self.sched_step_size = sched_step_size
         
         self.deeplab = deeplabv3_resnet50(pretrained=False, progress=False)
         self.deeplab.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         self.deeplab.classifier = DeepLabHead(2048, 1, atrous_rates = (12, 24, 36))
         
-        allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
-        checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
-        state_dict = checkpoint["state_dict"]
+        if use_deeplnafrica:
+            allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
+            checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
+            state_dict = checkpoint["state_dict"]
+                
+            # Convert any float64 weights to float32
+            for key, value in state_dict.items():
+                if value.dtype == torch.float64:
+                    state_dict[key] = value.to(torch.float32)
+
+            new_state_dict = OrderedDict()
+            for key, value in state_dict.items():
+                # Remove the prefix 'segm_model.'
+                new_key = key.replace('segm_model.', '')
+                # Exclude keys starting with 'aux_classifier'
+                if not new_key.startswith('aux_classifier'):
+                    new_state_dict[new_key] = value                
+
+            conv1_weight = new_state_dict['backbone.conv1.weight']
+            new_conv1_weight = conv1_weight[:, :1, :, :].clone()
+            new_state_dict['backbone.conv1.weight'] = new_conv1_weight
             
-        # Convert any float64 weights to float32
-        for key, value in state_dict.items():
-            if value.dtype == torch.float64:
-                state_dict[key] = value.to(torch.float32)
-
-        new_state_dict = OrderedDict()
-        for key, value in state_dict.items():
-            # Remove the prefix 'segm_model.'
-            new_key = key.replace('segm_model.', '')
-            # Exclude keys starting with 'aux_classifier'
-            if not new_key.startswith('aux_classifier'):
-                new_state_dict[new_key] = value                
-
-        conv1_weight = new_state_dict['backbone.conv1.weight']
-        new_conv1_weight = conv1_weight[:, :1, :, :].clone()
-        new_state_dict['backbone.conv1.weight'] = new_conv1_weight
-        
-        self.deeplab.load_state_dict(new_state_dict, strict=True)
+            self.deeplab.load_state_dict(new_state_dict, strict=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
@@ -1305,7 +1320,6 @@ class MultiResSentLabelPredictionsIterator:
 class MultiResolutionDeepLabV3(pl.LightningModule):
     def __init__(self,
                 use_deeplnafrica: bool = True,
-                labels_size: int = 256,
                 learning_rate: float = 1e-2,
                 weight_decay: float = 1e-1,
                 gamma: float = 0.1,
@@ -1322,7 +1336,6 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         self.gamma = gamma
         self.pos_weight = pos_weight
         self.sched_step_size = sched_step_size
-        self.labels_size = labels_size
         self.buil_channels = buil_channels
         self.buil_kernel1 = buil_kernel1
         
@@ -1366,9 +1379,6 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
             state_dict['backbone.conv1.weight'] = new_conv1_weight
                 
             self.encoder.load_state_dict(state_dict, strict=False)
-        
-            # Intermediate Layer Getter
-            # self.encoder.backbone = IntermediateLayerGetter(self.encoder.backbone, {'layer4': 'out'})
         
     def forward(self, batch):
         sentinel_batch, buildings_batch = batch
