@@ -46,7 +46,7 @@ from src.models.model_definitions import (CustomGeoJSONVectorSource, CustomVecto
                                           MultiResSentLabelPredictionsIterator, MultiModalDataModule)
 from deeplnafrica.deepLNAfrica import (Deeplabv3SegmentationModel, init_segm_model, 
                                        CustomDeeplabv3SegmentationModel)
-from src.data.dataloaders import (buil_create_full_image, show_windows,
+from src.data.dataloaders import (buil_create_full_image, show_windows, cities,
                                   create_datasets, CustomStatsTransformer, senitnel_create_full_image,
                                   CustomSemanticSegmentationSlidingWindowGeoDataset, MergeDataset, create_scenes_for_city)
 from rastervision.core.data.label import SemanticSegmentationLabels
@@ -67,46 +67,6 @@ if not torch.backends.mps.is_available():
 else:
     device = torch.device("mps")
     print("MPS is available.")
-
-cities = {
-    'SanJoseCRI': {
-        'image_path': '../../data/0/sentinel_Gee/CRI_San_Jose_2023.tif',
-        'labels_path': '../../data/SHP/SanJose_PS.shp',
-        'use_augmentation': False
-    },
-    'TegucigalpaHND': {
-        'image_path': '../../data/0/sentinel_Gee/HND_Comayaguela_2023.tif',
-        'labels_path': '../../data/SHP/Tegucigalpa_PS.shp',
-        'use_augmentation': False
-    },
-    'SantoDomingoDOM': {
-        'image_path': '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif',
-        'labels_path': '../../data/0/SantoDomingo3857_buffered.geojson',
-        'use_augmentation': True
-    },
-    'GuatemalaCity': {
-        'image_path': '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif',
-        'labels_path': '../../data/SHP/Guatemala_PS.shp',
-        'use_augmentation': False
-    },
-    'Managua': {
-        'image_path': '../../data/0/sentinel_Gee/NIC_Tipitapa_2023.tif',
-        'labels_path': '../../data/SHP/Managua_PS.shp',
-        'use_augmentation': False
-    },
-    'Panama': {
-        'image_path': '../../data/0/sentinel_Gee/PAN_San_Miguelito_2023.tif',
-        'labels_path': '../../data/SHP/Panama_PS.shp',
-        'use_augmentation': False
-    },
-    'SanSalvador_PS': {
-        'image_path': '../../data/0/sentinel_Gee/SLV_Delgado_2023.tif',
-        'labels_path': '../../data/SHP/SanSalvador_PS.shp',
-        'use_augmentation': False
-    }#,
-    # 'BelizeCity': {'image_path': '../data/0/sentinel_Gee/HND__2023.tif','labels_path': '../data/SHP/BelizeCity_PS.shp'},
-    # 'Belmopan': {'image_path': '../data/0/sentinel_Gee/HND__2023.tif','labels_path': '../data/SHP/Belmopan_PS.shp'}
-}
 
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
@@ -232,7 +192,7 @@ hyperparameters = {
     'buil_kernel1': 3
 }
 
-output_dir = f'../UNITAC-trained-models/multi_modal/SD_DLV3/'
+output_dir = f'../../UNITAC-trained-models/multi_modal/SD_DLV3/'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-multi-modal', config=hyperparameters)
@@ -278,10 +238,10 @@ trainer = Trainer(
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation # best multimodal_epoch=09-val_loss=0.2434.ckpt
-# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_epoch=09-val_loss=0.2434.ckpt"
+best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_epoch=13-val_loss=0.1777.ckpt"
 # best_model_path_fpn = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_FPN/multimodal_runidrun_id=0-epoch=60-val_loss=0.3382.ckpt"
-best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=16, buil_kernel1=3) #MultiResolutionDeepLabV3 MultiResolutionFPN
+# best_model_path_dplv3 = checkpoint_callback.best_model_path
+best_model = MultiResolutionDeepLabV3(buil_channels=64, buil_kernel1=5) #MultiResolutionDeepLabV3 MultiResolutionFPN
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict)
@@ -344,27 +304,36 @@ ax.set_title('probability map')
 cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
+# # Saving predictions as GEOJSON
+# vector_output_config = CustomVectorOutputConfig(
+#     class_id=1,
+#     denoise=8,
+#     threshold=0.5)
 
-# Saving predictions as GEOJSON
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
+# crs_transformer = RasterioCRSTransformer.from_uri(image_uriSD)
+# affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
+# crs_transformer.transform = affine_transform_buildings
 
-crs_transformer = RasterioCRSTransformer.from_uri(image_uriSD)
-affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
-crs_transformer.transform = affine_transform_buildings
+# pred_label_store = SemanticSegmentationLabelStore(
+#     uri='../../vectorised_model_predictions/multi-modal/SD_DLV3/',
+#     crs_transformer = crs_transformer,
+#     class_config = class_config,
+#     vector_outputs = [vector_output_config],
+#     discrete_output = True)
 
-pred_label_store = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/multi-modal/SD_DLV3/',
-    crs_transformer = crs_transformer,
-    class_config = class_config,
-    vector_outputs = [vector_output_config],
-    discrete_output = True)
+# pred_label_store.save(pred_labels)
 
-pred_label_store.save(pred_labels)
+# # Evaluate predictions
+from rastervision.core.evaluation import SemanticSegmentationEvaluator
 
-
+evaluator = SemanticSegmentationEvaluator(class_config)
+gt_labels = sentinel_sceneSD.label_source.get_labels()
+evaluation = evaluator.evaluate_predictions(
+    ground_truth=gt_labels, predictions=pred_labels)
+eval_metrics_dict = evaluation.class_to_eval_item[1]
+f1_score = eval_metrics_dict.f1
+precision = eval_metrics_dict.precision
+print(eval_metrics_dict)
 # # Visualise feature maps
 # class FeatureMapVisualization:
 #     def __init__(self, model):

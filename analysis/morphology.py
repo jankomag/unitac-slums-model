@@ -1,8 +1,10 @@
+import os
 import sys
 import geopandas as gpd
 import pandas as pd
 import momepy as mm
 import osmnx
+import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import MultiPolygon
 import libpysal
@@ -11,14 +13,12 @@ from shapely.errors import TopologicalError, GEOSException
 import os
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from pathlib import Path
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-grandparent_dir = os.path.dirname(parent_dir)
-# sys.path.append(grandparent_dir)
-sys.path.append(parent_dir)
 
-from src.data.dataloaders import query_buildings_data
+# from src.data.dataloaders import query_buildings_data
 
 cities = {
     'SanJoseCRI': {'labels_path': '../data/SHP/SanJose_PS.shp'},
@@ -85,7 +85,7 @@ def calculate_city_morphometrics(slum_buildings, all_slums):
         # Calculate metrics
         car = mm.AreaRatio(tessellation, slum_buildings, "cell_area", slum_buildings.area, "uID").series
         
-        # Modified PerimeterWall calculation
+        # PerimeterWall calculation
         def calculate_perimeter(geom):
             if geom.geom_type == 'Polygon':
                 return geom.exterior.length
@@ -168,26 +168,83 @@ for city_name, df in city_dataframes.items():
     print(f"\nSummary statistics for {city_name}:")
     print(df.describe())
 
-# Examine boxplots of the standardized numeric columns
-numeric_cols = ['tessellation_car', 'buildings_wall', 'buildings_adjacency','buildings_neighbour_distance']
-df=all_cities_df
+
+
+
+# plotting
+file_path = os.path.join(parent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
+all_cities_df = pd.read_csv(file_path)
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import MinMaxScaler
+import os
+
+# Set the style for a cleaner look
+plt.style.use('ggplot')
+
+# Load data
+file_path = os.path.join(parent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
+all_cities_df = pd.read_csv(file_path)
+
+# Clean up city names
+city_name_map = {
+    'Sansalvador_Ps': 'San Salvador, El Salvador',
+    'Santodomingodom': 'Santo Domingo, Dominican Republic',
+    'Guatemalacity': 'Guatemala City, Guatemala',
+    'Tegucigalpahnd': 'Tegucigalpa, Honduras',
+    'Sanjosecri': 'San Jose, Costa Rica',
+    'Panama': 'Panama City, Panama',
+    'Belizecity': 'Belize City, Belize',
+    'Managua': 'Managua, Nicaragua',
+    'Belmopan': 'Belmopan, Belize'
+}
+
+all_cities_df['city'] = all_cities_df['city'].map(city_name_map)
+
+# Define numeric columns
+numeric_cols = ['tessellation_car', 'buildings_wall', 'buildings_adjacency', 'buildings_neighbour_distance']
+
 # Standardize the numeric columns
 scaler = MinMaxScaler()
-df[numeric_cols] = scaler.fit_transform(df[numeric_cols])
+all_cities_df[numeric_cols] = scaler.fit_transform(all_cities_df[numeric_cols])
 
 # Melt the dataframe for seaborn
-df_melted = df.melt(id_vars=['city'], value_vars=numeric_cols, var_name='Variable', value_name='Value')
+df_melted = all_cities_df.melt(id_vars=['city'], value_vars=numeric_cols, var_name='Variable', value_name='Value')
 
-# Create the boxplot
-plt.figure(figsize=(12, 8))
-sns.boxplot(x='Variable', y='Value', hue='city', data=df_melted)
+# Create the plot
+plt.figure(figsize=(20, 12))
+
+# Create the boxplot with limited outliers
+ax = sns.boxplot(x='Variable', y='Value', hue='city', data=df_melted, 
+                 palette="Set3", whis=(10, 90))
+
+# Color the outliers the same as their respective bars
+for i, artist in enumerate(ax.artists):
+    col = artist.get_facecolor()
+    for j in range(i*6, i*6+6):
+        line = ax.lines[j]
+        line.set_color(col)
+        line.set_mfc(col)
+        line.set_mec(col)
 
 # Customize the plot
-plt.title('Standardized Boxplots of Numeric Columns by City')
-plt.xlabel('Variable')
-plt.ylabel('Standardized Value')
-plt.legend(title='City')
-plt.xticks(rotation=45)
+plt.title('Standardized Distribution of Building Morphometrics by City', fontsize=20, pad=20)
+plt.xlabel('Morphometric', fontsize=16, labelpad=15)
+plt.ylabel('Standardized Value', fontsize=16, labelpad=15)
+
+# Improve x-axis labels
+plt.xticks(rotation=45, ha='right', fontsize=14)
+ax.set_xticklabels([label.get_text().replace('_', ' ').title() for label in ax.get_xticklabels()])
+
+# Improve y-axis labels
+plt.yticks(fontsize=14)
+
+# Customize legend
+plt.legend(title='City', title_fontsize='16', fontsize='12', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+# Adjust layout
 plt.tight_layout()
 
 # Show plot
