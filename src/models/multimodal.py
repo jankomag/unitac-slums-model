@@ -87,8 +87,8 @@ build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
 train_dataset = MergeDataset(sent_train_ds_SD, build_train_ds_SD)
 val_dataset = MergeDataset(sent_val_ds_SD, build_val_ds_SD)
 
-batch_size = 6
-train_multiple_cities=False
+batch_size = 16
+train_multiple_cities=True
 
 if train_multiple_cities:
     # Guatemala City
@@ -175,13 +175,13 @@ data_module = MultiModalDataModule(train_loader, val_loader)
 # Train the model 
 hyperparameters = {
     'model': 'DLV3',
-    'train_cities': 'SD',
+    'train_cities': 'all',
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
-    'buil_channels': 16,
+    'buil_channels':32,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-2,
+    'learning_rate': 1e-3,
     'weight_decay': 0,
     'gamma': 1,
     'sched_step_size': 40,
@@ -205,7 +205,7 @@ checkpoint_callback = ModelCheckpoint(
     filename=f'multimodal_builchan{buil_channels}_{{epoch:02d}}-{{val_loss:.4f}}',
     save_top_k=3,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=30)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=45)
 
 model = MultiResolutionDeepLabV3(
     use_deeplnafrica=hyperparameters['use_deeplnafrica'],
@@ -226,8 +226,8 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=20,
-    max_epochs=150,
+    min_epochs=50,
+    max_epochs=250,
     num_sanity_val_steps=3,
     # overfit_batches=0.35
 )
@@ -236,9 +236,9 @@ trainer = Trainer(
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation # best multimodal_epoch=09-val_loss=0.2434.ckpt
-# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_builchan16_epoch=03-val_loss=0.7799.ckpt"
+# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_builchan16_epoch=06-val_loss=0.9613.ckpt"
 best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=16, buil_kernel1=3) #MultiResolutionDeepLabV3 MultiResolutionFPN
+best_model = MultiResolutionDeepLabV3(buil_channels=32, buil_kernel1=5) #MultiResolutionDeepLabV3 MultiResolutionFPN
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict)

@@ -128,14 +128,14 @@ class SentinelDeepLabV3(pl.LightningModule):
                 gamma: float = 0.1,
                 atrous_rates = (12, 24, 36),
                 sched_step_size = 10,
-                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
+                pos_weight: float = 1.0):
         super().__init__()
         
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.atrous_rates = atrous_rates
         self.gamma = gamma
-        self.pos_weight = pos_weight
+        self.pos_weight = torch.tensor(pos_weight, device='mps')
         self.sched_step_size = sched_step_size
                 
         # Main encoder - 4 sentinel channels
@@ -198,7 +198,7 @@ class SentinelDeepLabV3(pl.LightningModule):
         img, groundtruth = batch
         segmentation = self(img)
         groundtruth = groundtruth.float().to(self.device)
-        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
+        assert segmentation.shape == groundtruth.shape, f"Shapes mismatch, seg: {segmentation.shape} vs gt: {groundtruth.shape}"
 
         loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
         loss = loss_fn(segmentation, groundtruth)
@@ -241,8 +241,6 @@ class SentinelDeepLabV3(pl.LightningModule):
         test_loss = loss_fn(segmentation, informal_gt)
 
         preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, informal_gt)
-
         mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, groundtruth)
 
         self.log('test_loss', test_loss)
@@ -292,7 +290,58 @@ class PredictionsIterator:
 
     def __iter__(self):
         return iter(self.predictions)
+
+
+# Show predictions function
+def create_predictions_and_ground_truth_plot(pred_labels, gt_labels, class_id=1, figsize=(30, 10)):
+    """
+    Create a plot of smooth predictions, discrete predictions, and ground truth side by side.
     
+    Args:
+    pred_labels (SemanticSegmentationLabels): Prediction labels
+    gt_labels (SemanticSegmentationLabels): Ground truth labels
+    class_id (int): Class ID to plot (default is 1, assumed to be informal settlements)
+    figsize (tuple): Figure size (default is (30, 10))
+    
+    Returns:
+    tuple: (fig, (ax1, ax2, ax3)) - Figure and axes objects
+    """
+    # Get scores and create discrete predictions
+    scores = pred_labels.get_score_arr(pred_labels.extent)
+    pred_array_discrete = (scores > 0.5).astype(int)
+
+    # Get ground truth array
+    gt_array = gt_labels.get_label_arr(gt_labels.extent)
+
+    # Create a figure with three subplots side by side
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=figsize)
+
+    # Plot smooth predictions
+    scores_class = scores[class_id]
+    im1 = ax1.imshow(scores_class, cmap='viridis', vmin=0, vmax=1)
+    ax1.axis('off')
+    ax1.set_title(f'Smooth Predictions (Class {class_id} Scores)')
+    cbar1 = fig.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+
+    # Plot discrete predictions
+    pred_array_discrete_class = pred_array_discrete[class_id]
+    im2 = ax2.imshow(pred_array_discrete_class, cmap='viridis', vmin=0, vmax=1)
+    ax2.axis('off')
+    ax2.set_title(f'Discrete Predictions (Class {class_id})')
+    cbar2 = fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+
+    # Plot ground truth
+    gt_class = (gt_array == class_id).astype(int)
+    im3 = ax3.imshow(gt_class, cmap='viridis', vmin=0, vmax=1)
+    ax3.axis('off')
+    ax3.set_title(f'Ground Truth (Class {class_id})')
+    cbar3 = fig.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
+
+    plt.tight_layout()
+    
+    return fig, (ax1, ax2, ax3)
+
+
 # Buildings Only Models
 class BuildingsDeepLabV3(pl.LightningModule):
     def __init__(self,
@@ -302,14 +351,14 @@ class BuildingsDeepLabV3(pl.LightningModule):
                 gamma: float = 0.1,
                 atrous_rates = (12, 24, 36),
                 sched_step_size = 10,
-                pos_weight: torch.Tensor = torch.tensor(1.0, device='mps')):
+                pos_weight: float = 1.0):
         super().__init__()
         
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.atrous_rates = atrous_rates
         self.gamma = gamma
-        self.pos_weight = pos_weight
+        self.pos_weight = torch.tensor(pos_weight, device='mps')
         self.sched_step_size = sched_step_size
         
         self.deeplab = deeplabv3_resnet50(pretrained=False, progress=False)
@@ -347,14 +396,29 @@ class BuildingsDeepLabV3(pl.LightningModule):
         x = self.deeplab(x)['out']#.squeeze(dim=1)
         return x
 
-    def compute_mean_iou(self, preds, target):
+    def compute_metrics(self, preds, target):
         preds = preds.bool()
         target = target.bool()
         smooth = 1e-6
+        
+        # IoU computation
         intersection = (preds & target).float().sum((1, 2))
         union = (preds | target).float().sum((1, 2))
         iou = (intersection + smooth) / (union + smooth)
-        return iou.mean()
+        mean_iou = iou.mean()
+        
+        # Precision and Recall computation
+        true_positives = (preds & target).sum((1, 2))
+        predicted_positives = preds.sum((1, 2))
+        actual_positives = target.sum((1, 2))
+        
+        precision = true_positives.float() / (predicted_positives.float() + 1e-10)
+        recall = true_positives.float() / (actual_positives.float() + 1e-10)
+        
+        mean_precision = precision.mean()
+        mean_recall = recall.mean()
+        
+        return mean_iou, mean_precision, mean_recall
 
     def training_step(self, batch, batch_idx):
         img, groundtruth = batch
@@ -366,10 +430,12 @@ class BuildingsDeepLabV3(pl.LightningModule):
         loss = loss_fn(segmentation, groundtruth)
 
         preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, groundtruth)
-
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, groundtruth)
+        
         self.log('train_loss', loss)
         self.log('train_mean_iou', mean_iou)
+        self.log('train_precision', mean_precision)
+        self.log('train_recall', mean_recall)
 
         return loss
 
@@ -381,13 +447,15 @@ class BuildingsDeepLabV3(pl.LightningModule):
         assert segmentation.shape == groundtruth.shape, f"Shapes mismatch: {segmentation.shape} vs {groundtruth.shape}"
 
         loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
-        loss = loss_fn(segmentation, groundtruth)
+        val_loss = loss_fn(segmentation, groundtruth)
 
         preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, groundtruth)
-
-        self.log('val_loss', loss)
-        self.log('val_mean_iou', mean_iou.item())
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, groundtruth)
+        
+        self.log('val_loss', val_loss, prog_bar=True, logger=True)
+        self.log('val_mean_iou', mean_iou)
+        self.log('val_precision', mean_precision)
+        self.log('val_recall', mean_recall)
 
     def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         img, groundtruth = batch
@@ -396,13 +464,15 @@ class BuildingsDeepLabV3(pl.LightningModule):
         informal_gt = groundtruth[:, 0, :, :].float().to(self.device)
 
         loss_fn = torch.nn.BCEWithLogitsLoss()#pos_weight=self.pos_weight)
-        loss = loss_fn(segmentation, informal_gt)
+        test_loss = loss_fn(segmentation, informal_gt)
 
         preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou = self.compute_mean_iou(preds, informal_gt)
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, groundtruth)
 
-        self.log('test_loss', loss)
+        self.log('test_loss', test_loss)
         self.log('test_mean_iou', mean_iou)
+        self.log('test_precision', mean_precision)
+        self.log('test_recall', mean_recall)
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         optimizer = AdamW(

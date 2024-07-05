@@ -47,7 +47,8 @@ sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
 from src.models.model_definitions import CustomVectorOutputConfig, SentinelDeepLabV3, PredictionsIterator
-from src.data.dataloaders import create_datasets, create_sentinel_scene, cities, senitnel_create_full_image, show_windows
+from src.data.dataloaders import create_datasets, create_sentinel_scene, cities, senitnel_create_full_image, show_windows, create_predictions_and_ground_truth_plot
+
 from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
 from rastervision.core.data import (Scene, ClassInferenceTransformer, RasterizedSource,
     ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
@@ -94,7 +95,7 @@ sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, tes
 sent_train_ds_SD = ConcatDataset([train_sentinel_datasetSD, train_sentinel_datasetSD_aug])
 sent_val_ds_SD = ConcatDataset([val_sent_ds_SD, val_sent_ds_SD_aug])
 
-batch_size = 8
+batch_size = 32
 train_multiple_cities = False
 
 if train_multiple_cities:
@@ -139,7 +140,7 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-3,
+    'learning_rate': 1e-4,
     'weight_decay': 0,
     'gamma': 1,
     'sched_step_size': 15,
@@ -167,9 +168,10 @@ checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     dirpath=output_dir,
     filename='multimodal_runid{run_id}-{epoch:02d}-{val_loss:.4f}',
-    save_top_k=1,
+    save_top_k=2,
+    save_last=True,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=30)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=25)
 
 # Define trainer
 trainer = Trainer(
@@ -177,8 +179,8 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=30,
-    max_epochs=150,
+    min_epochs=15,
+    max_epochs=250,
     num_sanity_val_steps=3,
     # overfit_batches=0.5
 )
@@ -187,8 +189,9 @@ trainer = Trainer(
 trainer.fit(model, train_dl, val_dl)
 
 # Make predictions
-best_model_path = checkpoint_callback.best_model_path
-best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/multimodal_runidrun_id=0-epoch=27-val_loss=0.1693.ckpt"
+# best_model_path = checkpoint_callback.best_model_path
+best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/last.ckpt"
+
 best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path) # SentinelSimpleSS SentinelDeeplabv3
 best_model.eval()
 
@@ -197,10 +200,33 @@ best_model.eval()
 # sentinel_source_normalizedGC, sentinel_label_raster_sourceGC = create_sentinel_raster_source(image_uriGC, label_uriGC, class_config, clip_to_label_source=True)
 # SentinelScene_GC = Scene(id='GC_sentinel', raster_source = sentinel_source_normalizedGC)
 
-# GC_ds, _, _, _ = create_datasets(SentinelScene_GC, imgsize=144, stride=72, padding=8, val_ratio=0.2, test_ratio=0.1, seed=42)
-SD_ds, _, _, _ = create_datasets(SentinelScene_SD, imgsize=256, stride=128, padding=8, val_ratio=0.2, test_ratio=0.1, seed=42)
+class PredictionsIterator:
+    def __init__(self, model, dataset, device='cuda'):
+        self.model = model
+        self.dataset = dataset
+        self.device = device
+        
+        self.predictions = []
+        
+        with torch.no_grad():
+            for idx in range(len(dataset)):
+                image, label = dataset[idx]
+                image = image.unsqueeze(0).to(device)
 
-predictions_iterator = PredictionsIterator(best_model, SD_ds, device=device)
+                output = self.model(image)
+                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                window = dataset.windows[idx]
+                self.predictions.append((window, probabilities))
+
+    def __iter__(self):
+        return iter(self.predictions)
+
+fulldataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
+strided_fullds_SD, _, _, _ = create_datasets(SentinelScene_SD, imgsize=256, stride=128, padding=8, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+predictions_iterator = PredictionsIterator(best_model, strided_fullds_SD, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
@@ -211,16 +237,26 @@ pred_labels = SemanticSegmentationLabels.from_predictions(
     num_classes=len(class_config),
     smooth=True
 )
+gt_labels = SentinelScene_SD.label_source.get_labels()
 
 # Show predictions
-scores = pred_labels.get_score_arr(pred_labels.extent)
-scores_building = scores[0]
-fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-image = ax.imshow(scores_building)
-ax.axis('off')
-ax.set_title('infs Scores')
-cbar = fig.colorbar(image, ax=ax)
+fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
 plt.show()
+
+# save if needed
+# fig.savefig('predictions_and_ground_truth.png', dpi=300, bbox_inches='tight')
+
+# Evaluate against labels:
+pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
+    extent=pred_labels.extent,
+    num_classes=len(class_config))
+scores = pred_labels.get_score_arr(pred_labels.extent)
+pred_array_discrete = (scores > 0.5).astype(int)
+pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
+evaluator = SemanticSegmentationEvaluator(class_config)
+evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
+inf_eval = evaluation.class_to_eval_item[1]
+inf_eval.f1
 
 # # # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(
@@ -246,35 +282,3 @@ plt.show()
 #     discrete_output = True)
 
 # pred_label_store.save(pred_labels)
-
-# Evaluate against labels:
-gt_labels = SentinelScene_SD.label_source.get_labels()
-gt_extent = gt_labels.extent
-pred_extent = pred_labels.extent
-print(f"Ground truth extent: {gt_extent}")
-print(f"Prediction extent: {pred_extent}")
-
-evaluator = SemanticSegmentationEvaluator(class_config)
-evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels)
-
-evaluation.class_to_eval_item[1]
-# evaluation.class_to_eval_item[1]
-
-# # # Discrete labels
-# # pred_labels_dis = SemanticSegmentationLabels.from_predictions(
-# #     sentinel_train_ds.windows,
-# #     predictions,
-# #     smooth=False,
-# #     extent=sentinel_train_ds.scene.extent,
-# #     num_classes=len(class_config))
-
-# # scores_dis = pred_labels.get_class_mask(window=sentinel_train_ds.windows[6],class_id=1,threshold=0.005)
-
-# # fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-# # fig.tight_layout()
-# # image = ax.imshow(scores_dis, cmap='plasma')
-# # ax.axis('off')
-# # ax.set_title('infs')
-# # cbar = fig.colorbar(image, ax=ax)
-# # cbar.set_label('Score')
-# # plt.show()

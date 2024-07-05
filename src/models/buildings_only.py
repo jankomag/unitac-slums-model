@@ -84,8 +84,10 @@ from rastervision.core.data import (VectorSource, XarraySource,
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
+sys.path.append(parent_dir)
 sys.path.append(grandparent_dir)
-from src.models.model_definitions import (BuildingsDeepLabV3, CustomVectorOutputConfig, BuildingsOnlyPredictionsIterator, CustomGeoJSONVectorSource)
+
+from src.models.model_definitions import (BuildingsDeepLabV3, CustomVectorOutputConfig, BuildingsOnlyPredictionsIterator)
 from deeplnafrica.deepLNAfrica import init_segm_model
 
 from src.data.dataloaders import (buil_create_full_image,
@@ -121,7 +123,7 @@ buildingsGeoDataset_SD_aug, train_buil_ds_SD_aug, val_buil_ds_SD_aug, test_buil_
 build_train_ds_SD = ConcatDataset([train_buil_ds_SD, train_buil_ds_SD_aug])
 build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
 
-batch_size = 4
+batch_size = 16
 train_multiple_cities=False
 
 if train_multiple_cities:
@@ -151,22 +153,22 @@ else:
 train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_dl = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
-img_full = buil_create_full_image(buildingsGeoDataset_SD.scene.label_source)
-train_windows = build_train_ds_SD.windows
-val_windows = val_buil_ds_SD.windows
-test_windows = test_buil_ds_SD.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+# img_full = buil_create_full_image(buildingsGeoDataset_SD.scene.label_source)
+# train_windows = build_train_ds_SD.windows
+# val_windows = val_buil_ds_SD.windows
+# test_windows = test_buil_ds_SD.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 # Train the model
 hyperparameters = {
     'model': 'DLV3',
-    'train_cities': 'SD',
+    'train_cities': 'all',
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-3,
+    'learning_rate': 1e-4,
     'weight_decay': 0,
     'gamma': 0.5,
     'sched_step_size': 20,
@@ -207,16 +209,16 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=40,
+    min_epochs=30,
     max_epochs=150,
     num_sanity_val_steps=1,
-    overfit_batches=0.2,
+    # overfit_batches=0.2,
 )
 
 trainer.fit(model, train_dl, val_dl)
 
 # Best deeplab model path val=0.3083
-best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
+# best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
 # best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=18-val_loss=0.1848.ckpt"
 best_model_path = checkpoint_callback.best_model_path
 best_model = BuildingsDeepLabV3.load_from_checkpoint(best_model_path)
