@@ -46,8 +46,8 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import CustomVectorOutputConfig, SentinelDeepLabV3, PredictionsIterator
-from src.data.dataloaders import create_datasets, create_sentinel_scene, cities, senitnel_create_full_image, show_windows, create_predictions_and_ground_truth_plot
+from src.models.model_definitions import CustomVectorOutputConfig, SentinelDeepLabV3, PredictionsIterator, create_predictions_and_ground_truth_plot
+from src.data.dataloaders import create_datasets, create_sentinel_scene, cities, senitnel_create_full_image, show_windows
 
 from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
 from rastervision.core.data import (Scene, ClassInferenceTransformer, RasterizedSource,
@@ -81,6 +81,13 @@ else:
 # gdf_filled["geometry"] = gdf_filled.geometry.buffer(0.00008)
 # gdf_filled = gdf_filled.to_crs('EPSG:3857')
 # gdf_filled.to_file("../../data/0/SantoDomingo3857_buffered.geojson", driver="GeoJSON")
+
+# Preproceess SS labels to select Lotificacion Illegal
+# label_uriSS = os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_particular.shp')
+# gdf = gpd.read_file(label_uriSS)
+# gdf = gdf[gdf['TIPO_AUP'] == 'Lotificación Ilegal']
+# gdf = gdf.to_crs('EPSG:3857')
+# gdf.to_file(os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'), driver="GeoJSON")
 
 # Load training data
 class_config = ClassConfig(names=['background', 'slums'], 
@@ -190,38 +197,10 @@ trainer.fit(model, train_dl, val_dl)
 
 # Make predictions
 # best_model_path = checkpoint_callback.best_model_path
-best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/last.ckpt"
-
-best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path) # SentinelSimpleSS SentinelDeeplabv3
+# best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/last.ckpt"
+# best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path) # SentinelSimpleSS SentinelDeeplabv3
+best_model = SentinelDeepLabV3()
 best_model.eval()
-
-# label_uriGC = "../../data/SHP/Guatemala_PS.shp"
-# image_uriGC = '../../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'
-# sentinel_source_normalizedGC, sentinel_label_raster_sourceGC = create_sentinel_raster_source(image_uriGC, label_uriGC, class_config, clip_to_label_source=True)
-# SentinelScene_GC = Scene(id='GC_sentinel', raster_source = sentinel_source_normalizedGC)
-
-class PredictionsIterator:
-    def __init__(self, model, dataset, device='cuda'):
-        self.model = model
-        self.dataset = dataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(dataset)):
-                image, label = dataset[idx]
-                image = image.unsqueeze(0).to(device)
-
-                output = self.model(image)
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = dataset.windows[idx]
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
 
 fulldataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
 strided_fullds_SD, _, _, _ = create_datasets(SentinelScene_SD, imgsize=256, stride=128, padding=8, val_ratio=0.2, test_ratio=0.1, seed=42)

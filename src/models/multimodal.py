@@ -2,31 +2,14 @@ import os
 import sys
 from datetime import datetime
 
-# import multiprocessing
-# multiprocessing.set_start_method('fork')
-import numpy as np
-import geopandas as gpd
 import matplotlib.pyplot as plt
 import torch
-from affine import Affine
 import wandb
-from torchvision.models.segmentation import deeplabv3_resnet50
-import torch.nn as nn
 import stackstac
 import pystac_client
-import albumentations as A
-from rastervision.core.box import Box
-import rasterio
-from rasterio.transform import from_bounds
-import tempfile
-import seaborn as sns
-# import folium
 from torch.utils.data import ConcatDataset
-import math
-# from sklearn.model_selection import KFold
-
+import matplotlib.pyplot as plt
 # from fvcore.nn import FlopCountAnalysis
-# from torchinfo import summary  # Optional, for detailed summary
 
 from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning import Trainer
@@ -40,20 +23,16 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResSentLabelPredictionsIterator, MultiModalDataModule)
-from deeplnafrica.deepLNAfrica import (Deeplabv3SegmentationModel, init_segm_model, 
-                                       CustomDeeplabv3SegmentationModel)
-from src.data.dataloaders import (buil_create_full_image, show_windows, cities,
-                                  create_datasets, CustomStatsTransformer, senitnel_create_full_image,
-                                  CustomSemanticSegmentationSlidingWindowGeoDataset, MergeDataset, create_scenes_for_city)
+from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResSentLabelPredictionsIterator,
+                                          MultiModalDataModule, create_predictions_and_ground_truth_plot)
+from src.data.dataloaders import (cities,
+                                  create_datasets,
+                                  MergeDataset, create_scenes_for_city)
 from rastervision.core.data.label import SemanticSegmentationLabels
-from rastervision.pytorch_learner import SemanticSegmentationVisualizer
-from rastervision.core.data import (Scene, ClassConfig, RasterioCRSTransformer, XarraySource,
-                                    RasterioSource, GeoJSONVectorSource, StatsTransformer,
-                                    ClassInferenceTransformer, RasterizedSource,
-                                    SemanticSegmentationLabelSource, VectorSource)
+from rastervision.core.data import (ClassConfig, XarraySource,
+                                    ClassInferenceTransformer, SemanticSegmentationDiscreteLabels)
 
-from rastervision.core.data.label_store import (LabelStoreConfig, SemanticSegmentationLabelStore)
+from rastervision.core.evaluation import SemanticSegmentationEvaluator
 
 # Check if MPS is available
 if not torch.backends.mps.is_available():
@@ -87,7 +66,7 @@ build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
 train_dataset = MergeDataset(sent_train_ds_SD, build_train_ds_SD)
 val_dataset = MergeDataset(sent_val_ds_SD, build_val_ds_SD)
 
-batch_size = 16
+batch_size = 24
 train_multiple_cities=True
 
 if train_multiple_cities:
@@ -120,23 +99,23 @@ if train_multiple_cities:
     val_datasetPN = MergeDataset(val_sent_ds_PN, val_buil_ds_PN)
     
     # San Salvador
-    # sentinel_sceneSS, buildings_sceneSS = create_scenes_for_city('SanSalvador_PS', cities['SanSalvador_PS'], class_config)
-    # sentinelGeoDataset_SS, train_sentinel_ds_SS, val_sent_ds_SS, test_sentinel_ds_SS = create_datasets(sentinel_sceneSS, imgsize=256, stride=256, padding=50, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
-    # buildingsGeoDataset_SS, train_buil_ds_SS, val_buil_ds_SS, test_buil_ds_SS = create_datasets(buildings_sceneSS, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
-    # train_datasetSS = MergeDataset(train_sentinel_ds_SS, train_buil_ds_SS)
-    # val_datasetSS = MergeDataset(val_sent_ds_SS, val_buil_ds_SS)
+    sentinel_sceneSS, buildings_sceneSS = create_scenes_for_city('SanSalvador_PS', cities['SanSalvador_PS'], class_config)
+    sentinelGeoDataset_SS, train_sentinel_ds_SS, val_sent_ds_SS, test_sentinel_ds_SS = create_datasets(sentinel_sceneSS, imgsize=256, stride=256, padding=50, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
+    buildingsGeoDataset_SS, train_buil_ds_SS, val_buil_ds_SS, test_buil_ds_SS = create_datasets(buildings_sceneSS, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
+    train_datasetSS = MergeDataset(train_sentinel_ds_SS, train_buil_ds_SS)
+    val_datasetSS = MergeDataset(val_sent_ds_SS, val_buil_ds_SS)
     
     # SanJoseCRI
-    # sentinel_sceneSJ, buildings_sceneSJ = create_scenes_for_city('SanJoseCRI', cities['SanJoseCRI'], class_config)
-    # sentinelGeoDataset_SJ, train_sentinel_ds_SJ, val_sent_ds_SJ, test_sentinel_ds_SJ = create_datasets(sentinel_sceneSJ, imgsize=256, stride=256, padding=50, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
-    # buildingsGeoDataset_SJ, train_buil_ds_SJ, val_buil_ds_SJ, test_buil_ds_SJ = create_datasets(buildings_sceneSJ, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
-    # train_datasetSJ = MergeDataset(train_sentinel_ds_SJ, train_buil_ds_SJ)
-    # val_datasetSJ = MergeDataset(val_sent_ds_SJ, val_buil_ds_SJ)
+    sentinel_sceneSJ, buildings_sceneSJ = create_scenes_for_city('SanJoseCRI', cities['SanJoseCRI'], class_config)
+    sentinelGeoDataset_SJ, train_sentinel_ds_SJ, val_sent_ds_SJ, test_sentinel_ds_SJ = create_datasets(sentinel_sceneSJ, imgsize=256, stride=256, padding=50, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
+    buildingsGeoDataset_SJ, train_buil_ds_SJ, val_buil_ds_SJ, test_buil_ds_SJ = create_datasets(buildings_sceneSJ, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
+    train_datasetSJ = MergeDataset(train_sentinel_ds_SJ, train_buil_ds_SJ)
+    val_datasetSJ = MergeDataset(val_sent_ds_SJ, val_buil_ds_SJ)
 
-    train_dataset = ConcatDataset([train_dataset, train_datasetGC, train_datasetTG, train_datasetMN, train_datasetPN]) # train_datasetSJ, train_datasetSS
+    train_dataset = ConcatDataset([train_dataset, train_datasetGC, train_datasetTG, train_datasetMN, train_datasetPN, train_datasetSS]) # train_datasetSJ, 
     val_dataset = ConcatDataset([val_dataset, val_datasetGC, val_datasetTG, val_datasetMN, val_datasetPN]) 
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
 # # Preview sliding windows:
@@ -179,17 +158,17 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
-    'buil_channels':32,
+    'buil_channels': 16,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-3,
     'weight_decay': 0,
     'gamma': 1,
     'sched_step_size': 40,
     'pos_weight': 2.0,
-    'buil_kernel1': 3
+    'buil_kernel1': 7
 }
 
-output_dir = f'../UNITAC-trained-models/multi_modal/SD_DLV3/'
+output_dir = f'../../UNITAC-trained-models/multi_modal/SD_DLV3/'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-multi-modal', config=hyperparameters)
@@ -197,15 +176,16 @@ wandb_logger = WandbLogger(project='UNITAC-multi-modal', log_model=True)
 
 # Loggers and callbacks
 buil_channels = hyperparameters['buil_channels']
+buil_kernel = hyperparameters['buil_kernel1']
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
-    save_last=False,
+    save_last=True,
     dirpath=output_dir,
-    filename=f'multimodal_builchan{buil_channels}_{{epoch:02d}}-{{val_loss:.4f}}',
-    save_top_k=3,
+    filename=f'multimodal_BCH{buil_channels}_BKR{buil_kernel}_{{epoch:02d}}-{{val_loss:.4f}}',
+    save_top_k=4,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=45)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=35)
 
 model = MultiResolutionDeepLabV3(
     use_deeplnafrica=hyperparameters['use_deeplnafrica'],
@@ -226,7 +206,7 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=50,
+    min_epochs=30,
     max_epochs=250,
     num_sanity_val_steps=3,
     # overfit_batches=0.35
@@ -236,9 +216,9 @@ trainer = Trainer(
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation # best multimodal_epoch=09-val_loss=0.2434.ckpt
-# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_builchan16_epoch=06-val_loss=0.9613.ckpt"
-best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=32, buil_kernel1=5) #MultiResolutionDeepLabV3 MultiResolutionFPN
+# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_builchan32_epoch=40-val_loss=0.3222.ckpt"
+# best_model_path_dplv3 = checkpoint_callback.best_model_path
+# best_model = MultiResolutionDeepLabV3(buil_channels=32, buil_kernel1=3) #MultiResolutionDeepLabV3 MultiResolutionFPN
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict)
@@ -280,7 +260,6 @@ sentinelGeoDataset, _, _, _ = create_datasets(sentinel_sceneSD, imgsize=256, str
 
 predictions_iterator = MultiResSentLabelPredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
-assert len(windows) == len(predictions)
 
 # Create SemanticSegmentationLabels from predictions
 pred_labels = SemanticSegmentationLabels.from_predictions(
@@ -290,16 +269,57 @@ pred_labels = SemanticSegmentationLabels.from_predictions(
     num_classes=len(class_config),
     smooth=True
 )
+gt_labels = sentinel_sceneSD.label_source.get_labels()
+
 
 # Show predictions
-scores = pred_labels.get_score_arr(pred_labels.extent)
-scores_building = scores[0]
-fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-image = ax.imshow(scores_building)
-ax.axis('off')
-ax.set_title('probability map')
-cbar = fig.colorbar(image, ax=ax)
+fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels, threshold=0.5)
 plt.show()
+
+# save if needed
+# fig.savefig('predictions_and_ground_truth.png', dpi=300, bbox_inches='tight')
+
+# Evaluate against labels:
+pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
+    extent=pred_labels.extent,
+    num_classes=len(class_config))
+scores = pred_labels.get_score_arr(pred_labels.extent)
+pred_array_discrete = (scores > 0.5).astype(int)
+pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
+evaluator = SemanticSegmentationEvaluator(class_config)
+evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
+inf_eval = evaluation.class_to_eval_item[1]
+inf_eval.f1
+
+
+
+
+
+
+
+
+# predictions_iterator = MultiResSentLabelPredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
+# windows, predictions = zip(*predictions_iterator)
+# assert len(windows) == len(predictions)
+
+# # Create SemanticSegmentationLabels from predictions
+# pred_labels = SemanticSegmentationLabels.from_predictions(
+#     windows,
+#     predictions,
+#     extent=sentinel_sceneSD.extent,
+#     num_classes=len(class_config),
+#     smooth=True
+# )
+
+# # Show predictions
+# scores = pred_labels.get_score_arr(pred_labels.extent)
+# scores_building = scores[0]
+# fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+# image = ax.imshow(scores_building)
+# ax.axis('off')
+# ax.set_title('probability map')
+# cbar = fig.colorbar(image, ax=ax)
+# plt.show()
 
 # # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(
@@ -320,17 +340,6 @@ plt.show()
 
 # pred_label_store.save(pred_labels)
 
-# # Evaluate predictions
-from rastervision.core.evaluation import SemanticSegmentationEvaluator
-
-evaluator = SemanticSegmentationEvaluator(class_config)
-gt_labels = sentinel_sceneSD.label_source.get_labels()
-evaluation = evaluator.evaluate_predictions(
-    ground_truth=gt_labels, predictions=pred_labels)
-eval_metrics_dict = evaluation.class_to_eval_item[1]
-f1_score = eval_metrics_dict.f1
-precision = eval_metrics_dict.precision
-print(eval_metrics_dict)
 # # Visualise feature maps
 # class FeatureMapVisualization:
 #     def __init__(self, model):

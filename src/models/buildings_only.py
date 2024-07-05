@@ -79,6 +79,7 @@ from rastervision.core.data.raster_source import RasterSource
 from rastervision.core.data import (VectorSource, XarraySource,
                                     IdentityCRSTransformer, RasterioCRSTransformer,
                                     RasterioCRSTransformer)
+from rastervision.core.evaluation import SemanticSegmentationEvaluator
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -87,11 +88,11 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(parent_dir)
 sys.path.append(grandparent_dir)
 
-from src.models.model_definitions import (BuildingsDeepLabV3, CustomVectorOutputConfig, BuildingsOnlyPredictionsIterator)
-from deeplnafrica.deepLNAfrica import init_segm_model
+from src.models.model_definitions import (BuildingsDeepLabV3, CustomVectorOutputConfig,
+                                          BuildingsOnlyPredictionsIterator, create_predictions_and_ground_truth_plot)
 
 from src.data.dataloaders import (buil_create_full_image,
-    create_datasets, create_buildings_scene,cities,
+    create_datasets, create_buildings_scene,cities, 
     create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
 )
 
@@ -218,32 +219,47 @@ trainer = Trainer(
 trainer.fit(model, train_dl, val_dl)
 
 # Best deeplab model path val=0.3083
-# best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
+best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
 # best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=18-val_loss=0.1848.ckpt"
-best_model_path = checkpoint_callback.best_model_path
-best_model = BuildingsDeepLabV3.load_from_checkpoint(best_model_path)
+# best_model_path = checkpoint_callback.best_model_path
+best_model = BuildingsDeepLabV3.load_from_checkpoint(best_model_path_deeplab)
 best_model.eval()
 
-# Make predictions
-buildingsGeoDataset, _, _, _ = create_datasets(buildings_sceneSD, imgsize=512, stride = 256, padding=50, val_ratio=0.2, test_ratio=0.1, augment = False, seed=42)
-predictions_iterator = BuildingsOnlyPredictionsIterator(best_model, buildingsGeoDataset, device=device)
+# fulldataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(buildings_sceneSD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
+strided_fullds_SD, _, _, _ = create_datasets(buildings_sceneSD, imgsize=512, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+
+predictions_iterator = BuildingsOnlyPredictionsIterator(best_model, strided_fullds_SD, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
 pred_labels = SemanticSegmentationLabels.from_predictions(
     windows,
     predictions,
-    extent=buildingsGeoDataset.scene.extent,
+    extent=buildings_sceneSD.extent,
     num_classes=len(class_config),
-    smooth=True)
+    smooth=True
+)
+gt_labels = buildings_sceneSD.label_source.get_labels()
 
 # Show predictions
-scores = pred_labels.get_score_arr(pred_labels.extent)
-scores_building = scores[0]
-fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-image = ax.imshow(scores_building)
-cbar = fig.colorbar(image, ax=ax)
+fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
 plt.show()
+
+# save if needed
+# fig.savefig('predictions_and_ground_truth.png', dpi=300, bbox_inches='tight')
+
+# Evaluate against labels:
+pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
+    extent=pred_labels.extent,
+    num_classes=len(class_config))
+scores = pred_labels.get_score_arr(pred_labels.extent)
+pred_array_discrete = (scores > 0.5).astype(int)
+pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
+evaluator = SemanticSegmentationEvaluator(class_config)
+evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
+inf_eval = evaluation.class_to_eval_item[1]
+inf_eval.f1
+
 
 # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(
@@ -260,17 +276,6 @@ plt.show()
 
 # pred_label_store.save(pred_labels)
 
-# # Evaluate predictions
-from rastervision.core.evaluation import SemanticSegmentationEvaluator
-
-evaluator = SemanticSegmentationEvaluator(class_config)
-gt_labels = BuildingsScenceSD.label_source.get_labels()
-evaluation = evaluator.evaluate_predictions(
-    ground_truth=gt_labels, predictions=pred_labels)
-eval_metrics_dict = evaluation.class_to_eval_item[0]
-f1_score = eval_metrics_dict.f1
-f1_score
-
 # # Map interactive visualization
 # predspath = '/Users/janmagnuszewski/dev/slums-model-unitac/vectorised_model_predictions/buildings_model_only/2/vector_output/class-1-slums.json'
 # label_uri = "../../data/0/SantoDomingo3857.geojson"
@@ -280,55 +285,3 @@ f1_score
 # folium.GeoJson(gdf).add_to(m) 
 # folium.GeoJson(extent_gdf, style_function=lambda x: {'color':'red'}).add_to(m)
 # m
-
-
-
-### Make predictions on another city ###
-image_uri = '../../data/0/sentinel_Gee/HTI_Tabarre_2023.tif'
-label_uri = "../../data/0/SantoDomingo3857.geojson"
-buildings_uriHT = '../../data/0/overture/portauprince.geojson'
-
-rasterized_buildings_sourceHT, buildings_label_sourceHT, crs_transformer_HT = create_buildings_raster_source(buildings_uriHT, image_uri, label_uri, class_config, resolution=5)
-
-HT_eval_scene = Scene(
-        id='portauprince_buildings',
-        raster_source = rasterized_buildings_sourceHT,
-        label_source = buildings_label_sourceHT)
-
-HTGeoDataset, train_buildings_dataset, val_buildings_dataset, test_buildings_dataset = create_datasets(HT_eval_scene, imgsize=288, stride = 144, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
-
-predictions_iterator = BuildingsOnlyPredictionsIterator(best_model, HTGeoDataset, device=device)
-windows, predictions = zip(*predictions_iterator)
-
-# Create SemanticSegmentationLabels from predictions
-pred_labels_HT = SemanticSegmentationLabels.from_predictions(
-    windows,
-    predictions,
-    extent=HTGeoDataset.scene.extent,
-    num_classes=len(class_config),
-    smooth=True)
-
-# Show predictions
-scores = pred_labels_HT.get_score_arr(pred_labels_HT.extent)
-scores_building = scores[0]
-fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-image = ax.imshow(scores_building)
-ax.axis('off')
-ax.set_title('infs Scores')
-cbar = fig.colorbar(image, ax=ax)
-plt.show()
-
-# Saving predictions as GEOJSON
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
-
-pred_label_storeHT = SemanticSegmentationLabelStore(
-    uri='../../vectorised_model_predictions/buildings_model_only/Haiti_unet/',
-    crs_transformer = crs_transformer_HT,
-    class_config = class_config,
-    vector_outputs = [vector_output_config],
-    discrete_output = True)
-
-pred_label_storeHT.save(pred_labels_HT)

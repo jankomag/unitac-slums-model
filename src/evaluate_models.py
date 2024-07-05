@@ -9,7 +9,7 @@ import json
 from rastervision.core.evaluation import SemanticSegmentationEvaluator
 from rastervision.core.data import (ClassConfig, Scene, StatsTransformer, ClassInferenceTransformer,
                                     RasterizedSource, RasterioCRSTransformer, SemanticSegmentationLabelSource,
-                                    GeoJSONVectorSource)
+                                    GeoJSONVectorSource, SemanticSegmentationDiscreteLabels)
 from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
 
@@ -19,11 +19,12 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import (BuildingsDeeplabv3, BuildingsOnlyPredictionsIterator, CustomGeoJSONVectorSource,
+from src.models.model_definitions import (BuildingsDeepLabV3,
                                           MultiResSentLabelPredictionsIterator, MultiResolutionDeepLabV3,
-                                          SentinelDeeplabv3, PredictionsIterator, CustomVectorOutputConfig)
+                                          SentinelDeepLabV3, PredictionsIterator, CustomVectorOutputConfig,
+                                          create_predictions_and_ground_truth_plot)
 from src.data.dataloaders import (query_buildings_data, create_datasets, create_sentinel_raster_source,
-                                  create_scenes_for_city, create_sentinel_scene)
+                                  create_scenes_for_city, create_sentinel_scene, CustomGeoJSONVectorSource)
 
 # Define device
 if not torch.backends.mps.is_available():
@@ -39,17 +40,17 @@ models = {
     'deeplabv3_sentinel': {
         'name': 'deeplabv3_sentinel',
         'framework': 'pytorch',
-        'weights_path': os.path.join(parent_dir, "UNITAC-trained-models/sentinel_only/DLV3/multimodal_runidrun_id=0-epoch=27-val_loss=0.1693.ckpt")
+        'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/sentinel_only/DLV3/last.ckpt")
     },
     'deeplabv3_buildings': {
         'name': 'deeplabv3_buildings',
         'framework': 'pytorch',
-        'weights_path': os.path.join(parent_dir, "UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt")
+        'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt")
     },
     'deeplabv3_multimodal': {
         'name': 'deeplabv3_multimodal',
         'framework': 'pytorch',
-        'weights_path': os.path.join(parent_dir, "UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_epoch=13-val_loss=0.1777.ckpt")
+        'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_epoch=13-val_loss=0.1777.ckpt")
     }#, 'pixel_based_RF': {
     #     'framework': 'scikit_learn',
     #     'weights_path': ''
@@ -66,8 +67,8 @@ cities = {
     #     'labels_path': '../data/SHP/Tegucigalpa_PS.shp'
     # },
     'SantoDomingoDOM': {
-        'image_path': '../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif',
-        'labels_path': '../data/0/SantoDomingo3857_buffered.geojson'
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson')
     }#,
     # 'GuatemalaCity': {
     #     'image_path': '../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif',
@@ -248,13 +249,13 @@ def make_predictions_sentinel(model, inputs, image_path, labels_path, location_n
 
     pred_label_store.save(pred_labels)
 
-    return pred_labels
+    return pred_labels, gt_labels
 
 def make_predictions_buildings(model, inputs):
     model.eval()
     ds, _, _, _ = create_datasets(inputs, imgsize=288, stride = 144, padding=0, val_ratio=0.1, test_ratio=0.1, augment=False, seed=42)
     
-    predictions_iterator = BuildingsOnlyPredictionsIterator(model, ds, device=device)
+    predictions_iterator = PredictionsIterator(model, ds, device=device)
     windows, predictions = zip(*predictions_iterator)
     
     pred_labels = SemanticSegmentationLabels.from_predictions(
@@ -263,12 +264,6 @@ def make_predictions_buildings(model, inputs):
         extent=inputs.extent,
         num_classes=len(class_config),
         smooth=True)
-    
-    scores = pred_labels.get_score_arr(pred_labels.extent)
-    scores_building = scores[0]
-    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-    image = ax.imshow(scores_building)
-    plt.show()
 
     return pred_labels
 
@@ -289,27 +284,29 @@ def make_predictions_multimodal(model, inputs):
     num_classes=len(class_config),
     smooth=True)
     
-    scores = pred_labels.get_score_arr(pred_labels.extent)
-    scores_building = scores[0]
-    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-    image = ax.imshow(scores_building)
-    plt.show()
-
     return pred_labels
 
 # function to compute mean IOU, confusion matrix
-def evaluate_model(pred_labels, labels):
+def evaluate_model(pred_labels, gt_labels):
+    
+    # Evaluate against labels:
+    pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
+        extent=pred_labels.extent,
+        num_classes=len(class_config))
+    
+    scores = pred_labels.get_score_arr(pred_labels.extent)
+    pred_array_discrete = (scores > 0.5).astype(int)
+    
+    pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
+    
     evaluator = SemanticSegmentationEvaluator(class_config)
-    
-    evaluation = evaluator.evaluate_predictions(
-        ground_truth=labels,
-        predictions=pred_labels)
-    
+    evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
+        
     eval_metrics_dict = evaluation.class_to_eval_item[1]
-    print("Metrics: ", eval_metrics_dict)
+    print("F1: ", eval_metrics_dict.f1)
     
     return eval_metrics_dict
-
+    
 # function to load best model
 def load_model(model_info):
     model = None  # Initialize model to None
@@ -321,9 +318,9 @@ def load_model(model_info):
             state_dict = checkpoint['state_dict']
             model.load_state_dict(state_dict)
         elif model_info['name'] == 'deeplabv3_buildings':
-            model = BuildingsDeeplabv3.load_from_checkpoint(model_info['weights_path'])
+            model = BuildingsDeepLabV3.load_from_checkpoint(model_info['weights_path'])
         elif model_info['name'] == 'deeplabv3_sentinel':
-            model = SentinelDeeplabv3.load_from_checkpoint(model_info['weights_path'])
+            model = SentinelDeepLabV3.load_from_checkpoint(model_info['weights_path'])
             pass  # Replace with actual loading code
     elif model_info['framework'] == 'scikit_learn':
         # Add logic to load scikit-learn model if needed
@@ -369,7 +366,7 @@ def run_evaluations(locations, models):
             else:
                 raise ValueError("Model preparation function not found")
             
-            inputs, location_labels = data
+            inputs, gt_labels = data
             
             # Make predictions
             if model_name == 'deeplabv3_buildings':
@@ -383,8 +380,12 @@ def run_evaluations(locations, models):
             else:
                 raise ValueError("Unsupported framework")
             
+            # Show predictions
+            fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
+            plt.show()
+            
             # Evaluate predictions
-            evaluation_metrics = evaluate_model(pred_labels, location_labels)
+            evaluation_metrics = evaluate_model(pred_labels, gt_labels)
             model_results.append({
                 'location': location_name,
                 'metrics': evaluation_metrics

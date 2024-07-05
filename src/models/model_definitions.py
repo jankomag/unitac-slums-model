@@ -15,6 +15,7 @@ from typing import Any, Optional, Tuple, Union, Sequence
 import os
 import pytorch_lightning as pl
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 from typing import Iterator, Optional
 from torch.optim import AdamW
@@ -268,32 +269,8 @@ class SentinelDeepLabV3(pl.LightningModule):
             }
         }
 
-class PredictionsIterator:
-    def __init__(self, model, dataset, device='cuda'):
-        self.model = model
-        self.dataset = dataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(dataset)):
-                image, label = dataset[idx]
-                image = image.unsqueeze(0).to(device)
-
-                output = self.model(image)
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = dataset.windows[idx]
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
-
-
 # Show predictions function
-def create_predictions_and_ground_truth_plot(pred_labels, gt_labels, class_id=1, figsize=(30, 10)):
+def create_predictions_and_ground_truth_plot(pred_labels, gt_labels, threshold=0.5,  class_id=1, figsize=(30, 10)):
     """
     Create a plot of smooth predictions, discrete predictions, and ground truth side by side.
     
@@ -308,7 +285,7 @@ def create_predictions_and_ground_truth_plot(pred_labels, gt_labels, class_id=1,
     """
     # Get scores and create discrete predictions
     scores = pred_labels.get_score_arr(pred_labels.extent)
-    pred_array_discrete = (scores > 0.5).astype(int)
+    pred_array_discrete = (scores > threshold).astype(int)
 
     # Get ground truth array
     gt_array = gt_labels.get_label_arr(gt_labels.extent)
@@ -340,7 +317,6 @@ def create_predictions_and_ground_truth_plot(pred_labels, gt_labels, class_id=1,
     plt.tight_layout()
     
     return fig, (ax1, ax2, ax3)
-
 
 # Buildings Only Models
 class BuildingsDeepLabV3(pl.LightningModule):
@@ -494,7 +470,7 @@ class BuildingsDeepLabV3(pl.LightningModule):
             }
         }
 
-class BuildingsOnlyPredictionsIterator:
+class PredictionsIterator:
     def __init__(self, model, dataset, device='cuda'):
         self.model = model
         self.dataset = dataset
@@ -517,7 +493,6 @@ class BuildingsOnlyPredictionsIterator:
     def __iter__(self):
         return iter(self.predictions)
     
-
 # Mulitmodal Model and helpers definitions
 class MultiModalDataModule(LightningDataModule):
     def __init__(self, train_loader, val_loader):
@@ -652,7 +627,7 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
             original_conv1_weight = state_dict['backbone.conv1.weight']
             new_conv1_weight = torch.zeros((64, 5, 7, 7))
             new_conv1_weight[:, :4, :, :] = original_conv1_weight
-            new_conv1_weight[:, 4, :, :] = original_conv1_weight.mean(dim=1) #[:, 0, :, :] if red to be copied
+            new_conv1_weight[:, 4, :, :] = original_conv1_weight.mean(dim=1) #[:, 3, :, :] if red to be copied
             state_dict['backbone.conv1.weight'] = new_conv1_weight
                 
             self.encoder.load_state_dict(state_dict, strict=False)
