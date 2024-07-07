@@ -41,6 +41,12 @@ from rastervision.core.data import (
     VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
 )
 
+# Helper functions
+def check_nan_params(model):
+    for name, param in model.named_parameters():
+        if torch.isnan(param).any():
+            print(f"NaN found in {name}")
+
 # implements loading gdf
 class CustomVectorOutputConfig(Config):
     """Config for vectorized semantic segmentation predictions."""
@@ -88,37 +94,6 @@ class CustomVectorOutputConfig(Config):
         else:
             uri = join(root, f'class-{self.class_id}.json')
         return uri
-
-def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5):
-    gdf = gpd.read_file(buildings_uri)
-    gdf = gdf.to_crs('EPSG:3857')
-    xmin, _, _, ymax = gdf.total_bounds
-    
-    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymax)
-    crs_transformer_buildings.transform = affine_transform_buildings
-
-    buildings_vector_source = GeoJSONVectorSource(
-        buildings_uri,
-        crs_transformer_buildings,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-    
-    rasterized_buildings_source = RasterizedSource(
-        buildings_vector_source,
-        background_class_id=0)
-
-    print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
-
-    label_vector_source = GeoJSONVectorSource(label_uri,
-        crs_transformer_buildings,
-        vector_transformers=[
-            ClassInferenceTransformer(
-                default_class_id=class_config.get_class_id('slums'))])
-
-    label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-    buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
-
-    return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
 
 # Sentinel Only Models
 class SentinelDeepLabV3(pl.LightningModule):

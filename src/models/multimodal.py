@@ -1,12 +1,9 @@
 import os
 import sys
 from datetime import datetime
-import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import wandb
-import stackstac
-import pystac_client
 from torch.utils.data import ConcatDataset
 import matplotlib.pyplot as plt
 # from fvcore.nn import FlopCountAnalysis
@@ -15,7 +12,7 @@ import albumentations as A
 from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
 # Project-specific imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,7 +21,7 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,
+from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params,
                                           MultiModalDataModule, create_predictions_and_ground_truth_plot)
 from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple,
                                   create_datasets, senitnel_create_full_image,
@@ -53,52 +50,6 @@ class_config = ClassConfig(names=['background', 'slums'],
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
-cities = {
-    'SanJoseCRI': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_SanJose_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
-        'use_augmentation': False
-    },
-    'TegucigalpaHND': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
-        'use_augmentation': False
-    },
-    'SantoDomingoDOM': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
-        'use_augmentation': True
-    },
-    'GuatemalaCity': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Guatemala_PS.shp'),
-        'use_augmentation': False
-    },
-    'Managua': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
-        'use_augmentation': False
-    },
-    'Panama': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/PAN_Panama_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
-        'use_augmentation': False
-    },
-    'SanSalvador_PS': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
-        'use_augmentation': False
-    },
-    'BelizeCity': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')
-        },
-    'Belmopan': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')
-        }
-}
-
 # Preview Sentinel and Buildings batches
 vis_sent = SemanticSegmentationVisualizer(
     class_names=class_config.names, class_colors=class_config.colors,
@@ -111,14 +62,14 @@ vis_build = SemanticSegmentationVisualizer(
 # Santo Domingo with augmentation
 sentinel_sceneSD, buildings_sceneSD = create_scenes_for_city('SantoDomingoDOM', cities['SantoDomingoDOM'], class_config)
 sentinelGeoDataset_SD, train_sentinel_ds_SD, val_sent_ds_SD, test_sentinel_ds_SD = create_datasets(sentinel_sceneSD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
-sentinelGeoDataset_SD_aug, train_sentinel_ds_SD_aug, val_sent_ds_SD_aug, test_sentinel_ds_SD_aug = create_datasets(sentinel_sceneSD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=True, seed=12)
-sent_train_ds_SD = ConcatDataset([train_sentinel_ds_SD, train_sentinel_ds_SD_aug])
-sent_val_ds_SD = ConcatDataset([val_sent_ds_SD, val_sent_ds_SD_aug])
+# sentinelGeoDataset_SD_aug, train_sentinel_ds_SD_aug, val_sent_ds_SD_aug, test_sentinel_ds_SD_aug = create_datasets(sentinel_sceneSD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=True, seed=12)
+# sent_train_ds_SD = ConcatDataset([train_sentinel_ds_SD, train_sentinel_ds_SD_aug])
+# sent_val_ds_SD = ConcatDataset([val_sent_ds_SD, val_sent_ds_SD_aug])
 
 buildingsGeoDataset_SD, train_buil_ds_SD, val_buil_ds_SD, test_buil_ds_SD = create_datasets(buildings_sceneSD, imgsize=512, stride=512, padding=0, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
-buildingsGeoDataset_SD_aug, train_buil_ds_SD_aug, val_buil_ds_SD_aug, test_buil_ds_SD_aug = create_datasets(buildings_sceneSD, imgsize=512, stride=512, padding=0, val_ratio=0.2, test_ratio=0.1, augment = True, seed=12)
-build_train_ds_SD = ConcatDataset([train_buil_ds_SD, train_buil_ds_SD_aug])
-build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
+# buildingsGeoDataset_SD_aug, train_buil_ds_SD_aug, val_buil_ds_SD_aug, test_buil_ds_SD_aug = create_datasets(buildings_sceneSD, imgsize=512, stride=512, padding=0, val_ratio=0.2, test_ratio=0.1, augment = True, seed=12)
+# build_train_ds_SD = ConcatDataset([train_buil_ds_SD, train_buil_ds_SD_aug])
+# build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
 
 img_full = senitnel_create_full_image(sentinelGeoDataset_SD.scene.label_source)
 train_windows = train_sentinel_ds_SD.windows
@@ -134,18 +85,24 @@ test_windows = test_buil_ds_SD.windows
 window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
 show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
-train_datasetSD = MergeDataset(sent_train_ds_SD, build_train_ds_SD)
-val_datasetSD = MergeDataset(sent_val_ds_SD, build_val_ds_SD)
+train_datasetSD = MergeDataset(train_sentinel_ds_SD, train_buil_ds_SD)
+val_datasetSD = MergeDataset(val_sent_ds_SD, val_buil_ds_SD)
 
 # Guatemala City
 sentinel_sceneGC, buildings_sceneGC = create_scenes_for_city('GuatemalaCity', cities['GuatemalaCity'], class_config)
 sentinelGeoDataset_GC = PolygonWindowGeoDataset(sentinel_sceneGC, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 buildGeoDataset_GC = PolygonWindowGeoDataset(buildings_sceneGC, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 train_datasetGC = MergeDataset(sentinelGeoDataset_GC, buildGeoDataset_GC)
+train_ds_GC, val_ds_GC, test_ds_GC = train_datasetGC.split_train_val_test(
+        val_ratio=0.2,
+        test_ratio=0.1,
+        seed=12,
+    )
 
 img_full = senitnel_create_full_image(sentinelGeoDataset_GC.scene.label_source)
-train_windows = sentinelGeoDataset_GC.windows
-window_labels = (['train'] * len(train_windows))
+train_windows = train_ds_GC.windows
+val_windows = val_ds_GC.windows
+test_windows = test_ds_GC.windows
 show_windows(img_full, train_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 x, y = vis_sent.get_batch(sentinelGeoDataset_GC, 5)
@@ -154,7 +111,7 @@ vis_sent.plot_batch(x, y, show=True)
 x, y = vis_build.get_batch(buildGeoDataset_GC, 5)
 vis_build.plot_batch(x, y, show=True)
 
-# # TegucigalpaHND
+# TegucigalpaHND
 sentinel_sceneTG, buildings_sceneTG = create_scenes_for_city('TegucigalpaHND', cities['TegucigalpaHND'], class_config)
 sentinelGeoDataset_TG, train_sentinel_ds_TG, val_sent_ds_TG, test_sentinel_ds_TG = create_datasets(sentinel_sceneTG, imgsize=256, stride=256, padding=50, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
 buildingsGeoDataset_TG, train_buil_ds_TG, val_buil_ds_TG, test_buil_ds_TG = create_datasets(buildings_sceneTG, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
@@ -282,15 +239,15 @@ val_dataset = ConcatDataset([val_datasetSD, val_datasetTG, val_datasetMN])
 print(f"Train dataset length: {len(train_dataset)}")
 
 # Initialize the data module
-batch_size = 28
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+batch_size = 32
+train_loader = DataLoader(train_datasetSD, batch_size=batch_size, shuffle=True, pin_memory=True)
+val_loader = DataLoader(val_datasetSD, batch_size=batch_size, shuffle=False, pin_memory=True)
 data_module = MultiModalDataModule(train_loader, val_loader)
 
 # Train the model 
 hyperparameters = {
     'model': 'DLV3',
-    'train_cities': 'all',
+    'train_cities': 'SD',
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
@@ -303,8 +260,8 @@ hyperparameters = {
     'pos_weight': 2.0,
     'buil_kernel1': 3
 }
-
-output_dir = f'../../UNITAC-trained-models/multi_modal/all_DLV3/'
+traincities=hyperparameters['train_cities']
+output_dir = f'../../UNITAC-trained-models/multi_modal/{traincities}_DLV3/'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-multi-modal', config=hyperparameters)
@@ -319,9 +276,9 @@ checkpoint_callback = ModelCheckpoint(
     save_last=True,
     dirpath=output_dir,
     filename=f'multimodal_BCH{buil_channels}_BKR{buil_kernel}_{{epoch:02d}}-{{val_loss:.4f}}',
-    save_top_k=6,
+    save_top_k=4,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=50)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=20)
 
 model = MultiResolutionDeepLabV3(
     use_deeplnafrica=hyperparameters['use_deeplnafrica'],
@@ -342,7 +299,7 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=60,
+    min_epochs=25,
     max_epochs=250,
     num_sanity_val_steps=3,
 )
@@ -351,7 +308,8 @@ trainer = Trainer(
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation # best SD_DLV3/last.ckpt 
-best_model_path_dplv3 = os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/all_DLV3/multimodal_BCH64_BKR3_epoch=29-val_loss=0.3539.ckpt")
+
+best_model_path_dplv3 = os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_BCH64_BKR3_epoch=16-val_loss=0.6394.ckpt")
 # best_model_path_dplv3 = checkpoint_callback.best_model_path
 best_model = MultiResolutionDeepLabV3(buil_channels=buil_channels, buil_kernel1=buil_kernel)
 checkpoint = torch.load(best_model_path_dplv3)
@@ -359,48 +317,13 @@ state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict, strict=True)
 best_model = best_model.to(device)
 best_model.eval()
-
-def check_nan_params(model):
-    for name, param in model.named_parameters():
-        if torch.isnan(param).any():
-            print(f"NaN found in {name}")
-
 check_nan_params(best_model)
 
-# buildingsGeoDataset, _, _, _ = create_datasets(buildings_sceneSD, imgsize=512, stride = 256, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42, augment=False)
-# sentinelGeoDataset, _, _, _ = create_datasets(sentinel_sceneSD, imgsize=256, stride = 128, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42,augment=False)
-# val_sent_ds_SD, val_buil_ds_SD
-class MultiResPredictionsIterator:
-    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
-        self.model = model
-        self.sentinelGeoDataset = sentinelGeoDataset
-        self.dataset = buildingsGeoDataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(buildingsGeoDataset)):
-                buildings = buildingsGeoDataset[idx]
-                sentinel = sentinelGeoDataset[idx]
-                
-                sentinel_data = sentinel[0].unsqueeze(0).to(device)
-                sentlabels = sentinel[1].unsqueeze(0).to(device)
-
-                buildings_data = buildings[0].unsqueeze(0).to(device)
-                labels = buildings[1].unsqueeze(0).to(device)
-
-                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = sentinelGeoDataset.windows[idx] # here has to be sentinelGeoDataset to work
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
-    
-predictions_iterator = MultiResPredictionsIterator(best_model, sentinelGeoDataset_SD, buildingsGeoDataset_SD, device=device)
+buildingsGeoDataset, _, _, _ = create_datasets(buildings_sceneSD, imgsize=512, stride = 256, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42, augment=False)
+sentinelGeoDataset, _, _, _ = create_datasets(sentinel_sceneSD, imgsize=256, stride = 128, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42,augment=False)
+# val_sent_ds_SD, val_buil_ds_SD    
+# sentinelGeoDataset_SD, buildingsGeoDataset_SD
+predictions_iterator = MultiResPredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
@@ -433,15 +356,15 @@ evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=
 inf_eval = evaluation.class_to_eval_item[1]
 print(f"F1:{inf_eval.f1}")
 
-# # Show predictions
-# scores = pred_labels.get_score_arr(pred_labels.extent)
-# scores_building = scores[0]
-# fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-# image = ax.imshow(scores_building)
-# ax.axis('off')
+# Show predictions
+scores = pred_labels.get_score_arr(pred_labels.extent)
+scores_building = scores[0]
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+image = ax.imshow(scores_building)
+ax.axis('off')
 # ax.set_title('Multiresolution model predictions')
 # cbar = fig.colorbar(image, ax=ax)
-# plt.show()
+plt.show()
 
 
 # # Saving predictions as GEOJSON

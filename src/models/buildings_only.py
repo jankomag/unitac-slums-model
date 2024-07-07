@@ -91,9 +91,8 @@ sys.path.append(grandparent_dir)
 from src.models.model_definitions import (BuildingsDeepLabV3, CustomVectorOutputConfig,
                                           PredictionsIterator, create_predictions_and_ground_truth_plot)
 
-from src.data.dataloaders import (buil_create_full_image, senitnel_create_full_image,
-    create_datasets, create_buildings_scene,cities, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
-)
+from src.features.dataloaders import (buil_create_full_image, senitnel_create_full_image,
+    create_datasets, create_buildings_scene,cities, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset)
 
 from rastervision.core.data import (
     ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
@@ -117,8 +116,15 @@ class_config = ClassConfig(names=['background', 'slums'],
 # Santo Domingo with augmentation
 buildings_sceneSD = create_buildings_scene(cities['SantoDomingoDOM'], 'SantoDomingoDOM')
 
-buildingsGeoDataset_SD, train_buil_ds_SD, val_buil_ds_SD, test_buil_ds_SD = create_datasets(buildings_sceneSD, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
-buildingsGeoDataset_SD_aug, train_buil_ds_SD_aug, val_buil_ds_SD_aug, test_buil_ds_SD_aug = create_datasets(buildings_sceneSD, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = True, seed=12)
+buildingsGeoDataset_SD, train_buil_ds_SD, val_buil_ds_SD, test_buil_ds_SD = create_datasets(buildings_sceneSD, imgsize=512, stride=512, padding=0, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
+buildingsGeoDataset_SD_aug, train_buil_ds_SD_aug, val_buil_ds_SD_aug, test_buil_ds_SD_aug = create_datasets(buildings_sceneSD, imgsize=512, stride=512, padding=0, val_ratio=0.2, test_ratio=0.1, augment = True, seed=12)
+
+img_full = senitnel_create_full_image(buildingsGeoDataset_SD.scene.label_source)
+train_windows = train_buil_ds_SD.windows
+val_windows = val_buil_ds_SD.windows
+test_windows = test_buil_ds_SD.windows
+window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 build_train_ds_SD = ConcatDataset([train_buil_ds_SD, train_buil_ds_SD_aug])
 build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
@@ -152,13 +158,6 @@ else:
 
 train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_dl = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
-
-img_full = senitnel_create_full_image(buildingsGeoDataset_SD.scene.label_source)
-train_windows = train_buil_ds_SD.windows
-val_windows = val_buil_ds_SD.windows
-test_windows = test_buil_ds_SD.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 # Train the model
 hyperparameters = {
@@ -227,7 +226,7 @@ best_model.eval()
 # fulldataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(buildings_sceneSD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
 strided_fullds_SD, _, _, _ = create_datasets(buildings_sceneSD, imgsize=512, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 
-predictions_iterator = PredictionsIterator(best_model, val_buil_ds_SD, device=device)
+predictions_iterator = PredictionsIterator(best_model, strided_fullds_SD, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
@@ -264,8 +263,8 @@ scores_building = scores[0]
 fig, ax = plt.subplots(1, 1, figsize=(10, 5))
 image = ax.imshow(scores_building)
 ax.axis('off')
-ax.set_title('Only buildings footprints model predictions')
-cbar = fig.colorbar(image, ax=ax)
+# ax.set_title('Only buildings footprints model predictions')
+# cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
 # Saving predictions as GEOJSON

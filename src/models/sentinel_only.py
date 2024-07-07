@@ -46,8 +46,8 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import CustomVectorOutputConfig, SentinelDeepLabV3, PredictionsIterator, create_predictions_and_ground_truth_plot
-from src.data.dataloaders import create_datasets, create_sentinel_scene, cities, senitnel_create_full_image, show_windows
+from src.models.model_definitions import SentinelDeepLabV3, PredictionsIterator, create_predictions_and_ground_truth_plot #check_nan_params
+from src.features.dataloaders import create_datasets, create_sentinel_scene, cities, senitnel_create_full_image, show_windows
 
 from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
 from rastervision.core.data import (Scene, ClassInferenceTransformer, RasterizedSource,
@@ -89,6 +89,14 @@ else:
 # gdf = gdf.to_crs('EPSG:3857')
 # gdf.to_file(os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'), driver="GeoJSON")
 
+
+# Helper functions
+def check_nan_params(model):
+    for name, param in model.named_parameters():
+        if torch.isnan(param).any():
+            print(f"NaN found in {name}")
+
+
 # Load training data
 class_config = ClassConfig(names=['background', 'slums'], 
                            colors=['lightgray', 'darkred'],
@@ -96,11 +104,18 @@ class_config = ClassConfig(names=['background', 'slums'],
 
 SentinelScene_SD = create_sentinel_scene(cities['SantoDomingoDOM'], class_config)
 
-sentinelGeoDataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
-sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, test_sentinel_dataset_SD_aug = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=True, seed=12)
-
-sent_train_ds_SD = ConcatDataset([train_sentinel_datasetSD, train_sentinel_datasetSD_aug])
+sentinelGeoDataset_SD, train_sentinel_ds_SD, val_sent_ds_SD, test_sentinel_ds_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
+sentinelGeoDataset_SD_aug, train_sentinel_ds_SD_aug, val_sent_ds_SD_aug, test_sentinel_ds_SD_aug = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=True, seed=12)
+sent_train_ds_SD = ConcatDataset([train_sentinel_ds_SD, train_sentinel_ds_SD_aug])
 sent_val_ds_SD = ConcatDataset([val_sent_ds_SD, val_sent_ds_SD_aug])
+
+# Preview sliding window
+img_full = senitnel_create_full_image(sentinelGeoDataset_SD.scene.label_source)
+train_windows = train_sentinel_ds_SD.windows
+val_windows = val_sent_ds_SD.windows
+test_windows = test_sentinel_ds_SD.windows
+window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 batch_size = 32
 train_multiple_cities = False
@@ -132,14 +147,6 @@ else:
 train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_dl = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)    
 
-# Preview sliding window
-img_full = senitnel_create_full_image(sentinelGeoDataset_SD.scene.label_source)
-train_windows = train_sentinel_datasetSD.windows
-val_windows = val_sent_ds_SD.windows
-test_windows = test_sentinel_dataset_SD.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
-
 # Create model
 hyperparameters = {
     'model': 'DLV3',
@@ -147,11 +154,11 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-4,
+    'learning_rate': 1e-3,
     'weight_decay': 0,
-    'gamma': 1,
-    'sched_step_size': 15,
-    'pos_weight': torch.tensor(2.0, device='mps')
+    'gamma': 0.8,
+    'sched_step_size': 5,
+    'pos_weight': 2.0
 }
 
 model = SentinelDeepLabV3(use_deeplnafrica = hyperparameters['use_deeplnafrica'],
@@ -175,7 +182,7 @@ checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     dirpath=output_dir,
     filename='multimodal_runid{run_id}-{epoch:02d}-{val_loss:.4f}',
-    save_top_k=2,
+    save_top_k=3,
     save_last=True,
     mode='min')
 early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=25)
@@ -197,22 +204,16 @@ trainer.fit(model, train_dl, val_dl)
 
 # Make predictions
 # best_model_path = checkpoint_callback.best_model_path
-best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/last.ckpt"
+best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/multimodal_runidrun_id=0-epoch=29-val_loss=0.6515.ckpt"
 best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path) # SentinelSimpleSS SentinelDeeplabv3
 # best_model = SentinelDeepLabV3()
 best_model.eval()
 
-def check_nan_params(model):
-    for name, param in model.named_parameters():
-        if torch.isnan(param).any():
-            print(f"NaN found in {name}")
-
 check_nan_params(best_model)
 
-fulldataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
 strided_fullds_SD, _, _, _ = create_datasets(SentinelScene_SD, imgsize=256, stride=128, padding=8, val_ratio=0.2, test_ratio=0.1, seed=42)
 
-predictions_iterator = PredictionsIterator(best_model, val_sent_ds_SD, device=device)
+predictions_iterator = PredictionsIterator(best_model, strided_fullds_SD, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
@@ -225,17 +226,17 @@ pred_labels = SemanticSegmentationLabels.from_predictions(
 )
 gt_labels = SentinelScene_SD.label_source.get_labels()
 
-# Show predictions
-fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
-plt.show()
+# # Show predictions
+# fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
+# plt.show()
 
 scores = pred_labels.get_score_arr(pred_labels.extent)
 scores_building = scores[0]
 fig, ax = plt.subplots(1, 1, figsize=(10, 5))
 image = ax.imshow(scores_building)
 ax.axis('off')
-ax.set_title('Only Sentinel model predictions')
-cbar = fig.colorbar(image, ax=ax)
+# ax.set_title('Only Sentinel model predictions')
+# cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
 # save if needed

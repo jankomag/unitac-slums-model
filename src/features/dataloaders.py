@@ -18,7 +18,9 @@ import random
 from rastervision.pytorch_learner.dataset import GeoDataset
 from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple, Union
 import logging
-
+import duckdb
+import geopandas as gpd
+from shapely import wkb
 import numpy as np
 import albumentations as A
 import torch
@@ -26,7 +28,7 @@ from torch.utils.data import Dataset
 from shapely.ops import unary_union
 
 from rastervision.core.box import Box
-from rastervision.core.data import Scene
+from rastervision.core.data import Scene, BufferTransformer
 from rastervision.core.data.utils import AoiSampler
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
 from rastervision.pytorch_learner.dataset.transform import (TransformType,
@@ -119,7 +121,7 @@ import albumentations as A
 
 cities = {
     'SanJoseCRI': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_San_Jose_2023.tif'),
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_SanJose_2024.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
         'use_augmentation': False
     },
@@ -153,10 +155,14 @@ cities = {
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
         'use_augmentation': False
     },
-    'BelizeCity': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
-                   'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')},
-    'Belmopan': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
-                 'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')}
+    'BelizeCity': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')
+        },
+    'Belmopan': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')
+        }
 }
 
 def ensure_tuple(x: T, n: int = 2) -> tuple[T, ...]:
@@ -704,6 +710,7 @@ class CustomSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset)
 
         return subset  
     
+
 # Visulaization helper functions
 def show_windows(img, windows, window_labels, title=''):
     from matplotlib import pyplot as plt
@@ -743,7 +750,7 @@ def buil_create_full_image(source) -> np.ndarray:
     return chip
 
 
-# Function to get buildings from OMF
+# Function to get data from OMF
 def query_buildings_data(xmin, ymin, xmax, ymax):
     import duckdb
     con = duckdb.connect(os.path.join(grandparent_dir, 'data/0/data.db'))
@@ -770,6 +777,64 @@ def query_buildings_data(xmin, ymin, xmax, ymax):
         buildings['class_id'] = 1
 
     return buildings
+
+def query_roads_data(xmin, ymin, xmax, ymax):
+    import duckdb
+
+    con = duckdb.connect(os.path.join(grandparent_dir, 'data/0/data.db'))
+    con.install_extension('httpfs')
+    con.install_extension('spatial')
+    con.load_extension('httpfs')
+    con.load_extension('spatial')
+    con.execute("SET s3_region='us-west-2'")
+    con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
+
+    query = f"""
+        SELECT *
+        FROM roads
+        WHERE subtype = 'road'
+          AND bbox.xmin > {xmin}
+          AND bbox.xmax < {xmax}
+          AND bbox.ymin > {ymin}
+          AND bbox.ymax < {ymax};
+    """
+    roads_df = pd.read_sql(query, con=con)
+
+    if not roads_df.empty:
+        roads = gpd.GeoDataFrame(roads_df, geometry=gpd.GeoSeries.from_wkb(roads_df.geometry.apply(bytes)), crs='EPSG:4326')
+        roads = roads[['id', 'geometry']]
+        roads = roads.to_crs("EPSG:3857")
+        roads['class_id'] = 2
+
+    return roads
+
+def query_poi_data(xmin, ymin, xmax, ymax):
+    # Initialize DuckDB connection
+    con = duckdb.connect(':memory:')
+    con.install_extension('spatial')
+    con.install_extension('httpfs')
+    con.load_extension('spatial')
+    con.load_extension('httpfs')
+
+    # Query for POIs
+    poi_query = f"""
+    SELECT
+        id,
+        names.primary AS name,
+        categories.main AS category,
+        ROUND(confidence, 2) AS confidence,
+        ST_GeomFromWKB(geometry) AS geometry
+    FROM read_parquet('s3://overturemaps-us-west-2/release/2024-06-13-beta.1/theme=places/*/*')
+    WHERE
+        bbox.xmin > {xmin} AND bbox.xmax < {xmax}
+        AND bbox.ymin > {ymin} AND bbox.ymax < {ymax}
+    """
+    poi_df = con.execute(poi_query).df()
+    poi_gdf = gpd.GeoDataFrame(poi_df, geometry='geometry', crs='EPSG:4326')
+
+    print(f"POI data loaded successfully with {len(poi_gdf)} total POIs.")
+
+    return poi_gdf
 
 
 ### Functions to create raster sources ###
@@ -840,6 +905,43 @@ def make_sentinel_raster(image_uri, label_uri, class_config, clip_to_label_sourc
     print(f"Loaded Sentinel data of size {sentinel_source_normalized.shape}, and dtype: {sentinel_source_normalized.dtype}")
     return sentinel_source_normalized, label_source
 
+def make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_buffer=10):
+    gdf = gpd.read_file(labels_path)
+    gdf = gdf.to_crs('EPSG:4326')
+    xmin, ymin, xmax, ymax = gdf.total_bounds
+
+    crs_transformer = RasterioCRSTransformer.from_uri(image_path)
+    affine_transform = Affine(resolution, 0, xmin, 0, -resolution, ymax)
+    crs_transformer.transform = affine_transform
+
+    # Query buildings
+    buildings = query_buildings_data(xmin, ymin, xmax, ymax)
+    print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
+
+    # Query roads
+    roads = query_roads_data(xmin, ymin, xmax, ymax)
+    print(f"Roads data loaded successfully with {len(roads)} total road segments.")
+
+    # Buffer the roads
+    roads_buffered = roads.copy()
+    roads_buffered['geometry'] = roads_buffered.geometry.buffer(road_buffer)
+
+    # Combine buffered roads and buildings
+    combined_gdf = pd.concat([buildings, roads_buffered], ignore_index=True)
+
+    combined_vector_source = CustomGeoJSONVectorSource(
+        gdf=combined_gdf,
+        crs_transformer=crs_transformer,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)]
+    )
+
+    rasterized_combined_source = RasterizedSource(
+        combined_vector_source,
+        background_class_id=0
+    )
+
+    return rasterized_combined_source, crs_transformer
+
 
 ### Create scenes functions ###
 def create_sentinel_scene(city_data, class_config):
@@ -857,7 +959,7 @@ def create_sentinel_scene(city_data, class_config):
     )
     return sentinel_scene
 
-def create_buildings_scene(city_data, city_name):
+def create_building_scene(city_data, city_name):
     image_path = city_data['image_path']
     labels_path = city_data['labels_path']
 
@@ -934,7 +1036,45 @@ def create_datasets(scene, imgsize=256, stride = 256, padding=50, val_ratio=0.2,
     return full_dataset, train_dataset, val_dataset, test_dataset
 
 
+# # Testing for roads source
+# belize_data = cities['Managua']
+# image_path = belize_data['image_path']
+# labels_path = belize_data['labels_path']
 
+# gdf = gpd.read_file(labels_path)
+# gdf = gdf.to_crs('EPSG:4326')
+# xmin, ymin, xmax, ymax = gdf.total_bounds
+# roads = query_roads_data(xmin, ymin, xmax, ymax)
+# buildings = query_buildings_data(xmin, ymin, xmax, ymax)
+# from lonboard import viz
+# viz(buildings)
+
+# class_config = ClassConfig(names=['background', 'slums'], 
+#                                 colors=['lightgray', 'darkred'],
+#                                 null_class='background')
+
+# sentinel_source_normalized, sentinel_label_raster_source = make_sentinel_raster(
+#     image_path, labels_path, class_config, clip_to_label_source=True
+# )
+
+# ovfmratser, _ = make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_buffer=2)
+
+# chip = ovfmratser[:, :]
+# fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+# ax.imshow(chip)
+# plt.show()
+
+# urbmscene = Scene(
+#         id='_sentinel',
+#         raster_source=ovfmratser,
+#         label_source=sentinel_label_raster_source    )
+# buildGeoDataset_PN = PolygonWindowGeoDataset(urbmscene,window_size=512,out_size=512,padding=200,transform_type=TransformType.noop,transform=None)
+
+# # x, y = vis_sent.get_batch(buildingsGeoDataset_TG, 5)
+# # vis_sent.plot_batch(x, y, show=True)
+
+# x, y = vis_build.get_batch(buildingsGeoDataset_TG, 5)
+# vis_build.plot_batch(x, y, show=True)
 
 
 # From STAC
