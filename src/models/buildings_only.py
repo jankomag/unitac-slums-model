@@ -89,11 +89,10 @@ sys.path.append(parent_dir)
 sys.path.append(grandparent_dir)
 
 from src.models.model_definitions import (BuildingsDeepLabV3, CustomVectorOutputConfig,
-                                          BuildingsOnlyPredictionsIterator, create_predictions_and_ground_truth_plot)
+                                          PredictionsIterator, create_predictions_and_ground_truth_plot)
 
-from src.data.dataloaders import (buil_create_full_image,
-    create_datasets, create_buildings_scene,cities, 
-    create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
+from src.data.dataloaders import (buil_create_full_image, senitnel_create_full_image,
+    create_datasets, create_buildings_scene,cities, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
 )
 
 from rastervision.core.data import (
@@ -154,12 +153,12 @@ else:
 train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_dl = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
-# img_full = buil_create_full_image(buildingsGeoDataset_SD.scene.label_source)
-# train_windows = build_train_ds_SD.windows
-# val_windows = val_buil_ds_SD.windows
-# test_windows = test_buil_ds_SD.windows
-# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+img_full = senitnel_create_full_image(buildingsGeoDataset_SD.scene.label_source)
+train_windows = train_buil_ds_SD.windows
+val_windows = val_buil_ds_SD.windows
+test_windows = test_buil_ds_SD.windows
+window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
 # Train the model
 hyperparameters = {
@@ -219,7 +218,7 @@ trainer = Trainer(
 trainer.fit(model, train_dl, val_dl)
 
 # Best deeplab model path val=0.3083
-best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
+best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/DLV3/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
 # best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=18-val_loss=0.1848.ckpt"
 # best_model_path = checkpoint_callback.best_model_path
 best_model = BuildingsDeepLabV3.load_from_checkpoint(best_model_path_deeplab)
@@ -228,7 +227,7 @@ best_model.eval()
 # fulldataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(buildings_sceneSD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
 strided_fullds_SD, _, _, _ = create_datasets(buildings_sceneSD, imgsize=512, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
 
-predictions_iterator = BuildingsOnlyPredictionsIterator(best_model, strided_fullds_SD, device=device)
+predictions_iterator = PredictionsIterator(best_model, val_buil_ds_SD, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
@@ -242,8 +241,8 @@ pred_labels = SemanticSegmentationLabels.from_predictions(
 gt_labels = buildings_sceneSD.label_source.get_labels()
 
 # Show predictions
-fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
-plt.show()
+# fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
+# plt.show()
 
 # save if needed
 # fig.savefig('predictions_and_ground_truth.png', dpi=300, bbox_inches='tight')
@@ -260,6 +259,14 @@ evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=
 inf_eval = evaluation.class_to_eval_item[1]
 inf_eval.f1
 
+scores = pred_labels.get_score_arr(pred_labels.extent)
+scores_building = scores[0]
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+image = ax.imshow(scores_building)
+ax.axis('off')
+ax.set_title('Only buildings footprints model predictions')
+cbar = fig.colorbar(image, ax=ax)
+plt.show()
 
 # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(

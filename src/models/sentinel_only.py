@@ -96,8 +96,8 @@ class_config = ClassConfig(names=['background', 'slums'],
 
 SentinelScene_SD = create_sentinel_scene(cities['SantoDomingoDOM'], class_config)
 
-sentinelGeoDataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
-sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, test_sentinel_dataset_SD_aug = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=True, seed=22)
+sentinelGeoDataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
+sentinelGeoDataset_SD_aug, train_sentinel_datasetSD_aug, val_sent_ds_SD_aug, test_sentinel_dataset_SD_aug = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=0, val_ratio=0.2, test_ratio=0.1, augment=True, seed=12)
 
 sent_train_ds_SD = ConcatDataset([train_sentinel_datasetSD, train_sentinel_datasetSD_aug])
 sent_val_ds_SD = ConcatDataset([val_sent_ds_SD, val_sent_ds_SD_aug])
@@ -197,15 +197,22 @@ trainer.fit(model, train_dl, val_dl)
 
 # Make predictions
 # best_model_path = checkpoint_callback.best_model_path
-# best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/last.ckpt"
-# best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path) # SentinelSimpleSS SentinelDeeplabv3
-best_model = SentinelDeepLabV3()
+best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/last.ckpt"
+best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path) # SentinelSimpleSS SentinelDeeplabv3
+# best_model = SentinelDeepLabV3()
 best_model.eval()
+
+def check_nan_params(model):
+    for name, param in model.named_parameters():
+        if torch.isnan(param).any():
+            print(f"NaN found in {name}")
+
+check_nan_params(best_model)
 
 fulldataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(SentinelScene_SD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
 strided_fullds_SD, _, _, _ = create_datasets(SentinelScene_SD, imgsize=256, stride=128, padding=8, val_ratio=0.2, test_ratio=0.1, seed=42)
 
-predictions_iterator = PredictionsIterator(best_model, strided_fullds_SD, device=device)
+predictions_iterator = PredictionsIterator(best_model, val_sent_ds_SD, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
@@ -220,6 +227,15 @@ gt_labels = SentinelScene_SD.label_source.get_labels()
 
 # Show predictions
 fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
+plt.show()
+
+scores = pred_labels.get_score_arr(pred_labels.extent)
+scores_building = scores[0]
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+image = ax.imshow(scores_building)
+ax.axis('off')
+ax.set_title('Only Sentinel model predictions')
+cbar = fig.colorbar(image, ax=ax)
 plt.show()
 
 # save if needed

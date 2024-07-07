@@ -19,12 +19,10 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import (BuildingsDeepLabV3,
-                                          MultiResSentLabelPredictionsIterator, MultiResolutionDeepLabV3,
+from src.models.model_definitions import (BuildingsDeepLabV3, MultiResPredictionsIterator, MultiResolutionDeepLabV3,
                                           SentinelDeepLabV3, PredictionsIterator, CustomVectorOutputConfig,
                                           create_predictions_and_ground_truth_plot)
-from src.data.dataloaders import (query_buildings_data, create_datasets, create_sentinel_raster_source,
-                                  create_scenes_for_city, create_sentinel_scene, CustomGeoJSONVectorSource)
+from src.data.dataloaders import (query_buildings_data, create_datasets, create_sentinel_raster_source,CustomGeoJSONVectorSource)
 
 # Define device
 if not torch.backends.mps.is_available():
@@ -45,49 +43,56 @@ models = {
     'deeplabv3_buildings': {
         'name': 'deeplabv3_buildings',
         'framework': 'pytorch',
-        'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt")
-    },
-    'deeplabv3_multimodal': {
-        'name': 'deeplabv3_multimodal',
-        'framework': 'pytorch',
-        'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_epoch=13-val_loss=0.1777.ckpt")
-    }#, 'pixel_based_RF': {
+        'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/buildings_only/DLV3/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt")
+    }#,
+    # 'deeplabv3_multimodal': {
+    #     'name': 'deeplabv3_multimodal',
+    #     'framework': 'pytorch',
+    #     'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_epoch=13-val_loss=0.1777.ckpt")
+    # }#, 'pixel_based_RF': {
     #     'framework': 'scikit_learn',
     #     'weights_path': ''
     # },
 }
 
 cities = {
-    # 'SanJoseCRI': {
-    #     'image_path': '../data/0/sentinel_Gee/CRI_San_Jose_2023.tif',
-    #     'labels_path': '../data/SHP/SanJose_PS.shp'
-    # },
-    # 'TegucigalpaHND': {
-    #     'image_path': '../data/0/sentinel_Gee/HND_Comayaguela_2023.tif',
-    #     'labels_path': '../data/SHP/Tegucigalpa_PS.shp'
-    # },
+    'SanJoseCRI': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_San_Jose_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
+        'use_augmentation': False
+    },
+    'TegucigalpaHND': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
+        'use_augmentation': False
+    },
     'SantoDomingoDOM': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson')
-    }#,
-    # 'GuatemalaCity': {
-    #     'image_path': '../data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif',
-    #     'labels_path': '../data/SHP/Guatemala_PS.shp'
-    # },
-    # 'Managua': {
-    #     'image_path': '../data/0/sentinel_Gee/NIC_Tipitapa_2023.tif',
-    #     'labels_path': '../data/SHP/Managua_PS.shp'
-    # },
-    # 'Panama': {
-    #     'image_path': '../data/0/sentinel_Gee/PAN_San_Miguelito_2023.tif',
-    #     'labels_path': '../data/SHP/Panama_PS.shp'
-    # },
-    # 'SanSalvador_PS': {
-    #     'image_path': '../data/0/sentinel_Gee/SLV_Delgado_2023.tif',
-    #     'labels_path': '../data/SHP/SanSalvador_PS.shp'
-    # }#,
-    # 'BelizeCity': {'image_path': '../data/0/sentinel_Gee/HND__2023.tif','labels_path': '../data/SHP/BelizeCity_PS.shp'},
-    # 'Belmopan': {'image_path': '../data/0/sentinel_Gee/HND__2023.tif','labels_path': '../data/SHP/Belmopan_PS.shp'}
+        'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
+        'use_augmentation': True
+    },
+    'GuatemalaCity': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Guatemala_PS.shp'),
+        'use_augmentation': False
+    },
+    'Managua': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
+        'use_augmentation': False
+    },
+    'Panama': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/PAN_San_Miguelito_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
+        'use_augmentation': False
+    },
+    'SanSalvador_PS': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_Delgado_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
+        'use_augmentation': False
+    }
+    # 'BelizeCity': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/_2023.tif'), 'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')},
+    # 'Belmopan': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/_2023.tif'), 'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')}
 }
 
 class_config = ClassConfig(names=['background', 'slums'], 
@@ -222,17 +227,11 @@ def make_predictions_sentinel(model, inputs, image_path, labels_path, location_n
     windows, predictions = zip(*predictions_iterator)
     
     pred_labels = SemanticSegmentationLabels.from_predictions(
-    windows,
-    predictions,
-    extent=inputs.extent,
-    num_classes=len(class_config),
-    smooth=True)
-    
-    scores = pred_labels.get_score_arr(pred_labels.extent)
-    scores_building = scores[0]
-    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-    image = ax.imshow(scores_building)
-    plt.show()
+        windows,
+        predictions,
+        extent=inputs.extent,
+        num_classes=len(class_config),
+        smooth=True)
     
     # # Saving predictions as GEOJSON
     vector_output_config = CustomVectorOutputConfig(
@@ -249,7 +248,7 @@ def make_predictions_sentinel(model, inputs, image_path, labels_path, location_n
 
     pred_label_store.save(pred_labels)
 
-    return pred_labels, gt_labels
+    return pred_labels
 
 def make_predictions_buildings(model, inputs):
     model.eval()
@@ -274,7 +273,7 @@ def make_predictions_multimodal(model, inputs):
     buildingsGeoDataset, _, _, _ = create_datasets(buildings_scene, imgsize=512, stride = 256, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
     sentinelGeoDataset, _, _, _ = create_datasets(sent_scene, imgsize=256, stride = 128, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
     
-    predictions_iterator = MultiResSentLabelPredictionsIterator(model, sentinelGeoDataset, buildingsGeoDataset, device=device)
+    predictions_iterator = MultiResPredictionsIterator(model, sentinelGeoDataset, buildingsGeoDataset, device=device)
     windows, predictions = zip(*predictions_iterator)
     
     pred_labels = SemanticSegmentationLabels.from_predictions(
@@ -337,7 +336,7 @@ def run_evaluations(locations, models):
     # Cache to store precomputed building rasters for each location
     building_rasters = {}
     
-    # # Precompute building rasters for each location
+    # Precompute building rasters for each location
     for location_name, paths in locations.items():
         print(f"Precomputing building raster for {location_name}")
         image_path = paths['image_path']

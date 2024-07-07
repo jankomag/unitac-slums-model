@@ -17,19 +17,77 @@ from pathlib import Path
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
+grandparent_dir = os.path.dirname(parent_dir)
 
-# from src.data.dataloaders import query_buildings_data
+# sys.path.append(parent_dir)
+
+def query_buildings_data(xmin, ymin, xmax, ymax):
+    import duckdb
+    con = duckdb.connect(os.path.join(grandparent_dir, 'data/0/data.db'))
+    con.install_extension('httpfs')
+    con.install_extension('spatial')
+    con.load_extension('httpfs')
+    con.load_extension('spatial')
+    con.execute("SET s3_region='us-west-2'")
+    con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
+    query = f"""
+        SELECT *
+        FROM buildings
+        WHERE bbox.xmin > {xmin}
+          AND bbox.xmax < {xmax}
+          AND bbox.ymin > {ymin}
+          AND bbox.ymax < {ymax};
+    """
+    buildings_df = pd.read_sql(query, con=con)
+
+    if not buildings_df.empty:
+        buildings = gpd.GeoDataFrame(buildings_df, geometry=gpd.GeoSeries.from_wkb(buildings_df.geometry.apply(bytes)), crs='EPSG:4326')
+        buildings = buildings[['id', 'geometry']]
+        buildings = buildings.to_crs("EPSG:3857")
+        buildings['class_id'] = 1
+
+    return buildings
 
 cities = {
-    'SanJoseCRI': {'labels_path': '../data/SHP/SanJose_PS.shp'},
-    'TegucigalpaHND': {'labels_path': '../data/SHP/Tegucigalpa_PS.shp'},
-    'SantoDomingoDOM': {'labels_path': '../data/SHP/SantoDomingo_PS.shp'},
-    'GuatemalaCity': {'labels_path': '../data/SHP/Guatemala_PS.shp'},
-    'Managua': {'labels_path': '../data/SHP/Managua_PS.shp'},
-    'Panama': {'labels_path': '../data/SHP/Panama_PS.shp'},
-    'SanSalvador_PS': {'labels_path': '../data/SHP/SanSalvador_PS.shp'},
-    'BelizeCity': {'labels_path': '../data/SHP/BelizeCity_PS.shp'},
-    'Belmopan': {'labels_path': '../data/SHP/Belmopan_PS.shp'},
+    'SanJoseCRI': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_San_Jose_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
+        'use_augmentation': False
+    },
+    'TegucigalpaHND': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
+        'use_augmentation': False
+    },
+    'SantoDomingoDOM': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
+        'use_augmentation': True
+    },
+    'GuatemalaCity': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Guatemala_PS.shp'),
+        'use_augmentation': False
+    },
+    'Managua': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
+        'use_augmentation': False
+    },
+    'Panama': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/PAN_Panama_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
+        'use_augmentation': False
+    },
+    'SanSalvador_PS': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
+        'use_augmentation': False
+    },
+    'BelizeCity': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
+                   'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')},
+    'Belmopan': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
+                 'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')}
 }
 
 # Function to check if a file exists
@@ -136,13 +194,17 @@ for city_name, city_data in cities.items():
     # Reproject to Web Mercator
     slums = slums.to_crs(epsg=3857)
     buildings = buildings.to_crs(epsg=3857)
+    print(f"Loaded {len(buildings)} buildings and {len(slums)} slum polygons for {city_name}.")
 
     # Merge all slum polygons into one
     all_slums = slums.unary_union
 
+    print(f"Area of slums in {city_name}: {all_slums.area:.2f} square meters")
+    
     # Clip buildings to the slums area
     slum_buildings = gpd.sjoin(buildings, slums, how="inner", predicate="intersects")
-
+    print(f"Found {len(slum_buildings)} buildings within slum areas in city {city_name}.")
+    
     # Calculate morphometrics
     city_metrics_df = calculate_city_morphometrics(slum_buildings, all_slums)
 
@@ -158,7 +220,6 @@ for city_name, df in city_dataframes.items():
     df.to_csv(f"metrics/{city_name}_slum_morphometrics.csv", index=False)
     print(f"Results for {city_name} saved to {city_name}_slum_morphometrics.csv")
 
-# If you want to combine all cities into one large DataFrame
 all_cities_df = pd.concat(city_dataframes.values(), ignore_index=True)
 all_cities_df.to_csv("all_cities_slum_morphometrics.csv", index=False)
 print("Combined results for all cities saved to all_cities_slum_morphometrics.csv")
@@ -168,10 +229,7 @@ for city_name, df in city_dataframes.items():
     print(f"\nSummary statistics for {city_name}:")
     print(df.describe())
 
-
-
-
-# plotting
+# Plotting the distribution of morphometrics by city
 file_path = os.path.join(parent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
 all_cities_df = pd.read_csv(file_path)
 

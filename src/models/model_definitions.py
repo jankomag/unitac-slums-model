@@ -509,37 +509,7 @@ class MultiModalDataModule(LightningDataModule):
     def setup(self, stage=None):
         pass
     
-class MultiModalPredictionsIterator:
-    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
-        self.model = model
-        self.sentinelGeoDataset = sentinelGeoDataset
-        self.dataset = buildingsGeoDataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(sentinelGeoDataset)):
-                buildings = buildingsGeoDataset[idx]
-                sentinel = sentinelGeoDataset[idx]
-                
-                sentinel_data = sentinel[0].unsqueeze(0).to(device)
-                sentlabels = sentinel[1].unsqueeze(0).to(device)
-
-                buildings_data = buildings[0].unsqueeze(0).to(device)
-                labels = buildings[1].unsqueeze(0).to(device)
-
-                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = buildingsGeoDataset.windows[idx]
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
-
-class MultiResSentLabelPredictionsIterator:
+class MultiResPredictionsIterator:
     def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
         self.model = model
         self.sentinelGeoDataset = sentinelGeoDataset
@@ -633,17 +603,20 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
             self.encoder.load_state_dict(state_dict, strict=False)
         
     def forward(self, batch):
+        
         sentinel_batch, buildings_batch = batch
         buildings_data, _ = buildings_batch
         sentinel_data, _ = sentinel_batch
-        # Move data to the device
-        sentinel_data = sentinel_data.to(self.device)
-        buildings_data = buildings_data.to(self.device)
         
         b_out = self.buildings_encoder(buildings_data)
+        # print("Buildings encoder output stats:", b_out.min(), b_out.max(), b_out.mean())
+        
         concatenated = torch.cat([sentinel_data, b_out], dim=1)    
+        # print("Concatenated data stats:", concatenated.min(), concatenated.max(), concatenated.mean())
 
         segmentation = self.encoder(concatenated)['out']
+        # print("Segmentation output stats:", segmentation.min(), segmentation.max(), segmentation.mean())
+        
         return segmentation.squeeze(1)
     
     def training_step(self, batch):

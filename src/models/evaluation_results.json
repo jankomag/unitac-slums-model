@@ -1,0 +1,52 @@
+{
+    "deeplabv3_sentinel": {
+        "SantoDomingoDOM": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    2027503.0,
+                    5515.0
+                ],
+                [
+                    117240.0,
+                    60786.0
+                ]
+            ],
+            "gt_count": 178026.0,
+            "metrics": {
+                "f1": 0.49757906412308095,
+                "precision": 0.9168187508484035,
+                "recall": 0.3414445081055576,
+                "sensitivity": 0.3414445081055576,
+                "specificity": 0.9972872842247339
+            },
+            "pred_count": 66301.0
+        }
+    },
+    "deeplabv3_buildings": {
+        "SantoDomingoDOM": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    7959764.0,
+                    168695.0
+                ],
+                [
+                    377321.0,
+                    334638.0
+                ]
+            ],
+            "gt_count": 711959.0,
+            "metrics": {
+                "f1": 0.5507120922379148,
+                "precision": 0.6648441489034098,
+                "recall": 0.4700242570148,
+                "sensitivity": 0.4700242570148,
+                "specificity": 0.979246373759159
+            },
+            "pred_count": 503333.0
+        }
+    }
+}

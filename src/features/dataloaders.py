@@ -1,3 +1,4 @@
+import os
 import sys
 import torch
 from affine import Affine
@@ -14,9 +15,41 @@ from typing import List
 from rasterio.features import rasterize
 import matplotlib.pyplot as plt
 import random
+from rastervision.pytorch_learner.dataset import GeoDataset
+from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple, Union
+import logging
+
+import numpy as np
+import albumentations as A
+import torch
+from torch.utils.data import Dataset
+from shapely.ops import unary_union
+
+from rastervision.core.box import Box
+from rastervision.core.data import Scene
+from rastervision.core.data.utils import AoiSampler
+from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
+from rastervision.pytorch_learner.dataset.transform import (TransformType,
+                                                            TF_TYPE_TO_TF_FUNC)
+
+if TYPE_CHECKING:
+    from shapely.geometry import MultiPolygon, Polygon
+
+log = logging.getLogger(__name__)
+import albumentations as A
+from typing import Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple, Union
+from typing import List
+T = TypeVar('T')
 import pandas as pd
 from rastervision.core.data.utils import listify_uris, merge_geojsons
+from sklearn.model_selection import KFold
+from typing import Literal, TypeVar
+import math
 
+from pydantic.types import NonNegativeInt as NonNegInt, PositiveInt as PosInt
+
+T = TypeVar('T')
 
 from rastervision.core.raster_stats import RasterStats
 from rastervision.core.data.raster_transformer import RasterTransformer
@@ -64,102 +97,86 @@ from rastervision.core.box import Box
 from rastervision.core.data.crs_transformer import RasterioCRSTransformer
 from rastervision.core.data.utils import parse_array_slices_Nd, fill_overflow
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+grandparent_dir = os.path.dirname(parent_dir)
+
 if TYPE_CHECKING:
     from pystac import Item, ItemCollection
     from rastervision.core.data import RasterTransformer, CRSTransformer
 
 log = logging.getLogger(__name__)
 
-def geoms_to_raster(df: gpd.GeoDataFrame, window: 'Box',
-                    background_class_id: int, all_touched: bool) -> np.ndarray:
-    if len(df) == 0:
-        return np.full(window.size, background_class_id, dtype=np.uint8)
 
-    window_geom = window.to_shapely()
+import random
+from typing import Tuple, List, Union, Optional
+from rastervision.core.box import Box
+from rastervision.core.data import Scene
+from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
+from rastervision.pytorch_learner.dataset.dataset import GeoDataset
+import numpy as np
+import albumentations as A
 
-    # subset to shapes that intersect window
-    df_int = df[df.intersects(window_geom)]
-    # transform to window frame of reference
-    shapes = df_int.translate(xoff=-window.xmin, yoff=-window.ymin)
-    # class IDs of each shape
-    class_ids = df_int['class_id']
+cities = {
+    'SanJoseCRI': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_San_Jose_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
+        'use_augmentation': False
+    },
+    'TegucigalpaHND': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
+        'use_augmentation': False
+    },
+    'SantoDomingoDOM': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
+        'use_augmentation': True
+    },
+    'GuatemalaCity': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Guatemala_PS.shp'),
+        'use_augmentation': False
+    },
+    'Managua': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
+        'use_augmentation': False
+    },
+    'Panama': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/PAN_Panama_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
+        'use_augmentation': False
+    },
+    'SanSalvador_PS': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
+        'use_augmentation': False
+    },
+    'BelizeCity': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
+                   'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')},
+    'Belmopan': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
+                 'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')}
+}
 
-    if len(shapes) > 0:
-        raster = rasterize(
-            shapes=list(zip(shapes, class_ids)),
-            out_shape=window.size,
-            fill=background_class_id,
-            dtype=np.uint8,
-            all_touched=all_touched)
-    else:
-        raster = np.full(window.size, background_class_id, dtype=np.uint8)
+def ensure_tuple(x: T, n: int = 2) -> tuple[T, ...]:
+    """Convert to n-tuple if not already an n-tuple."""
+    if isinstance(x, tuple):
+        if len(x) != n:
+            raise ValueError()
+        return x
+    return tuple([x] * n)
 
-    return raster
+class MergeDataset(Dataset):
+    def __init__(self, *datasets):
+        self.datasets = datasets
 
-def create_full_image(source) -> np.ndarray:
-    extent = source.extent
-    chip = source.get_label_arr(extent)    
-    return chip
+    def __getitem__(self, i):
+        return tuple(d[i] for d in self.datasets)
 
-def show_windows(img, windows, window_labels, title=''):
-    from matplotlib import pyplot as plt
-    import matplotlib.patches as patches
-
-    fig, ax = plt.subplots(1, 1, squeeze=True, figsize=(8, 8))
-    ax.imshow(img, cmap='gray_r')
-    ax.axis('off')
-    
-    for w, label in zip(windows, window_labels):
-        if label == 'train':
-            color = 'blue'
-        elif label == 'val':
-            color = 'red'
-        elif label == 'test':
-            color = 'green'
-        
-        p = patches.Polygon(w.to_points(), edgecolor=color, linewidth=1, fill=False)
-        ax.add_patch(p)
-    
-    ax.autoscale()
-    ax.set_title(title)
-    plt.show()
-
-class CustomMinMaxTransformer(RasterTransformer):
-    """Transforms chips by scaling values in each channel to span a specified range."""
-
-    def __init__(self, min_val: Union[float, List[float]], max_val: Union[float, List[float]]):
-        """
-        Args:
-            min_val: Minimum value(s) for scaling. If a single value is provided, it will be broadcasted
-                across all channels. If a list of values is provided, it should match the number of channels.
-            max_val: Maximum value(s) for scaling. Same broadcasting rules as min_val apply.
-        """
-        self.min_val = min_val
-        self.max_val = max_val
-
-    def transform(self,
-                  chip: np.ndarray,
-                  channel_order: Optional[List[int]] = None) -> np.ndarray:
-        c = chip.shape[-1]
-        pixels = chip.reshape(-1, c)
-        
-        # Broadcasting if single value provided
-        if isinstance(self.min_val, (int, float)):
-            channel_mins = np.array([self.min_val] * c)
-        else:
-            channel_mins = np.array(self.min_val)
-        
-        if isinstance(self.max_val, (int, float)):
-            channel_maxs = np.array([self.max_val] * c)
-        else:
-            channel_maxs = np.array(self.max_val)
-        
-        chip_normalized = (chip - channel_mins) / (channel_maxs - channel_mins)
-        chip_normalized = np.clip(chip_normalized, 0, 1)  # Clip values to [0, 1] range
-        chip_normalized = (255 * chip_normalized).astype(np.uint8)
-        return chip_normalized
-          
-          
+    def __len__(self):
+        return min(len(d) for d in self.datasets)
+            
 class CustomGeoJSONVectorSource(VectorSource):
     """A :class:`.VectorSource` for reading GeoJSON files or GeoDataFrames."""
 
@@ -208,7 +225,6 @@ class CustomGeoJSONVectorSource(VectorSource):
         df = df.to_crs('epsg:4326')
         geojson = df.__geo_interface__
         return geojson
-
 
 class CustomRasterizedSource(RasterSource):
     def __init__(self,
@@ -302,8 +318,8 @@ class CustomRasterizedSource(RasterSource):
         if len(df) > 0 and 'class_id' not in df.columns:
             raise ValueError('All label polygons must have a class_id.')
 
-# custom class to normalise pixel values as z-scores
 class CustomStatsTransformer(RasterTransformer):
+    # custom class to normalise pixel values as z-scores
     def __init__(self,
                  means: Sequence[float],
                  stds: Sequence[float],
@@ -372,6 +388,52 @@ class CustomStatsTransformer(RasterTransformer):
         stats_transformer = cls(stats.means, stats.stds, max_stds=max_stds)
         return stats_transformer
 
+class FixedStatsTransformer(RasterTransformer):
+    def __init__(self, means, stds, max_stds: float = 3.):
+        
+        self.means = means
+        self.stds = stds
+        self.max_stds = max_stds
+
+    def transform(self,
+                  chip: np.ndarray,
+                  channel_order: Optional[Sequence[int]] = None) -> np.ndarray:
+        if chip.dtype == np.uint8:
+            return chip
+
+        means = np.array(self.means)
+        stds = np.array(self.stds)
+        max_stds = self.max_stds
+        if channel_order is not None:
+            means = means[channel_order]
+            stds = stds[channel_order]
+
+        # Don't transform NODATA zero values.
+        nodata_mask = chip == 0
+
+        # Convert chip to float (if not already)
+        chip = chip.astype(float)
+
+        # Subtract mean and divide by std to get z-scores.
+        for i in range(chip.shape[-1]):  # Loop over channels
+            chip[..., i] -= means[i]
+            chip[..., i] /= stds[i]
+
+        # Apply max_stds clipping
+        chip = np.clip(chip, -max_stds, max_stds)
+    
+        # Normalize to have standard deviation of 1
+        for i in range(chip.shape[-1]):
+            chip[..., i] /= np.std(chip[..., i])
+
+        chip[nodata_mask] = 0
+        
+        return chip
+
+    @classmethod
+    def create(cls, max_stds: float = 3.) -> 'FixedStatsTransformer':
+        return cls(max_stds=max_stds)
+
 class CustomSemanticSegmentationLabelSource(LabelSource):
     def __init__(self,
                  raster_source: RasterSource,
@@ -428,8 +490,148 @@ class CustomSemanticSegmentationLabelSource(LabelSource):
         else:
             return super().__getitem__(key)
 
-# Class to implement train, test, val split and show windows
+class PolygonWindowGeoDataset(GeoDataset):
+    def __init__(
+        self,
+        scene: Scene,
+        window_size: Union[PosInt, Tuple[PosInt, PosInt]],
+        out_size: Optional[Union[PosInt, Tuple[PosInt, PosInt]]] = None,
+        padding: Optional[Union[NonNegInt, Tuple[NonNegInt, NonNegInt]]] = None,
+        transform: Optional[A.BasicTransform] = None,
+        transform_type: Optional[TransformType] = None,
+        normalize: bool = True,
+        to_pytorch: bool = True,
+        return_window: bool = False,
+        within_aoi: bool = False,
+    ):
+        super().__init__(
+            scene=scene,
+            out_size=out_size,
+            within_aoi=within_aoi,
+            transform=transform,
+            transform_type=transform_type,
+            normalize=normalize,
+            to_pytorch=to_pytorch,
+            return_window=return_window,
+        )
+
+        self.window_size: tuple[PosInt, PosInt] = ensure_tuple(window_size)
+        self.padding = padding
+        if self.padding is None:
+            self.padding = (self.window_size[0] // 2, self.window_size[1] // 2)
+        self.padding: tuple[NonNegInt, NonNegInt] = ensure_tuple(self.padding)
+
+        self.windows = self.get_polygon_windows()
+
+    def get_polygon_windows(self) -> List[Box]:
+        """
+        Get a list of window coordinates around the labeled areas in the scene.
+        """
+        windows = []
+        for y in range(0, self.scene.extent.ymax, self.window_size[0]):
+            for x in range(0, self.scene.extent.xmax, self.window_size[1]):
+                window = Box(y, x, y + self.window_size[0], x + self.window_size[1])
+                if self.has_label_data(window):
+                    windows.append(window)
+        return windows
+
+    def has_label_data(self, window: Box) -> bool:
+        """
+        Check if the given window contains any labeled data (i.e., non-zero values).
+        """
+        x, y, w, h = window
+        label_arr = self.scene.label_source.get_label_arr(window)
+        return np.any(label_arr != 0)
+
+    def split_train_val_test(self, val_ratio: float = 0.2, test_ratio: float = 0.2, seed: int = None) -> Tuple['PolygonWindowGeoDataset', 'PolygonWindowGeoDataset', 'PolygonWindowGeoDataset']:
+        """
+        Split the dataset into training, validation, and test subsets.
+
+        Args:
+            val_ratio (float): Ratio of validation data to total data. Defaults to 0.2.
+            test_ratio (float): Ratio of test data to total data. Defaults to 0.2.
+            seed (int): Seed for the random number generator. Defaults to None.
+
+        Returns:
+            Tuple[PolygonWindowGeoDataset, PolygonWindowGeoDataset, PolygonWindowGeoDataset]: 
+                Training, validation, and test subsets as PolygonWindowGeoDataset objects.
+        """
+        assert 0.0 < val_ratio < 1.0, "val_ratio should be between 0 and 1."
+        assert 0.0 < test_ratio < 1.0, "test_ratio should be between 0 and 1."
+        assert val_ratio + test_ratio < 1.0, "Sum of val_ratio and test_ratio should be less than 1."
+
+        if seed is not None:
+            random.seed(seed)
+
+        # Calculate number of samples for validation, test, and training
+        num_samples = len(self)
+        num_val = int(val_ratio * num_samples)
+        num_test = int(test_ratio * num_samples)
+        num_train = num_samples - num_val - num_test
+
+        # Create indices for train, validation, and test subsets
+        indices = list(range(num_samples))
+        random.shuffle(indices)  # Shuffle indices randomly
+
+        val_indices = indices[:num_val]
+        test_indices = indices[num_val:num_val + num_test]
+        train_indices = indices[num_val + num_test:]
+
+        # Create new datasets for training, validation, and test
+        train_dataset = self._create_subset(train_indices)
+        val_dataset = self._create_subset(val_indices)
+        test_dataset = self._create_subset(test_indices)
+
+        return train_dataset, val_dataset, test_dataset
+
+    def __getitem__(self, index_or_indices):
+        if isinstance(index_or_indices, int):
+            if index_or_indices >= len(self):
+                raise StopIteration()
+            window = self.windows[index_or_indices]
+            return super().__getitem__(window)
+        elif isinstance(index_or_indices, slice) or isinstance(index_or_indices, list):
+            windows = [self.windows[i] for i in index_or_indices]
+            items = [super().__getitem__(w) for w in windows]
+            if self.return_window:
+                return [(item, w) for item, w in zip(items, windows)]
+            return items
+        else:
+            raise TypeError(f"Invalid index type: {type(index_or_indices)}")
+
+    def _create_subset(self, indices):
+        """
+        Create a subset of the dataset using specified indices.
+
+        Args:
+            indices (list): List of indices to include in the subset.
+
+        Returns:
+            PolygonWindowGeoDataset: Subset of the dataset.
+        """
+        subset = PolygonWindowGeoDataset(
+            scene=self.scene,
+            window_size=self.window_size,
+            out_size=self.out_size,
+            padding=self.padding,
+            transform=self.transform,
+            transform_type=self.transform_type,
+            normalize=self.normalize,
+            to_pytorch=self.to_pytorch,
+            return_window=self.return_window,
+            within_aoi=self.within_aoi
+        )
+
+        # Initialize subset's windows based on provided indices
+        subset.windows = [self.windows[i] for i in indices]
+
+        return subset
+
+    def __len__(self):
+        return len(self.windows)
+
 class CustomSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset):
+# Class to implement train, test, val split and show windows
 
     def __init__(self, *args, **kwargs):
         super().__init__(
@@ -477,7 +679,7 @@ class CustomSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset)
         test_dataset = self._create_subset(test_indices)
 
         return train_dataset, val_dataset, test_dataset
-
+    
     def _create_subset(self, indices):
         """
         Create a subset of the dataset using specified indices.
@@ -502,8 +704,55 @@ class CustomSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset)
 
         return subset  
     
-def query_buildings_data(con, xmin, ymin, xmax, ymax):
-    
+# Visulaization helper functions
+def show_windows(img, windows, window_labels, title=''):
+    from matplotlib import pyplot as plt
+    import matplotlib.patches as patches
+
+    fig, ax = plt.subplots(1, 1, squeeze=True, figsize=(12, 12))
+    ax.imshow(img, cmap='gray_r')
+    ax.axis('off')
+
+    for i, w in enumerate(windows):
+        if window_labels[i] == 'train':
+            color = 'blue'
+        elif window_labels[i] == 'val':
+            color = 'red'
+        elif window_labels[i] == 'test':
+            color = 'green'
+        else:
+            color = 'black'
+
+        rect = patches.Rectangle(
+            (w.xmin, w.ymin), w.width, w.height,
+            edgecolor=color, linewidth=2, fill=False
+        )
+        ax.add_patch(rect)
+
+    ax.set_title(title)
+    plt.show()
+
+def senitnel_create_full_image(source) -> np.ndarray:
+    extent = source.extent
+    chip = source.get_label_arr(extent)    
+    return chip
+
+def buil_create_full_image(source) -> np.ndarray:
+    extent = source.extent
+    chip = source._get_chip(extent)    
+    return chip
+
+
+# Function to get buildings from OMF
+def query_buildings_data(xmin, ymin, xmax, ymax):
+    import duckdb
+    con = duckdb.connect(os.path.join(grandparent_dir, 'data/0/data.db'))
+    con.install_extension('httpfs')
+    con.install_extension('spatial')
+    con.load_extension('httpfs')
+    con.load_extension('spatial')
+    con.execute("SET s3_region='us-west-2'")
+    con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
     query = f"""
         SELECT *
         FROM buildings
@@ -522,8 +771,31 @@ def query_buildings_data(con, xmin, ymin, xmax, ymax):
 
     return buildings
 
-### LABEL source ###
-def create_sentinel_raster_source(image_uri, label_uri, class_config, clip_to_label_source=False):
+
+### Functions to create raster sources ###
+def make_buildings_raster(image_path, labels_path, resolution=5):
+    gdf = gpd.read_file(labels_path)
+    gdf = gdf.to_crs('EPSG:4326')
+    xmin, ymin, xmax, ymax = gdf.total_bounds
+
+    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_path)
+    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymax)
+    crs_transformer_buildings.transform = affine_transform_buildings
+    
+    buildings = query_buildings_data(xmin, ymin, xmax, ymax)
+    print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
+    
+    buildings_vector_source = CustomGeoJSONVectorSource(
+        gdf = buildings,
+        crs_transformer = crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+    
+    rasterized_buildings_source = RasterizedSource(
+        buildings_vector_source,
+        background_class_id=0)
+    return rasterized_buildings_source, crs_transformer_buildings
+
+def make_sentinel_raster(image_uri, label_uri, class_config, clip_to_label_source=False):
     
     crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
 
@@ -547,76 +819,270 @@ def create_sentinel_raster_source(image_uri, label_uri, class_config, clip_to_la
         raster_sources=[sentinel_source_unnormalized],
         max_stds=3
     )
+    
+    # Define the means and stds in NIR-RGB order
+    nir_rgb_means =  [934.346, 1144.928, 1298.905, 2581.270]  # NIR, R, G, B
+    nir_rgb_stds = [244.423, 302.029, 458.048, 586.279]  # NIR, R, G, B
 
+    fixed_stats_transformer = FixedStatsTransformer(
+        means=nir_rgb_means,
+        stds=nir_rgb_stds)
+    
     # Define a normalized raster source using the calculated transformer
-    if clip_to_label_source:
-        sentinel_source_normalized = RasterioSource(
-            image_uri,
-            allow_streaming=True,
-            raster_transformers=[calc_stats_transformer],
-            channel_order=[2, 1, 0, 3],
-            bbox=label_source.bbox
-        )
-    else:
-        sentinel_source_normalized = RasterioSource(
-            image_uri,
-            allow_streaming=True,
-            raster_transformers=[calc_stats_transformer],
-            channel_order=[2, 1, 0, 3],
-        )
+    sentinel_source_normalized = RasterioSource(
+        image_uri,
+        allow_streaming=True,
+        raster_transformers=[calc_stats_transformer],
+        channel_order=[3, 2, 1, 0],
+        bbox=label_source.bbox if clip_to_label_source else None
+    )
 
     print(f"Loaded Sentinel data of size {sentinel_source_normalized.shape}, and dtype: {sentinel_source_normalized.dtype}")
-    return sentinel_source_normalized, sentinel_label_raster_source
+    return sentinel_source_normalized, label_source
 
-def create_buildings_raster_source(buildings_uri, image_uri, label_uri, class_config, resolution=5):
-    gdf = gpd.read_file(label_uri)
-    gdf = gdf.to_crs('EPSG:3857')
-    xmin, _, _, ymax = gdf.total_bounds
+
+### Create scenes functions ###
+def create_sentinel_scene(city_data, class_config):
+    image_path = city_data['image_path']
+    labels_path = city_data['labels_path']
+
+    sentinel_source_normalized, sentinel_label_raster_source = make_sentinel_raster(
+        image_path, labels_path, class_config, clip_to_label_source=True
+    )
     
-    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymax)
-    crs_transformer_buildings.transform = affine_transform_buildings
+    sentinel_scene = Scene(
+        id='scene_sentinel',
+        raster_source=sentinel_source_normalized,
+        label_source=sentinel_label_raster_source
+    )
+    return sentinel_scene
 
-    buildings_vector_source = GeoJSONVectorSource(
-        buildings_uri,
-        crs_transformer = crs_transformer_buildings,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+def create_buildings_scene(city_data, city_name):
+    image_path = city_data['image_path']
+    labels_path = city_data['labels_path']
+
+    # Create Buildings scene
+    rasterized_buildings_source, crs_transformer_buildings = make_buildings_raster(image_path, labels_path, resolution=5)
     
-    rasterized_buildings_source = RasterizedSource(
-        buildings_vector_source,
-        background_class_id=0)
-
-    print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
-
-    label_vector_source = GeoJSONVectorSource(label_uri,
+    label_vector_source = GeoJSONVectorSource(labels_path,
         crs_transformer_buildings,
-        vector_transformers=[
-            ClassInferenceTransformer(
-                default_class_id=class_config.get_class_id('slums'))])
-
+        vector_transformers=[ClassInferenceTransformer(default_class_id=class_config.get_class_id('slums'))])
+    
     label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-    buildings_label_source = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
+    buildings_label_sourceSD = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
+    
+    buildings_scene = Scene(
+        id=f'{city_name}_buildings',
+        raster_source=rasterized_buildings_source,
+        label_source = buildings_label_sourceSD)
 
-    return rasterized_buildings_source, buildings_label_source, crs_transformer_buildings
+    return buildings_scene
+    
+def create_scenes_for_city(city_name, city_data, class_config, resolution=5):
+    image_path = city_data['image_path']
+    labels_path = city_data['labels_path']
 
-def create_datasets(scene, imgsize=256, stride = 256, padding=50, val_ratio=0.2, test_ratio=0.1, seed=42):
+    # Create Sentinel scene
+    sentinel_source_normalized, sentinel_label_raster_source = make_sentinel_raster(
+        image_path, labels_path, class_config, clip_to_label_source=True
+    )
+    
+    sentinel_scene = Scene(
+        id=f'{city_name}_sentinel',
+        raster_source=sentinel_source_normalized,
+        label_source=sentinel_label_raster_source
+    )
+
+    # Create Buildings scene
+    rasterized_buildings_source, crs_transformer_buildings = make_buildings_raster(image_path, labels_path, resolution=resolution)
+    
+    label_vector_source = GeoJSONVectorSource(labels_path,
+        crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=class_config.get_class_id('slums'))])
+    
+    label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
+    buildings_label_sourceSD = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
+    
+    buildings_scene = Scene(
+        id=f'{city_name}_buildings',
+        raster_source=rasterized_buildings_source,
+        label_source = buildings_label_sourceSD)
+
+    return sentinel_scene, buildings_scene
+
+
+### Functions to create sliding window datasets ###
+def create_datasets(scene, imgsize=256, stride = 256, padding=50, val_ratio=0.2, test_ratio=0.1, augment = False, seed=42):
+  
+    data_augmentation_transform = A.Compose([
+        A.HorizontalFlip(p=1.0), # Flip every image horizontally
+        A.Rotate(limit=(180, 180), p=1.0), # Rotate every image by exactly 180 degrees
+    ])
     
     full_dataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
         scene=scene,
         size=imgsize,
         stride=stride,
         out_size=imgsize,
-        padding=padding)
+        padding=padding,
+        transform=data_augmentation_transform if augment else None)
 
     # Splitting dataset into train, validation, and test
     train_dataset, val_dataset, test_dataset = full_dataset.split_train_val_test(
         val_ratio=val_ratio, test_ratio=test_ratio, seed=seed)
 
-    print(f"Train dataset length: {len(train_dataset)}")
-    print(f"Validation dataset length: {len(val_dataset)}")
-    print(f"Test (hold-out) dataset length: {len(test_dataset)}")
-    
     return full_dataset, train_dataset, val_dataset, test_dataset
+
+
+
+
+
+# From STAC
+# BANDS = [
+#     'blue', # B02
+#     'green', # B03
+#     'red', # B04
+#     'nir', # B08
+# ]
+# URL = 'https://earth-search.aws.element84.com/v1'
+# catalog = pystac_client.Client.open(URL)
+
+# bbox = Box(ymin=ymin4326, xmin=xmin4326, ymax=ymax4326, xmax=xmax4326)
+# bbox_geometry = {
+#         'type': 'Polygon',
+#         'coordinates': [
+#             [
+#                 (xmin4326, ymin4326),
+#                 (xmin4326, ymax4326),
+#                 (xmax4326, ymax4326),
+#                 (xmax4326, ymin4326),
+#                 (xmin4326, ymin4326)
+#             ]
+#         ]
+#     }
+
+def save_sentinel_mosaic_as_geotiff(sentinel_source, bbox, crs):
+    # Create a temporary file
+    temp_dir = tempfile.gettempdir()
+    temp_file = os.path.join(temp_dir, 'sentinel_mosaic.tif')
+    
+    # Get the data and metadata
+    data = sentinel_source.data_array.values
+    height, width, num_bands = data.shape
+    
+    # Create the transform
+    transform = from_bounds(bbox[0], bbox[1], bbox[2], bbox[3], width, height)
+    
+    # Save as GeoTIFF
+    with rasterio.open(temp_file, 'w', driver='GTiff', height=height, width=width, 
+                       count=num_bands, dtype=data.dtype, crs=crs, transform=transform) as dst:
+        for i in range(num_bands):
+            dst.write(data[:,:,i], i+1)
+    
+    return temp_file
+
+def get_sentinel_items(bbox_geometry, bbox):
+    items = catalog.search(
+        intersects=bbox_geometry,
+        collections=['sentinel-2-c1-l2a'],
+        datetime='2023-01-01/2024-06-27',
+        query={'eo:cloud_cover': {'lt': 10}},
+        # Remove max_items=1 to get multiple items
+    ).item_collection()
+    
+    if not items:
+        print("No items found for this area.")
+        return None
+    # items = get_sentinel_items(bbox_geometry, bbox)
+
+    return items
+
+def create_sentinel_mosaic(items, bbox):
+    # Create the initial XarraySource with temporal=True
+    sentinel_source = XarraySource.from_stac(
+        items,
+        bbox_map_coords=tuple(bbox),
+        stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
+        allow_streaming=True,
+        temporal=True
+    )
+    
+    print(f"Initial data shape: {sentinel_source.data_array.shape}")
+    print(f"Initial bbox: {sentinel_source.bbox}")
+    print(f"Data coordinates: {sentinel_source.data_array.coords}")
+    
+    crs_transformer = sentinel_source.crs_transformer
+    
+    # Get the CRS of the data
+    data_crs = sentinel_source.crs_transformer.image_crs
+    
+    # Use the original bbox of the data
+    data_bbox = sentinel_source.bbox
+    
+    print(f"Data bbox: {data_bbox}")
+    
+    # Apply mosaic function to combine the temporal dimension
+    mosaic_data = sentinel_source.data_array.median(dim='time')
+    
+    print(f"Mosaic data shape: {mosaic_data.shape}")
+    print(f"Mosaic data coordinates: {mosaic_data.coords}")
+    
+    # Create a temporary XarraySource from the mosaicked data
+    temp_mosaic_source = XarraySource(
+        mosaic_data,
+        crs_transformer=sentinel_source.crs_transformer,
+        bbox=data_bbox,
+        channel_order=[2, 1, 0, 3],  # Assuming you want RGB-NIR order
+        temporal=False
+    )
+    
+    # Calculate stats transformer
+    calc_stats_transformer = CustomStatsTransformer.from_raster_sources(
+        raster_sources=[temp_mosaic_source],
+        max_stds=3
+    )
+    
+    # Create the final normalized XarraySource
+    normalized_mosaic_source = XarraySource(
+        mosaic_data,
+        crs_transformer=sentinel_source.crs_transformer,
+        bbox=data_bbox,
+        channel_order=[2, 1, 0, 3],  # Assuming you want RGB-NIR order
+        temporal=False,
+        raster_transformers=[calc_stats_transformer]
+    )
+    
+    print(f"Created normalized mosaic of size {normalized_mosaic_source.shape}, and dtype: {normalized_mosaic_source.dtype}")
+    print(f"Normalized mosaic bbox: {normalized_mosaic_source.bbox}")
+    print(f"Data CRS: {data_crs}")
+    # sentinel_source_SD, crs_transformer = create_sentinel_mosaic(items, bbox)
+
+    return normalized_mosaic_source, crs_transformer
+
+def display_mosaic(mosaic_source):
+    print(f"Mosaic source shape: {mosaic_source.shape}")
+    
+    if mosaic_source.shape[0] == 0 or mosaic_source.shape[1] == 0:
+        print("The mosaic has zero width or height. There might be no data for the specified region.")
+        return
+    
+    chip = mosaic_source[:, :, [0, 1, 2]]  # RGB channels
+    
+    print(f"Chip shape: {chip.shape}")
+    print(f"Chip min: {np.min(chip)}, max: {np.max(chip)}")
+    
+    # For normalized data, we might want to clip to a reasonable range
+    vmin, vmax = -3, 3
+    normalized_chip = np.clip(chip, vmin, vmax)
+    
+    # Scale to [0, 1] for display
+    normalized_chip = (normalized_chip - vmin) / (vmax - vmin)
+    
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    im = ax.imshow(normalized_chip, interpolation='nearest', aspect='equal')
+    ax.set_title("Normalized Mosaic RGB")
+    plt.colorbar(im, ax=ax)
+    plt.show()
 
 if __name__ == "__main__":
     label_uri = "../../data/0/SantoDomingo3857.geojson"
@@ -653,16 +1119,6 @@ if __name__ == "__main__":
         sns.kdeplot(band_data, shade=True, label=f'Band {band}', color=plt.cm.viridis(band / num_bands))
     plt.legend()
     plt.grid(True)
-    plt.show()
-
-    ### Buildings Source ###
-    buildings_uri = '../../data/0/overture/santodomingo_buildings.geojson'
-    rasterized_buildings_source = create_buildings_raster_source(buildings_uri=buildings_uri, image_uri=image_uri, label_uri =label_uri, resolution=5, class_config=class_config)
-
-    # show buildings
-    chip = rasterized_buildings_source[:, :]
-    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-    ax.imshow(chip, cmap="gray")
     plt.show()
 
     ### Scenes ###
