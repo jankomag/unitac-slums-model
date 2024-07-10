@@ -1,52 +1,96 @@
 {
-    "deeplabv3_sentinel": {
+    "deeplabv3_multimodal": {
+        "TegucigalpaHND": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    1096864.0,
+                    0.0
+                ],
+                [
+                    282842.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 282842.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
+        },
         "SantoDomingoDOM": {
             "class_id": 1,
             "class_name": "slums",
             "conf_mat": [
                 [
-                    2027503.0,
-                    5515.0
+                    1996924.0,
+                    0.0
                 ],
                 [
-                    117240.0,
-                    60786.0
+                    214120.0,
+                    0.0
                 ]
             ],
-            "gt_count": 178026.0,
+            "gt_count": 214120.0,
             "metrics": {
-                "f1": 0.49757906412308095,
-                "precision": 0.9168187508484035,
-                "recall": 0.3414445081055576,
-                "sensitivity": 0.3414445081055576,
-                "specificity": 0.9972872842247339
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
             },
-            "pred_count": 66301.0
-        }
-    },
-    "deeplabv3_buildings": {
-        "SantoDomingoDOM": {
+            "pred_count": 0.0
+        },
+        "GuatemalaCity": {
             "class_id": 1,
             "class_name": "slums",
             "conf_mat": [
                 [
-                    7959764.0,
-                    168695.0
+                    5805809.0,
+                    0.0
                 ],
                 [
-                    377321.0,
-                    334638.0
+                    47865.0,
+                    0.0
                 ]
             ],
-            "gt_count": 711959.0,
+            "gt_count": 47865.0,
             "metrics": {
-                "f1": 0.5507120922379148,
-                "precision": 0.6648441489034098,
-                "recall": 0.4700242570148,
-                "sensitivity": 0.4700242570148,
-                "specificity": 0.979246373759159
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
             },
-            "pred_count": 503333.0
+            "pred_count": 0.0
+        },
+        "BelizeCity": {
+            "class_id": 1,
+            "class_name": "slums",
+            "conf_mat": [
+                [
+                    155953.0,
+                    0.0
+                ],
+                [
+                    25532.0,
+                    0.0
+                ]
+            ],
+            "gt_count": 25532.0,
+            "metrics": {
+                "f1": NaN,
+                "precision": NaN,
+                "recall": 0.0,
+                "sensitivity": 0.0,
+                "specificity": 1.0
+            },
+            "pred_count": 0.0
         }
     }
 }

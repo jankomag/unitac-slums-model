@@ -33,7 +33,40 @@ from rastervision.core.data.utils import AoiSampler
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
 from rastervision.pytorch_learner.dataset.transform import (TransformType,
                                                             TF_TYPE_TO_TF_FUNC)
+from typing import TYPE_CHECKING, Optional, Sequence, Union
+from torch.utils.data import SubsetRandomSampler
+import torch
+import numpy as np
+import matplotlib.colors as mcolors
+import matplotlib.patches as mpatches
 
+from rastervision.pytorch_learner.dataset.visualizer import Visualizer  # NOQA
+from rastervision.pytorch_learner.utils import (
+    color_to_triple, plot_channel_groups, channel_groups_to_imgs)
+
+if TYPE_CHECKING:
+    from matplotlib.pyplot import Axes
+    from matplotlib.colors import Colormap
+
+from typing import (TYPE_CHECKING, Sequence, Optional, List, Dict, Union,
+                    Tuple, Any)
+from abc import ABC, abstractmethod
+
+from torch import Tensor
+import albumentations as A
+import matplotlib.pyplot as plt
+
+from rastervision.pipeline.file_system import make_dir
+from rastervision.core.data import ClassConfig
+from rastervision.pytorch_learner.utils import (
+    deserialize_albumentation_transform, validate_albumentation_transform,
+    MinMaxNormalize)
+from rastervision.pytorch_learner.learner_config import (
+    RGBTuple,
+    ChannelInds,
+    validate_channel_display_groups,
+    get_default_channel_display_groups,
+)
 if TYPE_CHECKING:
     from shapely.geometry import MultiPolygon, Polygon
 
@@ -62,7 +95,7 @@ from rastervision.core.data import (ClassConfig, GeoJSONVectorSourceConfig, GeoJ
                                     RasterizedSource, Scene, StatsTransformer, ClassInferenceTransformer,
                                     VectorSourceConfig, VectorSource, XarraySource, CRSTransformer,
                                     IdentityCRSTransformer, RasterioCRSTransformer,
-                                    SemanticSegmentationLabelSource)
+                                    SemanticSegmentationLabelSource, RasterizerConfig)
 from rastervision.core.data.label_source.label_source import LabelSource
 from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.core.data.utils import pad_to_window_size
@@ -109,15 +142,19 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-
 import random
 from typing import Tuple, List, Union, Optional
 from rastervision.core.box import Box
 from rastervision.core.data import Scene
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
 from rastervision.pytorch_learner.dataset.dataset import GeoDataset
+from rastervision.pytorch_learner import SemanticSegmentationVisualizer
 import numpy as np
 import albumentations as A
+
+class_config = ClassConfig(names=['background', 'slums'], 
+                                colors=['lightgray', 'darkred'],
+                                null_class='background')
 
 cities = {
     'SanJoseCRI': {
@@ -133,7 +170,7 @@ cities = {
     'SantoDomingoDOM': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
-        'use_augmentation': True
+        'use_augmentation': False
     },
     'GuatemalaCity': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
@@ -231,6 +268,14 @@ class CustomGeoJSONVectorSource(VectorSource):
         df = df.to_crs('epsg:4326')
         geojson = df.__geo_interface__
         return geojson
+
+class CustomRasterizerConfig(RasterizerConfig):
+    background_class_id: int = 0
+
+    def build(self):
+        def custom_rasterizer(features):
+            return np.where(features == 1, 1.0, np.where(features == 2, 0.5, 0.0))
+        return custom_rasterizer
 
 class CustomRasterizedSource(RasterSource):
     def __init__(self,
@@ -410,9 +455,9 @@ class FixedStatsTransformer(RasterTransformer):
         means = np.array(self.means)
         stds = np.array(self.stds)
         max_stds = self.max_stds
-        if channel_order is not None:
-            means = means[channel_order]
-            stds = stds[channel_order]
+        # if channel_order is not None:
+        #     means = means[channel_order]
+        #     stds = stds[channel_order]
 
         # Don't transform NODATA zero values.
         nodata_mask = chip == 0
@@ -637,7 +682,7 @@ class PolygonWindowGeoDataset(GeoDataset):
         return len(self.windows)
 
 class CustomSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset):
-# Class to implement train, test, val split and show windows
+# Class to implement train, test, val split
 
     def __init__(self, *args, **kwargs):
         super().__init__(
@@ -710,8 +755,34 @@ class CustomSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset)
 
         return subset  
     
+class CustomRasterizedSource(RasterizedSource):
+        def _get_chip(self, window: 'Box', out_shape: Optional[Tuple[int, int]] = None) -> np.ndarray:
+            window = window.to_global_coords(self.bbox)
+            chip = geoms_to_raster(
+                self.df,
+                window,
+                background_class_id=self.background_class_id,
+                all_touched=self.all_touched)
+            
+            # Custom rasterization logic
+            chip = np.where(chip == 1, 1.0, np.where(chip == 2, 0.5, 0.0))
+
+            if out_shape is not None:
+                chip = self.resize(chip, out_shape)
+
+            # Add third singleton dim since rasters must have >=1 channel.
+            return np.expand_dims(chip, 2)
 
 # Visulaization helper functions
+# Preview Sentinel and Buildings batches
+vis_sent = SemanticSegmentationVisualizer(
+    class_names=class_config.names, class_colors=class_config.colors,
+    channel_display_groups={'RGB': (1,2,3), 'NIR': (0, )})
+
+vis_build = SemanticSegmentationVisualizer(
+    class_names=class_config.names, class_colors=class_config.colors,
+    channel_display_groups={'Buildings': (0,)})
+
 def show_windows(img, windows, window_labels, title=''):
     from matplotlib import pyplot as plt
     import matplotlib.patches as patches
@@ -735,6 +806,11 @@ def show_windows(img, windows, window_labels, title=''):
             edgecolor=color, linewidth=2, fill=False
         )
         ax.add_patch(rect)
+        
+        # Add index number as small text in the top-left corner
+        ax.text(w.xmin + 2, w.ymin + 2, str(i), 
+                color='white', fontsize=8, fontweight='bold',
+                bbox=dict(facecolor=color, edgecolor='none', alpha=0.7, pad=0.2))
 
     ax.set_title(title)
     plt.show()
@@ -810,7 +886,7 @@ def query_roads_data(xmin, ymin, xmax, ymax):
 
 def query_poi_data(xmin, ymin, xmax, ymax):
     # Initialize DuckDB connection
-    con = duckdb.connect(':memory:')
+    con = duckdb.connect(os.path.join(grandparent_dir, 'data/0/data.db'))
     con.install_extension('spatial')
     con.install_extension('httpfs')
     con.load_extension('spatial')
@@ -824,13 +900,17 @@ def query_poi_data(xmin, ymin, xmax, ymax):
         categories.main AS category,
         ROUND(confidence, 2) AS confidence,
         ST_GeomFromWKB(geometry) AS geometry
-    FROM read_parquet('s3://overturemaps-us-west-2/release/2024-06-13-beta.1/theme=places/*/*')
+    FROM pois
     WHERE
         bbox.xmin > {xmin} AND bbox.xmax < {xmax}
         AND bbox.ymin > {ymin} AND bbox.ymax < {ymax}
     """
     poi_df = con.execute(poi_query).df()
-    poi_gdf = gpd.GeoDataFrame(poi_df, geometry='geometry', crs='EPSG:4326')
+    if not poi_df.empty:
+        poi_gdf = gpd.GeoDataFrame(poi_df, geometry=gpd.GeoSeries.from_wkb(poi_df.geometry.apply(bytes)), crs='EPSG:4326')
+        poi_gdf = poi_gdf[['id', 'geometry','name','category','confidence']]
+        poi_gdf = poi_gdf.to_crs("EPSG:3857")
+        poi_gdf['class_id'] = 3
 
     print(f"POI data loaded successfully with {len(poi_gdf)} total POIs.")
 
@@ -840,14 +920,16 @@ def query_poi_data(xmin, ymin, xmax, ymax):
 ### Functions to create raster sources ###
 def make_buildings_raster(image_path, labels_path, resolution=5):
     gdf = gpd.read_file(labels_path)
-    gdf = gdf.to_crs('EPSG:4326')
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-
+    gdf = gdf.to_crs('EPSG:3857')
+    xmin3857, ymin3857, xmax3857, ymax3857 = gdf.total_bounds
+    
     crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_path)
-    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymax)
+    affine_transform_buildings = Affine(resolution, 0, xmin3857, 0, -resolution, ymax3857)
     crs_transformer_buildings.transform = affine_transform_buildings
     
-    buildings = query_buildings_data(xmin, ymin, xmax, ymax)
+    gdf = gdf.to_crs('EPSG:4326')
+    xmin4326, ymin4326, xmax4326, ymax4326 = gdf.total_bounds
+    buildings = query_buildings_data(xmin4326, ymin4326, xmax4326, ymax4326)
     print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
     
     buildings_vector_source = CustomGeoJSONVectorSource(
@@ -855,9 +937,20 @@ def make_buildings_raster(image_path, labels_path, resolution=5):
         crs_transformer = crs_transformer_buildings,
         vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
     
+    label_vector_source = GeoJSONVectorSource(labels_path,
+        crs_transformer_buildings,
+        vector_transformers=[
+            ClassInferenceTransformer(
+                default_class_id=class_config.get_class_id('slums'))])
+    
+    sentinel_label_raster_source = RasterizedSource(label_vector_source, background_class_id=class_config.null_class_id)
+    label_source = SemanticSegmentationLabelSource(sentinel_label_raster_source, class_config=class_config)
+    
     rasterized_buildings_source = RasterizedSource(
         buildings_vector_source,
-        background_class_id=0)
+        background_class_id=0,
+        bbox=label_source.bbox)
+    
     return rasterized_buildings_source, crs_transformer_buildings
 
 def make_sentinel_raster(image_uri, label_uri, class_config, clip_to_label_source=False):
@@ -875,19 +968,19 @@ def make_sentinel_raster(image_uri, label_uri, class_config, clip_to_label_sourc
     print(f"Loaded SemanticSegmentationLabelSource: {sentinel_label_raster_source.shape}")
 
     # Define an unnormalized raster source
-    sentinel_source_unnormalized = RasterioSource(
-        image_uri,
-        allow_streaming=True)
+    # sentinel_source_unnormalized = RasterioSource(
+    #     image_uri,
+    #     allow_streaming=True)
 
-    # Calculate statistics transformer from the unnormalized source
-    calc_stats_transformer = CustomStatsTransformer.from_raster_sources(
-        raster_sources=[sentinel_source_unnormalized],
-        max_stds=3
-    )
+    # # Calculate statistics transformer from the unnormalized source
+    # calc_stats_transformer = CustomStatsTransformer.from_raster_sources(
+    #     raster_sources=[sentinel_source_unnormalized],
+    #     max_stds=3
+    # )
     
     # Define the means and stds in NIR-RGB order
-    nir_rgb_means =  [934.346, 1144.928, 1298.905, 2581.270]  # NIR, R, G, B
-    nir_rgb_stds = [244.423, 302.029, 458.048, 586.279]  # NIR, R, G, B
+    nir_rgb_means = [2581.270, 1298.905, 1144.928, 934.346]  # NIR, R, G, B
+    nir_rgb_stds = [586.279, 458.048, 302.029, 244.423]  # NIR, R, G, B
 
     fixed_stats_transformer = FixedStatsTransformer(
         means=nir_rgb_means,
@@ -897,7 +990,7 @@ def make_sentinel_raster(image_uri, label_uri, class_config, clip_to_label_sourc
     sentinel_source_normalized = RasterioSource(
         image_uri,
         allow_streaming=True,
-        raster_transformers=[calc_stats_transformer],
+        raster_transformers=[fixed_stats_transformer],
         channel_order=[3, 2, 1, 0],
         bbox=label_source.bbox if clip_to_label_source else None
     )
@@ -905,7 +998,7 @@ def make_sentinel_raster(image_uri, label_uri, class_config, clip_to_label_sourc
     print(f"Loaded Sentinel data of size {sentinel_source_normalized.shape}, and dtype: {sentinel_source_normalized.dtype}")
     return sentinel_source_normalized, label_source
 
-def make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_buffer=10):
+def make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_buffer=2):
     gdf = gpd.read_file(labels_path)
     gdf = gdf.to_crs('EPSG:4326')
     xmin, ymin, xmax, ymax = gdf.total_bounds
@@ -916,31 +1009,32 @@ def make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_
 
     # Query buildings
     buildings = query_buildings_data(xmin, ymin, xmax, ymax)
+    buildings['class_id'] = 1  # Assign class_id 1 to buildings
     print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
 
     # Query roads
     roads = query_roads_data(xmin, ymin, xmax, ymax)
+    roads['class_id'] = 2  # Assign class_id 2 to roads
     print(f"Roads data loaded successfully with {len(roads)} total road segments.")
 
     # Buffer the roads
     roads_buffered = roads.copy()
     roads_buffered['geometry'] = roads_buffered.geometry.buffer(road_buffer)
 
-    # Combine buffered roads and buildings
     combined_gdf = pd.concat([buildings, roads_buffered], ignore_index=True)
 
-    combined_vector_source = CustomGeoJSONVectorSource(
+    buildings_vector_source = CustomGeoJSONVectorSource(
         gdf=combined_gdf,
         crs_transformer=crs_transformer,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)]
+        vector_transformers=[]
     )
 
-    rasterized_combined_source = RasterizedSource(
-        combined_vector_source,
+    rasterized_source = CustomRasterizedSource(
+        buildings_vector_source,
         background_class_id=0
     )
 
-    return rasterized_combined_source, crs_transformer
+    return rasterized_source, crs_transformer
 
 
 ### Create scenes functions ###
@@ -959,7 +1053,7 @@ def create_sentinel_scene(city_data, class_config):
     )
     return sentinel_scene
 
-def create_building_scene(city_data, city_name):
+def create_building_scene(city_name, city_data):
     image_path = city_data['image_path']
     labels_path = city_data['labels_path']
 
@@ -1035,9 +1129,7 @@ def create_datasets(scene, imgsize=256, stride = 256, padding=50, val_ratio=0.2,
 
     return full_dataset, train_dataset, val_dataset, test_dataset
 
-
-# # Testing for roads source
-# belize_data = cities['Managua']
+# belize_data = cities['SantoDomingoDOM']
 # image_path = belize_data['image_path']
 # labels_path = belize_data['labels_path']
 
@@ -1045,9 +1137,10 @@ def create_datasets(scene, imgsize=256, stride = 256, padding=50, val_ratio=0.2,
 # gdf = gdf.to_crs('EPSG:4326')
 # xmin, ymin, xmax, ymax = gdf.total_bounds
 # roads = query_roads_data(xmin, ymin, xmax, ymax)
-# buildings = query_buildings_data(xmin, ymin, xmax, ymax)
+# # buildings = query_buildings_data(xmin, ymin, xmax, ymax)
+# pois = query_poi_data(xmin, ymin, xmax, ymax)
 # from lonboard import viz
-# viz(buildings)
+# viz(roads)
 
 # class_config = ClassConfig(names=['background', 'slums'], 
 #                                 colors=['lightgray', 'darkred'],

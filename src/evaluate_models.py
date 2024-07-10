@@ -22,7 +22,7 @@ sys.path.append(parent_dir)
 from src.models.model_definitions import (BuildingsDeepLabV3, MultiResPredictionsIterator, MultiResolutionDeepLabV3,
                                           SentinelDeepLabV3, PredictionsIterator, CustomVectorOutputConfig,
                                           create_predictions_and_ground_truth_plot)
-from src.data.dataloaders import (query_buildings_data, create_datasets, create_sentinel_raster_source,CustomGeoJSONVectorSource)
+from src.features.dataloaders import (cities, query_buildings_data, create_datasets, create_sentinel_scene, CustomGeoJSONVectorSource)
 
 # Define device
 if not torch.backends.mps.is_available():
@@ -34,33 +34,13 @@ else:
     device = torch.device("mps")
     print("MPS is available.")
 
-models = {
-    'deeplabv3_sentinel': {
-        'name': 'deeplabv3_sentinel',
-        'framework': 'pytorch',
-        'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/sentinel_only/DLV3/last.ckpt")
-    },
-    'deeplabv3_buildings': {
-        'name': 'deeplabv3_buildings',
-        'framework': 'pytorch',
-        'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/buildings_only/DLV3/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt")
-    }#,
-    # 'deeplabv3_multimodal': {
-    #     'name': 'deeplabv3_multimodal',
-    #     'framework': 'pytorch',
-    #     'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_epoch=13-val_loss=0.1777.ckpt")
-    # }#, 'pixel_based_RF': {
-    #     'framework': 'scikit_learn',
-    #     'weights_path': ''
-    # },
-}
 
 cities = {
-    'SanJoseCRI': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_San_Jose_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
-        'use_augmentation': False
-    },
+    # 'SanJoseCRI': {
+    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_SanJose_2024.tif'),
+    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
+    #     'use_augmentation': False
+    # },
     'TegucigalpaHND': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
@@ -72,27 +52,54 @@ cities = {
         'use_augmentation': True
     },
     'GuatemalaCity': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/GTM_Chimaltenango_2023.tif'),
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/Guatemala_PS.shp'),
         'use_augmentation': False
     },
-    'Managua': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
-        'use_augmentation': False
-    },
-    'Panama': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/PAN_San_Miguelito_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
-        'use_augmentation': False
-    },
-    'SanSalvador_PS': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_Delgado_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
-        'use_augmentation': False
-    }
-    # 'BelizeCity': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/_2023.tif'), 'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')},
-    # 'Belmopan': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/_2023.tif'), 'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')}
+    # 'Managua': {
+    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
+    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
+    #     'use_augmentation': False
+    # },
+    # 'Panama': {
+    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/PAN_Panama_2024.tif'),
+    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
+    #     'use_augmentation': False
+    # },
+    # 'SanSalvador_PS': {
+    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
+    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
+    #     'use_augmentation': False
+    # },
+    'BelizeCity': {
+        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
+        'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')
+        }#,
+    # 'Belmopan': {
+    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
+    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')
+    #     }
+}
+
+models = {
+    # 'deeplabv3_sentinel': {
+    #     'name': 'deeplabv3_sentinel',
+    #     'framework': 'pytorch',
+    #     'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/sentinel_only/DLV3/last.ckpt")
+    # },
+    # 'deeplabv3_buildings': {
+    #     'name': 'deeplabv3_buildings',
+    #     'framework': 'pytorch',
+    #     'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/buildings_only/DLV3/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt")
+    # }#,
+    'deeplabv3_multimodal': {
+        'name': 'deeplabv3_multimodal',
+        'framework': 'pytorch',
+        'weights_path': os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/all_DLV3/last-v2.ckpt")
+    }#, 'pixel_based_RF': {
+    #     'framework': 'scikit_learn',
+    #     'weights_path': ''
+    # },
 }
 
 class_config = ClassConfig(names=['background', 'slums'], 
@@ -167,21 +174,13 @@ def prepare_data_for_deeplabv3_buildings(image_path, labels_path, buildings_rast
     
     return (BuilScene, location_labels)
 
-def prepare_data_for_deeplabv3_multimodal(image_path, labels_path, buildings_raster):
+def prepare_data_for_deeplabv3_multimodal(location_name, image_path, labels_path, buildings_raster):
     
     ### Load Senitnel data ###
-    sentinel_source_normalized, sentinel_label_raster_source = create_sentinel_raster_source(image_path, labels_path, class_config, clip_to_label_source=True)
-    
-    chip = sentinel_source_normalized[:, :, [0, 1, 2]]
-    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-    ax.imshow(chip)
-    plt.show()
-    
-    SentinelScene = Scene(
-        id='santodomingo_sentinel',
-        raster_source = sentinel_source_normalized,
-        label_source = sentinel_label_raster_source)
-    
+    citydata = cities['{}'.format(location_name)]
+    SentinelScene = create_sentinel_scene(citydata, class_config)
+    # sentinelGeoDataset, _, _, _ = create_datasets(SentinelScene, imgsize=256, stride=128, padding=0, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
+
     ### Load building data ###
     gdf = gpd.read_file(labels_path)
     gdf = gdf.to_crs('EPSG:4326')
@@ -312,15 +311,15 @@ def load_model(model_info):
 
     if model_info['framework'] == 'pytorch':
         if model_info['name'] == 'deeplabv3_multimodal':
-            model = MultiResolutionDeepLabV3(buil_channels=16, buil_kernel1=3)
+            model = MultiResolutionDeepLabV3(buil_channels=64, buil_kernel1=3)
             checkpoint = torch.load(model_info['weights_path'])
             state_dict = checkpoint['state_dict']
             model.load_state_dict(state_dict)
+            model.to(device)
         elif model_info['name'] == 'deeplabv3_buildings':
             model = BuildingsDeepLabV3.load_from_checkpoint(model_info['weights_path'])
         elif model_info['name'] == 'deeplabv3_sentinel':
             model = SentinelDeepLabV3.load_from_checkpoint(model_info['weights_path'])
-            pass  # Replace with actual loading code
     elif model_info['framework'] == 'scikit_learn':
         # Add logic to load scikit-learn model if needed
         pass  # Replace with actual loading code
@@ -361,7 +360,7 @@ def run_evaluations(locations, models):
             elif model_name == 'deeplabv3_buildings':
                 data = prepare_data_for_deeplabv3_buildings(image_path, labels_path, buildings_raster)
             elif model_name == 'deeplabv3_multimodal':
-                data = prepare_data_for_deeplabv3_multimodal(image_path, labels_path, buildings_raster)
+                data = prepare_data_for_deeplabv3_multimodal(location_name, image_path, labels_path, buildings_raster)
             else:
                 raise ValueError("Model preparation function not found")
             

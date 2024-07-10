@@ -702,3 +702,82 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
                 'frequency': 1
             }
         }
+
+# Feature Map Visualisation class
+class FeatureMapVisualization:
+    def __init__(self, model):
+        self.model = model
+        self.feature_maps = {}
+        self.hooks = []
+
+    def add_hooks(self, layer_names):
+        for name, module in self.model.named_modules():
+            if name in layer_names:
+                self.hooks.append(module.register_forward_hook(self.save_feature_map(name)))
+
+    def save_feature_map(self, name):
+        def hook(module, input, output):
+            self.feature_maps[name] = output
+        return hook
+
+    def remove_hooks(self):
+        for hook in self.hooks:
+            hook.remove()
+
+    def visualize_feature_maps(self, layer_name, input_data, num_feature_maps='all', figsize=(20, 20)):
+        self.model.eval()
+        with torch.no_grad():
+            self.model(input_data)
+
+        if layer_name not in self.feature_maps:
+            print(f"Layer {layer_name} not found in feature maps.")
+            return
+
+        feature_maps = self.feature_maps[layer_name].cpu().detach().numpy()
+
+        # Handle different dimensions
+        if feature_maps.ndim == 4:  # (batch_size, channels, height, width)
+            feature_maps = feature_maps[0]  # Take the first item in the batch
+        elif feature_maps.ndim == 3:  # (channels, height, width)
+            pass
+        else:
+            print(f"Unexpected feature map shape: {feature_maps.shape}")
+            return
+
+        total_maps = feature_maps.shape[0]
+        
+        if num_feature_maps == 'all':
+            num_feature_maps = total_maps
+        else:
+            num_feature_maps = min(num_feature_maps, total_maps)
+
+        # Calculate grid size
+        grid_size = math.ceil(math.sqrt(num_feature_maps))
+        
+        fig, axes = plt.subplots(grid_size, grid_size, figsize=figsize)
+        
+        if grid_size == 1:
+            axes = np.array([[axes]])
+        elif grid_size > 1 and axes.ndim == 1:
+            axes = axes.reshape(1, -1)
+
+        for i in range(grid_size):
+            for j in range(grid_size):
+                index = i * grid_size + j
+                if index < num_feature_maps:
+                    feature_map_img = feature_maps[index]
+                    im = axes[i, j].imshow(feature_map_img, cmap='viridis')
+                    axes[i, j].axis('off')
+                    axes[i, j].set_title(f'Channel {index+1}')
+                else:
+                    axes[i, j].axis('off')
+
+        fig.suptitle(f'Feature Maps for Layer: {layer_name}\n({num_feature_maps} out of {total_maps} channels)')
+        fig.tight_layout()
+        
+        # Add colorbar
+        fig.subplots_adjust(right=0.9)
+        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+        fig.colorbar(im, cax=cbar_ax)
+        
+        plt.show()

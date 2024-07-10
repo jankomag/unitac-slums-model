@@ -71,8 +71,6 @@ from typing import Any, Optional, Tuple, Union, Sequence
 from pyproj import Transformer
 from rasterio.transform import rowcol, xy
 from typing import List
-from rasterio.features import rasterize
-from torchvision.models.segmentation.deeplabv3 import DeepLabHead
 
 from rastervision.core.data.raster_transformer import RasterTransformer
 from rastervision.core.data.raster_source import RasterSource
@@ -80,7 +78,7 @@ from rastervision.core.data import (VectorSource, XarraySource,
                                     IdentityCRSTransformer, RasterioCRSTransformer,
                                     RasterioCRSTransformer)
 from rastervision.core.evaluation import SemanticSegmentationEvaluator
-
+from rastervision.pytorch_learner.dataset.transform import (TransformType, TF_TYPE_TO_TF_FUNC)
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -91,8 +89,9 @@ sys.path.append(grandparent_dir)
 from src.models.model_definitions import (BuildingsDeepLabV3, CustomVectorOutputConfig,
                                           PredictionsIterator, create_predictions_and_ground_truth_plot)
 
-from src.features.dataloaders import (buil_create_full_image, senitnel_create_full_image,
-    create_datasets, create_buildings_scene,cities, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset)
+from src.features.dataloaders import (buil_create_full_image, senitnel_create_full_image, create_scenes_for_city,
+    create_datasets, create_building_scene,cities, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset,
+    PolygonWindowGeoDataset, MergeDataset, vis_build)
 
 from rastervision.core.data import (
     ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
@@ -113,48 +112,165 @@ class_config = ClassConfig(names=['background', 'slums'],
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
-# Santo Domingo with augmentation
-buildings_sceneSD = create_buildings_scene(cities['SantoDomingoDOM'], 'SantoDomingoDOM')
+# Santo Domingo
+buildings_sceneSD = create_building_scene('SantoDomingoDOM', cities['SantoDomingoDOM'])
+buildGeoDataset_SD = PolygonWindowGeoDataset(buildings_sceneSD, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+buil_train_ds_SD, buil_val_ds_SD, buil_test_ds_SD = buildGeoDataset_SD.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
 
-buildingsGeoDataset_SD, train_buil_ds_SD, val_buil_ds_SD, test_buil_ds_SD = create_datasets(buildings_sceneSD, imgsize=512, stride=512, padding=0, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
-buildingsGeoDataset_SD_aug, train_buil_ds_SD_aug, val_buil_ds_SD_aug, test_buil_ds_SD_aug = create_datasets(buildings_sceneSD, imgsize=512, stride=512, padding=0, val_ratio=0.2, test_ratio=0.1, augment = True, seed=12)
+# img_full = senitnel_create_full_image(buildGeoDataset_SD.scene.label_source)
+# train_windows = buil_train_ds_SD.windows
+# val_windows = buil_val_ds_SD.windows
+# test_windows = buil_test_ds_SD.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
 
-img_full = senitnel_create_full_image(buildingsGeoDataset_SD.scene.label_source)
-train_windows = train_buil_ds_SD.windows
-val_windows = val_buil_ds_SD.windows
-test_windows = test_buil_ds_SD.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
+# len(buil_train_ds_SD)
 
-build_train_ds_SD = ConcatDataset([train_buil_ds_SD, train_buil_ds_SD_aug])
-build_val_ds_SD = ConcatDataset([val_buil_ds_SD, val_buil_ds_SD_aug])
+# x, y = vis_build.get_batch(buil_train_ds_SD, 2)
+# vis_build.plot_batch(x, y, show=True)
+
+# Guatemala City
+buildings_sceneGC = create_building_scene('GuatemalaCity', cities['GuatemalaCity'])
+buildGeoDataset_GC = PolygonWindowGeoDataset(buildings_sceneGC, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+buil_train_ds_GC, buil_val_ds_GC, buil_test_ds_GC = buildGeoDataset_GC.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+
+# len(buil_train_ds_GC)
+
+# img_full = senitnel_create_full_image(buil_train_ds_GC.scene.label_source)
+# train_windows = buil_train_ds_GC.windows
+# val_windows = buil_val_ds_GC.windows
+# test_windows = buil_test_ds_GC.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Guatemala City - Sliding windows (Train in blue, Val in red, Test in green)')
+
+# x, y = vis_build.get_batch(buildGeoDataset_GC, 5)
+# vis_build.plot_batch(x, y, show=True)
+
+# TegucigalpaHND
+buildings_sceneTG = create_building_scene('TegucigalpaHND', cities['TegucigalpaHND'])
+buildGeoDataset_TG = PolygonWindowGeoDataset(buildings_sceneTG, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+buil_train_ds_TG, buil_val_ds_TG, buil_test_ds_TG = buildGeoDataset_TG.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+
+len(buil_train_ds_TG)
+
+# img_full = senitnel_create_full_image(buildGeoDataset_TG.scene.label_source)
+# train_windows = buil_train_ds_TG.windows
+# val_windows = buil_val_ds_TG.windows
+# test_windows = buil_test_ds_TG.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='TegucigalpaHND - Sliding windows (Train in blue, Val in red, Test in green)')
+
+# x, y = vis_build.get_batch(buildGeoDataset_TG, 5)
+# vis_build.plot_batch(x, y, show=True)
+
+# Managua
+buildings_sceneMN = create_building_scene('Managua', cities['Managua'])
+buildGeoDataset_MN = PolygonWindowGeoDataset(buildings_sceneMN, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+buil_train_ds_MN, buil_val_ds_MN, buil_test_ds_MN = buildGeoDataset_MN.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+
+# len(buil_train_ds_MN)
+
+# img_full = senitnel_create_full_image(buildGeoDataset_MN.scene.label_source)
+# train_windows = buil_train_ds_MN.windows
+# val_windows = buil_val_ds_MN.windows
+# test_windows = buil_test_ds_MN.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Managua Sliding windows')
+
+# x, y = vis_build.get_batch(buildGeoDataset_MN, 5)
+# vis_build.plot_batch(x, y, show=True)
+
+# Panama
+buildings_scenePN = create_building_scene('Panama', cities['Panama'])
+buildGeoDataset_PN = PolygonWindowGeoDataset(buildings_scenePN,window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+buil_train_ds_PN, buil_val_ds_PN, buil_test_ds_PN = buildGeoDataset_PN.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+
+# len(buil_train_ds_PN)
+
+# img_full = senitnel_create_full_image(buildGeoDataset_PN.scene.label_source)
+# train_windows = buil_train_ds_PN.windows
+# val_windows = buil_val_ds_PN.windows
+# test_windows = buil_test_ds_PN.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Panama Sliding windows (Train in blue, Val in red, Test in green)')
+
+# x, y = vis_build.get_batch(buildGeoDataset_PN, 5)
+# vis_build.plot_batch(x, y, show=True)
+
+# San Salvador
+buildings_sceneSS = create_building_scene('SanSalvador_PS', cities['SanSalvador_PS'])
+buildGeoDataset_SS = PolygonWindowGeoDataset(buildings_sceneSS,window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+buil_train_ds_SS, buil_val_ds_SS, buil_test_ds_SS = buildGeoDataset_SS.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+
+# len(buil_train_ds_SS)
+
+# img_full = senitnel_create_full_image(buildGeoDataset_SS.scene.label_source)
+# train_windows = buil_train_ds_SS.windows
+# val_windows = buil_val_ds_SS.windows
+# test_windows = buil_test_ds_SS.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='SanSalvador Sliding windows')
+
+# x, y = vis_build.get_batch(buildGeoDataset_SS, 5)
+# vis_build.plot_batch(x, y, show=True)
+
+# SanJoseCRI - data too sparse and largely rural examples, not using for training
+buildings_sceneSJ = create_building_scene('SanJoseCRI', cities['SanJoseCRI'])
+buildGeoDataset_SJ = PolygonWindowGeoDataset(buildings_sceneSJ,window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+buil_train_ds_SJ, buil_val_ds_SJ, buil_test_ds_SJ = buildGeoDataset_SJ.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+
+# len(buil_train_ds_SJ)
+
+# img_full = senitnel_create_full_image(buildGeoDataset_SJ.scene.label_source)
+# train_windows = buil_train_ds_SJ.windows
+# val_windows = buil_val_ds_SJ.windows
+# test_windows = buil_test_ds_SJ.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='SanSalvador Sliding windows')
+
+# x, y = vis_build.get_batch(buildGeoDataset_SJ, 5)
+# vis_build.plot_batch(x, y, show=True)
+
+# BelizeCity
+buildings_sceneBL = create_building_scene('BelizeCity', cities['BelizeCity'])
+buildGeoDataset_BL = PolygonWindowGeoDataset(buildings_sceneBL,window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+buil_train_ds_BL, buil_val_ds_BL, buil_test_ds_BL = buildGeoDataset_BL.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+
+# len(buil_train_ds_BL)
+
+# img_full = senitnel_create_full_image(buildGeoDataset_BL.scene.label_source)
+# train_windows = buil_train_ds_BL.windows
+# val_windows = buil_val_ds_BL.windows
+# test_windows = buil_test_ds_BL.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Belize City Sliding windows')
+
+# x, y = vis_build.get_batch(buildGeoDataset_BL, 4)
+# vis_build.plot_batch(x, y, show=True)
+
+# Belmopan - data mostly rural exluding from training
+buildings_sceneBM = create_building_scene('Belmopan', cities['Belmopan'])
+buildGeoDataset_BM = PolygonWindowGeoDataset(buildings_sceneBM, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+buil_train_ds_BM, buil_val_ds_BM, buil_test_ds_BM = buildGeoDataset_BM.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+
+# len(buil_train_ds_BM)
+
+# img_full = senitnel_create_full_image(buildGeoDataset_BM.scene.label_source)
+# train_windows = buil_train_ds_BM.windows
+# val_windows = buil_val_ds_BM.windows
+# test_windows = buil_test_ds_BM.windows
+# window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
+# show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Belmopan City Sliding windows')
+
+# x, y = vis_build.get_batch(buildGeoDataset_BM, 2)
+# vis_build.plot_batch(x, y, show=True)
+
+train_dataset = ConcatDataset([buil_train_ds_SD, buil_train_ds_GC, buil_train_ds_TG, buil_train_ds_MN, buil_train_ds_PN, buil_train_ds_SS, buil_train_ds_BL, buil_train_ds_SJ, buil_train_ds_BM])
+val_dataset = ConcatDataset([buil_val_ds_SD, buil_val_ds_GC, buil_val_ds_TG, buil_val_ds_MN, buil_val_ds_PN, buil_val_ds_SS, buil_val_ds_BL, buil_val_ds_SJ, buil_val_ds_BM])
+print(f"Train dataset length: {len(train_dataset)}")
+print(f"Validation dataset length: {len(val_dataset)}")
 
 batch_size = 16
-train_multiple_cities=False
-
-if train_multiple_cities:
-    # Guatemala City
-    buildings_sceneGC = create_buildings_scene(cities['GuatemalaCity'], 'GuatemalaCity')
-    buildingsGeoDataset_GC, train_buil_ds_GC, val_buil_ds_GC, test_buil_ds_GC = create_datasets(buildings_sceneGC, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment = False, seed=12)
-
-    # TegucigalpaHND
-    buildings_sceneTG = create_buildings_scene(cities['TegucigalpaHND'], 'TegucigalpaHND')
-    buildingsGeoDataset_TG, train_buil_ds_TG, val_buil_ds_TG, test_buil_ds_TG = create_datasets(buildings_sceneTG, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
-
-    # Managua
-    buildings_sceneMN = create_buildings_scene(cities['Managua'], 'Managua')
-    buildingsGeoDataset_MN, train_buil_ds_MN, val_buil_ds_MN, test_buil_ds_MN = create_datasets(buildings_sceneMN, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
-
-    # Panama
-    buildings_scenePN = create_buildings_scene(cities['Panama'], 'Panama')
-    buildingsGeoDataset_PN, train_buil_ds_PN, val_buil_ds_PN, test_buil_ds_PN = create_datasets(buildings_scenePN, imgsize=512, stride=512, padding=100, val_ratio=0.2, test_ratio=0.1, augment=False, seed=12)
-
-    # Combine datasets
-    train_dataset = ConcatDataset([build_train_ds_SD, train_buil_ds_GC, train_buil_ds_TG, train_buil_ds_MN, train_buil_ds_PN])
-    val_dataset = ConcatDataset([build_val_ds_SD, val_buil_ds_GC, val_buil_ds_TG, val_buil_ds_MN, val_buil_ds_PN])
-else:
-    train_dataset = build_train_ds_SD
-    val_dataset = build_val_ds_SD
 
 train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_dl = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
@@ -165,7 +281,6 @@ hyperparameters = {
     'train_cities': 'all',
     'batch_size': batch_size,
     'use_deeplnafrica': True,
-    'labels_size': 256,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-4,
     'weight_decay': 0,
@@ -196,7 +311,7 @@ checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     dirpath=output_dir,
     filename='buildingsDLV3_{epoch:02d}-{val_loss:.4f}',
-    save_top_k=2,
+    save_top_k=4,
     mode='min',
     save_last=True)
 
@@ -217,10 +332,10 @@ trainer = Trainer(
 trainer.fit(model, train_dl, val_dl)
 
 # Best deeplab model path val=0.3083
-best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/DLV3/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
+# best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/DLV3/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
 # best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=18-val_loss=0.1848.ckpt"
-# best_model_path = checkpoint_callback.best_model_path
-best_model = BuildingsDeepLabV3.load_from_checkpoint(best_model_path_deeplab)
+best_model_path = checkpoint_callback.best_model_path
+best_model = BuildingsDeepLabV3.load_from_checkpoint(best_model_path)
 best_model.eval()
 
 # fulldataset_SD, train_sentinel_datasetSD, val_sent_ds_SD, test_sentinel_dataset_SD = create_datasets(buildings_sceneSD, imgsize=256, stride=256, padding=128, val_ratio=0.15, test_ratio=0.08, augment=False, seed=22)
@@ -240,8 +355,8 @@ pred_labels = SemanticSegmentationLabels.from_predictions(
 gt_labels = buildings_sceneSD.label_source.get_labels()
 
 # Show predictions
-# fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
-# plt.show()
+fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
+plt.show()
 
 # save if needed
 # fig.savefig('predictions_and_ground_truth.png', dpi=300, bbox_inches='tight')
@@ -258,14 +373,14 @@ evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=
 inf_eval = evaluation.class_to_eval_item[1]
 inf_eval.f1
 
-scores = pred_labels.get_score_arr(pred_labels.extent)
-scores_building = scores[0]
-fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-image = ax.imshow(scores_building)
-ax.axis('off')
-# ax.set_title('Only buildings footprints model predictions')
-# cbar = fig.colorbar(image, ax=ax)
-plt.show()
+# scores = pred_labels.get_score_arr(pred_labels.extent)
+# scores_building = scores[0]
+# fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+# image = ax.imshow(scores_building)
+# ax.axis('off')
+# # ax.set_title('Only buildings footprints model predictions')
+# # cbar = fig.colorbar(image, ax=ax)
+# plt.show()
 
 # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(

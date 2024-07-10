@@ -52,12 +52,12 @@ sys.path.append(parent_dir)
 sys.path.append(grandparent_dir)
 
 from deeplnafrica.deepLNAfrica import init_segm_model
-from src.data.dataloaders import (
-    query_buildings_data,
+from src.features.dataloaders import (
+    query_buildings_data, CustomGeoJSONVectorSource,
     create_datasets,
-    create_buildings_raster_source, show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
+    show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
 )
-from src.models.model_definitions import (CustomGeoJSONVectorSource, MultiRes144labPredictionsIterator, MultiResolutionDeepLabV3, CustomVectorOutputConfig)
+from src.models.model_definitions import (MultiResolutionDeepLabV3, CustomVectorOutputConfig)
 
 from rastervision.core.raster_stats import RasterStats
 from rastervision.core.data.raster_transformer import RasterTransformer
@@ -345,7 +345,7 @@ class_config = ClassConfig(names=['background', 'slums'],
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
-con = duckdb.connect("../data/0/data.db")
+con = duckdb.connect("../../data/0/data.db")
 con.install_extension('httpfs')
 con.install_extension('spatial')
 con.load_extension('httpfs')
@@ -359,12 +359,88 @@ gdf = gdf.to_crs('EPSG:3857')
 # gdf = gdf.tail(2)
 # gdf = gdf[gdf['city_ascii'] == 'Tabarre']
 
+# old loop
+# for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
+#     city_name = row['city_ascii']
+#     country_code = row['iso3']
+#     image_uri =  f"../data/0/sentinel_Gee/{country_code}_{city_name}_2023.tif"
+    
+#     # Check if the image_uri exists
+#     if not os.path.exists(image_uri):
+#         print(f"Warning: File {image_uri} does not exist. Skipping to next row.")
+#         continue
+    
+#     gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = row['geometry'].bounds
+    
+#     try:
+#         with rasterio.open(image_uri) as src:
+#             bounds = src.bounds
+#             raster_xmin, raster_ymin, raster_xmax, raster_ymax = bounds.left, bounds.bottom, bounds.right, bounds.top
+            
+#     except Exception as e:
+#         print(f"Error processing {image_uri}: {e}")
+#         continue
+    
+#     # Define the common box in EPSG:3857
+#     common_xmin_3857 = max(gdf_xmin, raster_xmin)
+#     common_ymin_3857 = max(gdf_ymin, raster_ymin)
+#     common_xmax_3857 = min(gdf_xmax, raster_xmax)
+#     common_ymax_3857 = min(gdf_ymax, raster_ymax)
+
+#     transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+#     common_xmin_4326, common_ymin_4326 = transformer.transform(common_xmin_3857, common_ymin_3857)
+#     common_xmax_4326, common_ymax_4326 = transformer.transform(common_xmax_3857, common_ymax_3857)
+#     print("Got common extent for: ", city_name, country_code)
+    
+#     buildings = query_buildings_data(con, common_xmin_4326, common_ymin_4326, common_xmax_4326, common_ymax_4326)
+#     print("Got buildings extent for: ", city_name, country_code)
+
+#     rasterized_buildings_source, buildings_extent, crs_transformer_buildings = rasterise_buildings(image_uri, buildings, common_xmin_3857, common_ymax_3857)
+
+#     sentinel_source = get_sentinel_source(image_uri, buildings_extent)
+    
+#     buil_ds, sent_ds, build_scene, sent_scene = build_datasets(rasterized_buildings_source, sentinel_source)
+#     print("Got datasets extent for: ", city_name, country_code)
+
+#     save_predictions(best_model, sent_ds, buil_ds, build_scene, sent_scene, crs_transformer_buildings, country_code, city_name)
+#     print(f"Saved predictions data for {city_name}, {country_code}")
+
+# # con.close()
+
+### NEW LOOP ###
+import os
+import torch
+from tqdm import tqdm
+import geopandas as gpd
+import rasterio
+from pyproj import Transformer
+from affine import Affine
+from rastervision.core.data import ClassConfig
+from rastervision.core.data.label import SemanticSegmentationLabels
+from rastervision.core.box import Box
+
+# Load the best model
+best_model_path_dplv3 = checkpoint_callback.best_model_path
+best_model = MultiResolutionDeepLabV3(buil_channels=buil_channels, buil_kernel1=buil_kernel)
+checkpoint = torch.load(best_model_path_dplv3)
+state_dict = checkpoint['state_dict']
+best_model.load_state_dict(state_dict, strict=True)
+best_model = best_model.to(device)
+best_model.eval()
+
+class_config = ClassConfig(names=['background', 'slums'], 
+                           colors=['lightgray', 'darkred'],
+                           null_class='background')
+
+sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
+gdf = gpd.read_parquet(sica_cities)
+gdf = gdf.to_crs('EPSG:3857')
+
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
     country_code = row['iso3']
-    image_uri =  f"../data/0/sentinel_Gee/{country_code}_{city_name}_2023.tif"
+    image_uri = f"../../data/0/sentinel_Gee/{country_code}_{city_name}_2023.tif"
     
-    # Check if the image_uri exists
     if not os.path.exists(image_uri):
         print(f"Warning: File {image_uri} does not exist. Skipping to next row.")
         continue
@@ -375,12 +451,10 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
         with rasterio.open(image_uri) as src:
             bounds = src.bounds
             raster_xmin, raster_ymin, raster_xmax, raster_ymax = bounds.left, bounds.bottom, bounds.right, bounds.top
-            
     except Exception as e:
         print(f"Error processing {image_uri}: {e}")
         continue
     
-    # Define the common box in EPSG:3857
     common_xmin_3857 = max(gdf_xmin, raster_xmin)
     common_ymin_3857 = max(gdf_ymin, raster_ymin)
     common_xmax_3857 = min(gdf_xmax, raster_xmax)
@@ -389,22 +463,63 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
     common_xmin_4326, common_ymin_4326 = transformer.transform(common_xmin_3857, common_ymin_3857)
     common_xmax_4326, common_ymax_4326 = transformer.transform(common_xmax_3857, common_ymax_3857)
-    print("Got common extent for: ", city_name, country_code)
     
-    buildings = query_buildings_data(con, common_xmin_4326, common_ymin_4326, common_xmax_4326, common_ymax_4326)
-    print("Got buildings extent for: ", city_name, country_code)
-
-    rasterized_buildings_source, buildings_extent, crs_transformer_buildings = rasterise_buildings(image_uri, buildings, common_xmin_3857, common_ymax_3857)
-
-    sentinel_source = get_sentinel_source(image_uri, buildings_extent)
+    # Get buildings data
+    buildings = query_buildings_data(common_xmin_4326, common_ymin_4326, common_xmax_4326, common_ymax_4326)
     
-    buil_ds, sent_ds, build_scene, sent_scene = build_datasets(rasterized_buildings_source, sentinel_source)
-    print("Got datasets extent for: ", city_name, country_code)
-
-    save_predictions(best_model, sent_ds, buil_ds, build_scene, sent_scene, crs_transformer_buildings, country_code, city_name)
+    # Create scenes and datasets
+    sentinel_scene, buildings_scene = create_scenes_for_city(city_name, 
+                                                             {'name': city_name, 'country': country_code, 
+                                                              'xmin': common_xmin_3857, 'ymin': common_ymin_3857, 
+                                                              'xmax': common_xmax_3857, 'ymax': common_ymax_3857},
+                                                             class_config)
+    
+    sentinelGeoDataset = PolygonWindowGeoDataset(sentinel_scene, window_size=256, out_size=256, padding=0, transform_type=TransformType.noop, transform=None)
+    buildingsGeoDataset = PolygonWindowGeoDataset(buildings_scene, window_size=512, out_size=512, padding=0, transform_type=TransformType.noop, transform=None)
+    
+    # Create prediction iterator
+    predictions_iterator = MultiResPredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
+    windows, predictions = zip(*predictions_iterator)
+    
+    # Ensure windows are Box instances
+    windows = [Box(*window.tolist()) if isinstance(window, torch.Tensor) else window for window in windows]
+    
+    # Create SemanticSegmentationLabels from predictions
+    pred_labels = SemanticSegmentationLabels.from_predictions(
+        windows,
+        predictions,
+        extent=sentinel_scene.extent,
+        num_classes=len(class_config),
+        smooth=True
+    )
+    
+    # Save predictions
+    vector_output_config = CustomVectorOutputConfig(
+        class_id=1,
+        denoise=8,
+        threshold=0.5
+    )
+    
+    crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
+    affine_transform_buildings = Affine(10, 0, common_xmin_3857, 0, -10, common_ymax_3857)
+    crs_transformer.transform = affine_transform_buildings
+    
+    pred_label_store = SemanticSegmentationLabelStore(
+        uri=f'../../vectorised_model_predictions/multi-modal/all_DLV3/{country_code}/{city_name}_{country_code}',
+        crs_transformer=crs_transformer,
+        class_config=class_config,
+        vector_outputs=[vector_output_config],
+        discrete_output=True
+    )
+    
+    pred_label_store.save(pred_labels)
     print(f"Saved predictions data for {city_name}, {country_code}")
 
-# con.close()
+
+
+
+
+
 
 
 # # Merge geojson for cities
