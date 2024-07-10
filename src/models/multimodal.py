@@ -26,9 +26,9 @@ sys.path.append(parent_dir)
 from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params,
                                           MultiModalDataModule, create_predictions_and_ground_truth_plot,
                                           CustomVectorOutputConfig, FeatureMapVisualization)
-from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple,
-                                  create_datasets, senitnel_create_full_image, vis_sent, vis_build,
-                                  MergeDataset, create_scenes_for_city, PolygonWindowGeoDataset)
+from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple, MultiInputCrossValidator,
+                                  create_datasets, senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_fn,
+                                  MergeDataset, show_single_tile_multi, get_label_source_from_merge_dataset, create_scenes_for_city, PolygonWindowGeoDataset)
 from rastervision.core.box import Box
 from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.core.data import (ClassConfig, XarraySource, Scene,RasterioCRSTransformer,
@@ -54,231 +54,87 @@ class_config = ClassConfig(names=['background', 'slums'],
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
-# Santo Domingo
-sentinel_sceneSD, buildings_sceneSD = create_scenes_for_city('SantoDomingoDOM', cities['SantoDomingoDOM'], class_config)
-sentinelGeoDataset_SD = PolygonWindowGeoDataset(sentinel_sceneSD, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_SD = PolygonWindowGeoDataset(buildings_sceneSD, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_SD, sent_val_ds_SD, sent_test_ds_SD = sentinelGeoDataset_SD.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-buil_train_ds_SD, buil_val_ds_SD, buil_test_ds_SD = buildGeoDataset_SD.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+# SantoDomingo
+sentinel_sceneSD, buildings_sceneSD = create_scenes_for_city('SantoDomingo', cities['SantoDomingoDOM'], class_config)
+sentinelGeoDataset_SD = PolygonWindowGeoDataset(sentinel_sceneSD, city= 'SantoDomingo', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_SD = PolygonWindowGeoDataset(buildings_sceneSD, city= 'SantoDomingo',window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
-img_full = senitnel_create_full_image(sentinelGeoDataset_SD.scene.label_source)
-train_windows = sent_train_ds_SD.windows
-val_windows = sent_val_ds_SD.windows
-test_windows = sent_test_ds_SD.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Santo Domingo - Sliding windows (Train in blue, Val in red, Test in green)')
-
-img_full = senitnel_create_full_image(buildGeoDataset_SD.scene.label_source)
-train_windows = buil_train_ds_SD.windows
-val_windows = buil_val_ds_SD.windows
-test_windows = buil_test_ds_SD.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Sliding windows (Train in blue, Val in red, Test in green)')
-
-train_datasetSD = MergeDataset(sent_train_ds_SD, buil_train_ds_SD)
-val_datasetSD = MergeDataset(sent_val_ds_SD, buil_val_ds_SD)
-len(train_datasetSD)
-
-x, y = vis_sent.get_batch(sent_train_ds_SD, 10)
-vis_sent.plot_batch(x, y, show=True)
-
-# Guatemala City
+# GuatemalaCity
 sentinel_sceneGC, buildings_sceneGC = create_scenes_for_city('GuatemalaCity', cities['GuatemalaCity'], class_config)
-sentinelGeoDataset_GC = PolygonWindowGeoDataset(sentinel_sceneGC, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_GC = PolygonWindowGeoDataset(buildings_sceneGC, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_GC, sent_val_ds_GC, sent_test_ds_GC = sentinelGeoDataset_GC.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-buil_train_ds_GC, buil_val_ds_GC, buil_test_ds_GC = buildGeoDataset_GC.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+sentinelGeoDataset_GC = PolygonWindowGeoDataset(sentinel_sceneGC, city='GuatemalaCity',window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_GC = PolygonWindowGeoDataset(buildings_sceneGC, city='GuatemalaCity',window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
-train_datasetGC = MergeDataset(sent_train_ds_GC, buil_train_ds_GC)
-val_datasetGC = MergeDataset(sent_val_ds_GC, buil_val_ds_GC)
-len(train_datasetGC)
-img_full = senitnel_create_full_image(buil_train_ds_GC.scene.label_source)
-train_windows = buil_train_ds_GC.windows
-val_windows = buil_val_ds_GC.windows
-test_windows = buil_test_ds_GC.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Guatemala City - Sliding windows (Train in blue, Val in red, Test in green)')
-
-x, y = vis_sent.get_batch(sent_train_ds_GC, 29)
-vis_sent.plot_batch(x, y, show=True)
-
-x, y = vis_build.get_batch(buildGeoDataset_GC, 5)
-vis_build.plot_batch(x, y, show=True)
-
-# TegucigalpaHND
-sentinel_sceneTG, buildings_sceneTG = create_scenes_for_city('TegucigalpaHND', cities['TegucigalpaHND'], class_config)
-sentinelGeoDataset_TG = PolygonWindowGeoDataset(sentinel_sceneTG, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_TG = PolygonWindowGeoDataset(buildings_sceneTG, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_TG, sent_val_ds_TG, sent_test_ds_TG = sentinelGeoDataset_TG.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-buil_train_ds_TG, buil_val_ds_TG, buil_test_ds_TG = buildGeoDataset_TG.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-
-train_datasetTG = MergeDataset(sent_train_ds_TG, buil_train_ds_TG)
-val_datasetTG = MergeDataset(sent_val_ds_TG, buil_val_ds_TG)
-len(train_datasetTG)
-img_full = senitnel_create_full_image(sentinelGeoDataset_TG.scene.label_source)
-train_windows = sent_train_ds_TG.windows
-val_windows = sent_val_ds_TG.windows
-test_windows = sent_test_ds_TG.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='TegucigalpaHND - Sliding windows (Train in blue, Val in red, Test in green)')
-
-x, y = vis_sent.get_batch(sentinelGeoDataset_TG, 5)
-vis_sent.plot_batch(x, y, show=True)
-
-x, y = vis_build.get_batch(buildGeoDataset_TG, 5)
-vis_build.plot_batch(x, y, show=True)
+# Tegucigalpa - UNITAC report mentions data is complete, so using all tiles
+sentinel_sceneTG, buildings_sceneTG = create_scenes_for_city('Tegucigalpa', cities['TegucigalpaHND'], class_config)
+sentinelGeoDataset_TG = CustomSlidingWindowGeoDataset(sentinel_sceneTG, city='Tegucigalpa', size=256, stride = 256, out_size=256, padding=0, transform_type=TransformType.noop, transform=None)
+buildGeoDataset_TG = CustomSlidingWindowGeoDataset(buildings_sceneTG, city='Tegucigalpa', size=512, stride = 512, out_size=512, padding=0, transform_type=TransformType.noop, transform=None)
 
 # Managua
 sentinel_sceneMN, buildings_sceneMN = create_scenes_for_city('Managua', cities['Managua'], class_config)
-sentinelGeoDataset_MN = PolygonWindowGeoDataset(sentinel_sceneMN, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_MN = PolygonWindowGeoDataset(buildings_sceneMN, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_MN, sent_val_ds_MN, sent_test_ds_MN = sentinelGeoDataset_MN.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-buil_train_ds_MN, buil_val_ds_MN, buil_test_ds_MN = buildGeoDataset_MN.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-
-train_datasetMN = MergeDataset(sent_train_ds_MN, buil_train_ds_MN)
-val_datasetMN = MergeDataset(sent_val_ds_MN, buil_val_ds_MN)
-len(train_datasetMN)
-img_full = senitnel_create_full_image(sentinelGeoDataset_MN.scene.label_source)
-train_windows = sent_train_ds_MN.windows
-val_windows = sent_val_ds_MN.windows
-test_windows = sent_test_ds_MN.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Managua Sliding windows (Train in blue, Val in red, Test in green)')
-
-x, y = vis_sent.get_batch(sent_train_ds_MN, 5)
-vis_sent.plot_batch(x, y, show=True)
-
-x, y = vis_build.get_batch(buildGeoDataset_MN, 5)
-vis_build.plot_batch(x, y, show=True)
+sentinelGeoDataset_MN = PolygonWindowGeoDataset(sentinel_sceneMN, city='Managua', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_MN = PolygonWindowGeoDataset(buildings_sceneMN, city='Managua', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
 # Panama
 sentinel_scenePN, buildings_scenePN = create_scenes_for_city('Panama', cities['Panama'], class_config)
-sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN,window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_PN = PolygonWindowGeoDataset(buildings_scenePN,window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_PN, sent_val_ds_PN, sent_test_ds_PN = sentinelGeoDataset_PN.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-buil_train_ds_PN, buil_val_ds_PN, buil_test_ds_PN = buildGeoDataset_PN.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_PN = PolygonWindowGeoDataset(buildings_scenePN, city='Panama', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
-train_datasetPN = MergeDataset(sent_train_ds_PN, buil_train_ds_PN)
-val_datasetPN = MergeDataset(sent_val_ds_PN, buil_val_ds_PN)
-len(train_datasetPN)
-img_full = senitnel_create_full_image(sentinelGeoDataset_PN.scene.label_source)
-train_windows = sent_train_ds_PN.windows
-val_windows = sent_val_ds_PN.windows
-test_windows = sent_test_ds_PN.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Panama Sliding windows (Train in blue, Val in red, Test in green)')
-
-x, y = vis_sent.get_batch(sent_train_ds_PN, 14)
-vis_sent.plot_batch(x, y, show=True)
-
-x, y = vis_build.get_batch(buildGeoDataset_PN, 5)
-vis_build.plot_batch(x, y, show=True)
-
-# San Salvador
+# San Salvador - UNITAC report mentions data is complete, so using all tiles
 sentinel_sceneSS, buildings_sceneSS = create_scenes_for_city('SanSalvador_PS', cities['SanSalvador_PS'], class_config)
-sentinelGeoDataset_SS = PolygonWindowGeoDataset(sentinel_sceneSS,window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_SS = PolygonWindowGeoDataset(buildings_sceneSS,window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_SS, sent_val_ds_SS, sent_test_ds_SS = sentinelGeoDataset_SS.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-buil_train_ds_SS, buil_val_ds_SS, buil_test_ds_SS = buildGeoDataset_SS.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-train_datasetSS = MergeDataset(sent_train_ds_SS, buil_train_ds_SS)
-val_datasetSS = MergeDataset(sent_val_ds_SS, buil_val_ds_SS)
-len(train_datasetSS)
-img_full = senitnel_create_full_image(sentinelGeoDataset_SS.scene.label_source)
-train_windows = sent_train_ds_SS.windows
-val_windows = sent_val_ds_SS.windows
-test_windows = sent_test_ds_SS.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='SanSalvador Sliding windows')
+sentinelGeoDataset_SS = CustomSlidingWindowGeoDataset(sentinel_sceneSS, city='SanSalvador', size=256,stride=256,out_size=256,padding=0, transform_type=TransformType.noop,transform=None)
+buildGeoDataset_SS = CustomSlidingWindowGeoDataset(buildings_sceneSS, city='SanSalvador', size=512,stride=256,out_size=512,padding=0, transform_type=TransformType.noop, transform=None)
 
-x, y = vis_sent.get_batch(sent_train_ds_SS, 14)
-vis_sent.plot_batch(x, y, show=True)
-
-x, y = vis_build.get_batch(buildGeoDataset_SS, 5)
-vis_build.plot_batch(x, y, show=True)
-
-# SanJoseCRI
+# SanJose - UNITAC report mentions data is complete, so using all tiles
 sentinel_sceneSJ, buildings_sceneSJ = create_scenes_for_city('SanJoseCRI', cities['SanJoseCRI'], class_config)
-sentinelGeoDataset_SJ = PolygonWindowGeoDataset(sentinel_sceneSJ,window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_SJ = PolygonWindowGeoDataset(buildings_sceneSJ,window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_SJ, sent_val_ds_SJ, sent_test_ds_SJ = sentinelGeoDataset_SJ.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-buil_train_ds_SJ, buil_val_ds_SJ, buil_test_ds_SJ = buildGeoDataset_SJ.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-train_datasetSJ = MergeDataset(sent_train_ds_SJ, buil_train_ds_SJ)
-val_datasetSJ = MergeDataset(sent_val_ds_SJ, buil_val_ds_SJ)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_SJ.scene.label_source)
-train_windows = sent_train_ds_SJ.windows
-val_windows = sent_val_ds_SJ.windows
-test_windows = sent_test_ds_SJ.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='SanSalvador Sliding windows')
-
-x, y = vis_sent.get_batch(sentinelGeoDataset_SJ, 5)
-vis_sent.plot_batch(x, y, show=True)
-
-x, y = vis_build.get_batch(buildGeoDataset_SJ, 5)
-vis_build.plot_batch(x, y, show=True)
+sentinelGeoDataset_SJ = CustomSlidingWindowGeoDataset(sentinel_sceneSJ, city='SanJose', size=256, stride = 256, out_size=256,padding=0, transform_type=TransformType.noop, transform=None)
+buildGeoDataset_SJ = CustomSlidingWindowGeoDataset(buildings_sceneSJ, city='SanJose', size=512, stride = 256, out_size=512,padding=0, transform_type=TransformType.noop, transform=None)
 
 # BelizeCity
 sentinel_sceneBL, buildings_sceneBL = create_scenes_for_city('BelizeCity', cities['BelizeCity'], class_config)
-sentinelGeoDataset_BL = PolygonWindowGeoDataset(sentinel_sceneBL,window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_BL = PolygonWindowGeoDataset(buildings_sceneBL,window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_BL, sent_val_ds_BL, sent_test_ds_BL = sentinelGeoDataset_BL.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-buil_train_ds_BL, buil_val_ds_BL, buil_test_ds_BL = buildGeoDataset_BL.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-train_datasetBL = MergeDataset(sent_train_ds_BL, buil_train_ds_BL)
-val_datasetBL = MergeDataset(sent_val_ds_BL, buil_val_ds_BL)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_BL.scene.label_source)
-train_windows = sent_train_ds_BL.windows
-val_windows = sent_val_ds_BL.windows
-test_windows = sent_test_ds_BL.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Belize City Sliding windows')
-
-x, y = vis_sent.get_batch(sentinelGeoDataset_BL, 4)
-vis_sent.plot_batch(x, y, show=True)
-
-x, y = vis_build.get_batch(buildGeoDataset_BL, 4)
-vis_build.plot_batch(x, y, show=True)
+sentinelGeoDataset_BL = PolygonWindowGeoDataset(sentinel_sceneBL,city='BelizeCity',window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_BL = PolygonWindowGeoDataset(buildings_sceneBL,city='BelizeCity',window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
 # Belmopan - data mostly rural exluding from training
 sentinel_sceneBM, buildings_sceneBM = create_scenes_for_city('Belmopan', cities['Belmopan'], class_config, resolution=5)
-sentinelGeoDataset_BM = PolygonWindowGeoDataset(sentinel_sceneBM, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_BM = PolygonWindowGeoDataset(buildings_sceneBM, window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+sentinelGeoDataset_BM = PolygonWindowGeoDataset(sentinel_sceneBM, city='Belmopan', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_BM = PolygonWindowGeoDataset(buildings_sceneBM, city='Belmopan', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
-sent_train_ds_BM, sent_val_ds_BM, sent_test_ds_BM = sentinelGeoDataset_BM.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-buil_train_ds_BM, buil_val_ds_BM, buil_test_ds_BM = buildGeoDataset_BM.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-train_datasetBL = MergeDataset(sent_train_ds_BM, buil_train_ds_BM)
-val_datasetBL = MergeDataset(sent_val_ds_BM, buil_val_ds_BM)
+# Create datasets for each city
+multimodal_datasets = {
+    'SantoDomingo': MergeDataset(sentinelGeoDataset_SD, buildGeoDataset_SD),
+    'GuatemalaCity': MergeDataset(sentinelGeoDataset_GC, buildGeoDataset_GC),
+    'Tegucigalpa': MergeDataset(sentinelGeoDataset_TG, buildGeoDataset_TG),
+    'Managua': MergeDataset(sentinelGeoDataset_MN, buildGeoDataset_MN),
+    'Panama': MergeDataset(sentinelGeoDataset_PN, buildGeoDataset_PN),
+    'SanSalvador': MergeDataset(sentinelGeoDataset_SS, buildGeoDataset_SS),
+    'SanJose': MergeDataset(sentinelGeoDataset_SJ, buildGeoDataset_SJ),
+    'BelizeCity': MergeDataset(sentinelGeoDataset_BL, buildGeoDataset_BL),
+    'Belmopan': MergeDataset(sentinelGeoDataset_BM, buildGeoDataset_BM)
+}
 
-img_full = senitnel_create_full_image(sentinelGeoDataset_BM.scene.label_source)
-train_windows = sent_train_ds_BM.windows
-val_windows = sent_val_ds_BM.windows
-test_windows = sent_test_ds_BM.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Belmopan Sliding windows')
+cv = MultiInputCrossValidator(multimodal_datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1)
 
-img_full = senitnel_create_full_image(buildGeoDataset_BM.scene.label_source)
-train_windows = buil_train_ds_BM.windows
-val_windows = buil_val_ds_BM.windows
-test_windows = buil_test_ds_BM.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Belmopan City Sliding windows')
+# Preview a city with sliding windows
+city = 'SantoDomingo'
+split_index = 1
 
-x, y = vis_sent.get_batch(sentinelGeoDataset_BM, 2)
-vis_sent.plot_batch(x, y, show=True)
+windows, labels = cv.get_windows_and_labels_for_city(city, split_index)
+img_full = senitnel_create_full_image(get_label_source_from_merge_dataset(multimodal_datasets[city]))
+show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {split_index + 1})')
 
-x, y = vis_build.get_batch(buildGeoDataset_BM, 2)
-vis_build.plot_batch(x, y, show=True)
+show_single_tile_multi(multimodal_datasets, city, 5, show_sentinel=True, show_buildings=True)
 
-train_dataset = ConcatDataset([train_datasetSD, train_datasetGC, train_datasetTG, train_datasetMN, train_datasetPN, train_datasetSS, train_datasetBL]) #,  train_datasetSJ, train_datasetBM
-val_dataset = ConcatDataset([val_datasetSD, val_datasetGC, val_datasetTG, val_datasetMN, val_datasetPN, val_datasetSS, val_datasetBL])
-print(f"Train dataset length: {len(train_dataset)}")
-print(f"Validation dataset length: {len(val_dataset)}")
+train_dataset, val_dataset, test_dataset = cv.get_split(split_index)
+print(f"Train dataset size: {len(train_dataset)}")
+print(f"Validation dataset size: {len(val_dataset)}")
+print(f"Test dataset size: {len(test_dataset)}")
+
+batch_size = 24
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_fn)
 
 # Initialize the data module
-batch_size = 18
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 data_module = MultiModalDataModule(train_loader, val_loader)
 
 # Train the model 
@@ -294,9 +150,10 @@ hyperparameters = {
     'weight_decay': 0,
     'gamma': 0.8,
     'sched_step_size': 5,
-    'pos_weight': 3.0,
+    'pos_weight': 2.0,
     'buil_kernel1': 7
 }
+
 traincities=hyperparameters['train_cities']
 output_dir = f'../../UNITAC-trained-models/multi_modal/{traincities}_DLV3/'
 os.makedirs(output_dir, exist_ok=True)
@@ -342,13 +199,14 @@ trainer = Trainer(
     precision='16-mixed',
     benchmark=True,
 )
+
 # Train the model
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation
 # # best SD_DLV3/last.ckpt
-best_model_path_dplv3 = os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/all_DLV3/last-v4.ckpt")
-# best_model_path_dplv3 = checkpoint_callback.best_model_path
+# best_model_path_dplv3 = os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/all_DLV3/last-v4.ckpt")
+best_model_path_dplv3 = checkpoint_callback.best_model_path
 best_model = MultiResolutionDeepLabV3(buil_channels=buil_channels, buil_kernel1=buil_kernel)
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']

@@ -49,8 +49,9 @@ sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
 from src.models.model_definitions import SentinelDeepLabV3, PredictionsIterator, create_predictions_and_ground_truth_plot, check_nan_params
-from src.features.dataloaders import (create_datasets, create_sentinel_scene, cities, vis_sent,
+from src.features.dataloaders import (create_datasets, create_sentinel_scene, cities, CustomSlidingWindowGeoDataset,
                                       senitnel_create_full_image, show_windows, PolygonWindowGeoDataset)
+                                      #SingleInputCrossValidator, singlesource_show_windows_for_city)
 
 from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
 from rastervision.core.data import (Scene, ClassInferenceTransformer, RasterizedSource,
@@ -97,179 +98,79 @@ class_config = ClassConfig(names=['background', 'slums'],
                            colors=['lightgray', 'darkred'],
                            null_class='background')
 
-# Santo Domingo
+# SantoDomingo
 SentinelScene_SD = create_sentinel_scene(cities['SantoDomingoDOM'], class_config)
-sentinelGeoDataset_SD = PolygonWindowGeoDataset(SentinelScene_SD, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_SD, sent_val_ds_SD, sent_test_ds_SD = sentinelGeoDataset_SD.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+sentinelGeoDataset_SD = PolygonWindowGeoDataset(SentinelScene_SD, city= 'SantoDomingo', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
-len(sent_train_ds_SD)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_SD.scene.label_source)
-train_windows = sent_train_ds_SD.windows
-val_windows = sent_val_ds_SD.windows
-test_windows = sent_test_ds_SD.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Santo Domingo - Sliding windows (Train in blue, Val in red, Test in green)')
-
-x, y = vis_sent.get_batch(sent_train_ds_SD, 2)
-vis_sent.plot_batch(x, y, show=True)
-
-# Guatemala City
+# GuatemalaCity
 sentinel_sceneGC = create_sentinel_scene(cities['GuatemalaCity'], class_config)
-sentinelGeoDataset_GC = PolygonWindowGeoDataset(sentinel_sceneGC, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_GC, sent_val_ds_GC, sent_test_ds_GC = sentinelGeoDataset_GC.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+sentinelGeoDataset_GC = PolygonWindowGeoDataset(sentinel_sceneGC, city='GuatemalaCity',window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
-len(sent_train_ds_GC)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_GC.scene.label_source)
-train_windows = sent_train_ds_GC.windows
-val_windows = sent_val_ds_GC.windows
-test_windows = sent_test_ds_GC.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Guatemala City - Sliding windows (Train in blue, Val in red, Test in green)')
-
-x, y = vis_sent.get_batch(sent_train_ds_GC, 2)
-vis_sent.plot_batch(x, y, show=True)
-
-# TegucigalpaHND
+# Tegucigalpa - UNITAC report mentions data is complete, so using all tiles
 sentinel_sceneTG = create_sentinel_scene(cities['TegucigalpaHND'], class_config)
-sentinelGeoDataset_TG = PolygonWindowGeoDataset(sentinel_sceneTG, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_TG, sent_val_ds_TG, sent_test_ds_TG = sentinelGeoDataset_TG.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_TG.scene.label_source)
-train_windows = sent_train_ds_TG.windows
-val_windows = sent_val_ds_TG.windows
-test_windows = sent_test_ds_TG.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='TegucigalpaHND - Sliding windows (Train in blue, Val in red, Test in green)')
-
-x, y = vis_sent.get_batch(sentinelGeoDataset_TG, 2)
-vis_sent.plot_batch(x, y, show=True)
+sentinelGeoDataset_TG = CustomSlidingWindowGeoDataset(sentinel_sceneTG, city='Tegucigalpa', size=256, stride = 256, out_size=256, padding=0, transform_type=TransformType.noop, transform=None)
 
 # Managua
 sentinel_sceneMN = create_sentinel_scene(cities['Managua'], class_config)
-sentinelGeoDataset_MN = PolygonWindowGeoDataset(sentinel_sceneMN, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_MN, sent_val_ds_MN, sent_test_ds_MN = sentinelGeoDataset_MN.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-
-len(sent_train_ds_MN)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_MN.scene.label_source)
-train_windows = sent_train_ds_MN.windows
-val_windows = sent_val_ds_MN.windows
-test_windows = sent_test_ds_MN.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Managua Sliding windows (Train in blue, Val in red, Test in green)')
-
-x, y = vis_sent.get_batch(sent_train_ds_MN, 2)
-vis_sent.plot_batch(x, y, show=True)
+sentinelGeoDataset_MN = PolygonWindowGeoDataset(sentinel_sceneMN, city='Managua', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
 # Panama
 sentinel_scenePN = create_sentinel_scene(cities['Panama'], class_config)
-sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN,window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_PN, sent_val_ds_PN, sent_test_ds_PN = sentinelGeoDataset_PN.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
-len(sent_train_ds_PN)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_PN.scene.label_source)
-train_windows = sent_train_ds_PN.windows
-val_windows = sent_val_ds_PN.windows
-test_windows = sent_test_ds_PN.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Panama Sliding windows (Train in blue, Val in red, Test in green)')
-
-x, y = vis_sent.get_batch(sent_train_ds_PN, 2)
-vis_sent.plot_batch(x, y, show=True)
-
-# San Salvador
+# San Salvador - UNITAC report mentions data is complete, so using all tiles
 sentinel_sceneSS = create_sentinel_scene(cities['SanSalvador_PS'], class_config)
-sentinelGeoDataset_SS = PolygonWindowGeoDataset(sentinel_sceneSS,window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_SS, sent_val_ds_SS, sent_test_ds_SS = sentinelGeoDataset_SS.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+sentinelGeoDataset_SS = CustomSlidingWindowGeoDataset(sentinel_sceneSS, city='SanSalvador', size=256,stride=256,out_size=256,padding=0, transform_type=TransformType.noop,transform=None)
 
-len(sent_train_ds_SS)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_SS.scene.label_source)
-train_windows = sent_train_ds_SS.windows
-val_windows = sent_val_ds_SS.windows
-test_windows = sent_test_ds_SS.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='SanSalvador Sliding windows')
-
-x, y = vis_sent.get_batch(sent_train_ds_SS, 2)
-vis_sent.plot_batch(x, y, show=True)
-
-# SanJoseCRI
+# SanJose - UNITAC report mentions data is complete, so using all tiles
 sentinel_sceneSJ = create_sentinel_scene(cities['SanJoseCRI'], class_config)
-sentinelGeoDataset_SJ = PolygonWindowGeoDataset(sentinel_sceneSJ,window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_SJ, sent_val_ds_SJ, sent_test_ds_SJ = sentinelGeoDataset_SJ.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-
-len(sent_train_ds_SJ)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_SJ.scene.label_source)
-train_windows = sent_train_ds_SJ.windows
-val_windows = sent_val_ds_SJ.windows
-test_windows = sent_test_ds_SJ.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='SanSalvador Sliding windows')
-
-x, y = vis_sent.get_batch(sentinelGeoDataset_SJ, 2)
-vis_sent.plot_batch(x, y, show=True)
+sentinelGeoDataset_SJ = CustomSlidingWindowGeoDataset(sentinel_sceneSJ, city='SanJose', size=256, stride = 256, out_size=256,padding=0, transform_type=TransformType.noop, transform=None)
 
 # BelizeCity
 sentinel_sceneBL = create_sentinel_scene(cities['BelizeCity'], class_config)
-sentinelGeoDataset_BL = PolygonWindowGeoDataset(sentinel_sceneBL,window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_BL, sent_val_ds_BL, sent_test_ds_BL = sentinelGeoDataset_BL.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
-
-len(sent_train_ds_BL)
-
-img_full = senitnel_create_full_image(sentinelGeoDataset_BL.scene.label_source)
-train_windows = sent_train_ds_BL.windows
-val_windows = sent_val_ds_BL.windows
-test_windows = sent_test_ds_BL.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Belize City Sliding windows')
-
-x, y = vis_sent.get_batch(sentinelGeoDataset_BL, 2)
-vis_sent.plot_batch(x, y, show=True)
+sentinelGeoDataset_BL = PolygonWindowGeoDataset(sentinel_sceneBL,city='BelizeCity',window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
 # Belmopan - data mostly rural exluding from training
 sentinel_sceneBM = create_sentinel_scene(cities['Belmopan'], class_config)
-sentinelGeoDataset_BM = PolygonWindowGeoDataset(sentinel_sceneBM, window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-sent_train_ds_BM, sent_val_ds_BM, sent_test_ds_BM = sentinelGeoDataset_BM.split_train_val_test(val_ratio=0.2,test_ratio=0.1,seed=42)
+sentinelGeoDataset_BM = PolygonWindowGeoDataset(sentinel_sceneBM, city='Belmopan', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
-len(sent_train_ds_BM)
+# Create datasets for each city
+sentinel_datasets = {
+    'SantoDomingo': sentinelGeoDataset_SD,
+    'GuatemalaCity': sentinelGeoDataset_GC,
+    'Tegucigalpa': sentinelGeoDataset_TG,
+    'Managua': sentinelGeoDataset_MN,
+    'Panama': sentinelGeoDataset_PN,
+    'SanSalvador': sentinelGeoDataset_SS,
+    'SanJose': sentinelGeoDataset_SJ,
+    'BelizeCity': sentinelGeoDataset_BL,
+    'Belmopan': sentinelGeoDataset_BM
+}
 
-img_full = senitnel_create_full_image(sentinelGeoDataset_BM.scene.label_source)
-train_windows = sent_train_ds_BM.windows
-val_windows = sent_val_ds_BM.windows
-test_windows = sent_test_ds_BM.windows
-window_labels = (['train'] * len(train_windows) + ['val'] * len(val_windows) + ['test'] * len(test_windows))
-show_windows(img_full, train_windows + val_windows + test_windows, window_labels, title='Belmopan Sliding windows')
+cv = SingleInputCrossValidator(sentinel_datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1)
+split_index = 0
 
-x, y = vis_sent.get_batch(sentinelGeoDataset_BM, 2)
-vis_sent.plot_batch(x, y, show=True)
+# Preview a city with sliding windows
+city = 'Belmopan'
+singlesource_show_windows_for_city(city, 1, cv, sentinel_datasets)
+show_single_tile_sentinel(sentinel_datasets, city, 3)
 
-train_dataset = ConcatDataset([sent_train_ds_SD, sent_train_ds_GC, sent_train_ds_TG, sent_train_ds_MN, sent_train_ds_PN, sent_train_ds_SS, sent_train_ds_BL, sent_train_ds_SJ, sent_train_ds_BM])
-val_dataset = ConcatDataset([sent_val_ds_SD, sent_val_ds_GC, sent_val_ds_TG, sent_val_ds_MN, sent_val_ds_PN, sent_val_ds_SS, sent_val_ds_BL, sent_val_ds_BM, sent_val_ds_SJ, sent_val_ds_BM])
-print(f"Train dataset length: {len(train_dataset)}")
-print(f"Validation dataset length: {len(val_dataset)}")
+train_dataset, val_dataset, test_dataset = cv.get_split(split_index)
 
-def collate_fn(batch):
-    for item in batch:
-        # Assuming each item is a tuple of (image, label)
-        image, label = item
-        if torch.isnan(image).any() or torch.isnan(label).any():
-            print(f"NaN found in batch item")
-            # You might want to skip this item or handle it in some way
-    return torch.utils.data.dataloader.default_collate(batch)
+print(f"Train dataset size: {len(train_dataset)}")
+print(f"Validation dataset size: {len(val_dataset)}")
+print(f"Test dataset size: {len(test_dataset)}")
 
-batch_size = 32
-train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, collate_fn=collate_fn)
-val_dl = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+# Create DataLoaders
+batch_size = 24
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_fn)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_fn)
 
 # Create model
 hyperparameters = {
     'model': 'DLV3',
-    'train_cities': 'SD',
+    'train_cities': 'all',
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'atrous_rates': (12, 24, 36),
@@ -319,7 +220,7 @@ trainer = Trainer(
 )
 
 # Train the model
-trainer.fit(model, train_dl, val_dl)
+trainer.fit(model, train_loader, val_loader)
 
 # Make predictions
 best_model_path = checkpoint_callback.best_model_path
@@ -359,6 +260,53 @@ evaluator = SemanticSegmentationEvaluator(class_config)
 evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
 inf_eval = evaluation.class_to_eval_item[1]
 inf_eval.f1
+
+def calculate_f1_score(model, sent_val_ds, device):
+    predictions_iterator = PredictionsIterator(model, sent_val_ds, device=device)
+    windows, predictions = zip(*predictions_iterator)
+
+    # Create SemanticSegmentationLabels from predictions
+    pred_labels = SemanticSegmentationLabels.from_predictions(
+        windows,
+        predictions,
+        extent=sent_val_ds.scene.extent,
+        num_classes=len(class_config),
+        smooth=True
+    )
+
+    gt_labels = sent_val_ds.scene.label_source.get_labels()
+
+    # Evaluate against labels:
+    pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
+        extent=pred_labels.extent,
+        num_classes=len(class_config))
+    scores = pred_labels.get_score_arr(pred_labels.extent)
+    pred_array_discrete = (scores > 0.5).astype(int)
+    pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
+    evaluator = SemanticSegmentationEvaluator(class_config)
+    evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
+    inf_eval = evaluation.class_to_eval_item[1]
+    return inf_eval.f1
+
+# List of cities and their corresponding val datasets
+citie_valds = [
+    ('Santo Domingo', sent_val_ds_SD),
+    ('Guatemala City', sent_val_ds_GC),
+    ('Tegucigalpa', sent_val_ds_TG),
+    ('Managua', sent_val_ds_MN),
+    ('Panama', sent_val_ds_PN),
+    ('San Salvador', sent_val_ds_SS),
+    ('San Jose', sent_val_ds_SJ),
+    ('Belize City', sent_val_ds_BL),
+    ('Belmopan', sent_val_ds_BM)
+]
+
+# Iterate through each city and calculate F1 score
+for city_name, sent_val_ds in citie_valds:
+    f1_score = calculate_f1_score(best_model, sent_val_ds, device)
+    print(f"{city_name} - F1 Score: {f1_score:.4f}")
+
+
 
 # # # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(

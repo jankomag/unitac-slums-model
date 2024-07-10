@@ -26,6 +26,7 @@ import albumentations as A
 import torch
 from torch.utils.data import Dataset
 from shapely.ops import unary_union
+from sklearn.model_selection import train_test_split
 
 from rastervision.core.box import Box
 from rastervision.core.data import Scene, BufferTransformer
@@ -107,7 +108,8 @@ from rastervision.pipeline.utils import repr_with_args
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 import logging
 from xarray import DataArray
-
+from sklearn.model_selection import KFold
+from torch.utils.data import ConcatDataset, Subset
 from affine import Affine
 import numpy as np
 import geopandas as gpd
@@ -151,6 +153,7 @@ from rastervision.pytorch_learner.dataset.dataset import GeoDataset
 from rastervision.pytorch_learner import SemanticSegmentationVisualizer
 import numpy as np
 import albumentations as A
+from sklearn.model_selection import KFold
 
 class_config = ClassConfig(names=['background', 'slums'], 
                                 colors=['lightgray', 'darkred'],
@@ -201,6 +204,14 @@ cities = {
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')
         }
 }
+
+def _to_tuple(x: T, n: int = 2) -> Tuple[T, ...]:
+    """Convert to n-tuple if not already an n-tuple."""
+    if isinstance(x, tuple):
+        if len(x) != n:
+            raise ValueError()
+        return x
+    return tuple([x] * n)
 
 def ensure_tuple(x: T, n: int = 2) -> tuple[T, ...]:
     """Convert to n-tuple if not already an n-tuple."""
@@ -541,10 +552,73 @@ class CustomSemanticSegmentationLabelSource(LabelSource):
         else:
             return super().__getitem__(key)
 
+class CustomSlidingWindowGeoDataset(GeoDataset):
+    """Read the scene left-to-right, top-to-bottom, using a sliding window.
+    """
+
+    def __init__(
+            self,
+            scene: Scene,
+            city: str,
+            size: Union[PosInt, Tuple[PosInt, PosInt]],
+            stride: Union[PosInt, Tuple[PosInt, PosInt]],
+            out_size: Optional[Union[PosInt, Tuple[PosInt, PosInt]]] = None,
+            padding: Optional[Union[NonNegInt, Tuple[NonNegInt,
+                                                     NonNegInt]]] = None,
+            pad_direction: Literal['both', 'start', 'end'] = 'end',
+            within_aoi: bool = True,
+            transform: Optional[A.BasicTransform] = None,
+            transform_type: Optional[TransformType] = None,
+            normalize: bool = True,
+            to_pytorch: bool = True,
+            return_window: bool = False):
+        
+        super().__init__(
+            scene=scene,
+            out_size=out_size,
+            within_aoi=within_aoi,
+            transform=transform,
+            transform_type=transform_type,
+            normalize=normalize,
+            to_pytorch=to_pytorch,
+            return_window=return_window)
+        self.city = city
+        self.size = _to_tuple(size)
+        self.stride = _to_tuple(stride)
+        self.padding = padding
+        self.pad_direction = pad_direction
+        self.init_windows()
+
+    def init_windows(self) -> None:
+        """Pre-compute windows."""
+        windows = self.scene.extent.get_windows(
+            self.size,
+            stride=self.stride,
+            padding=self.padding,
+            pad_direction=self.pad_direction)
+        if len(self.scene.aoi_polygons_bbox_coords) > 0:
+            windows = Box.filter_by_aoi(
+                windows,
+                self.scene.aoi_polygons_bbox_coords,
+                within=self.within_aoi)
+        self.windows = windows
+
+    def __getitem__(self, idx):
+        if isinstance(idx, int):
+            if idx >= len(self):
+                raise IndexError("Index out of range")
+            window = self.windows[idx]
+            return super().__getitem__(window)
+        return super().__getitem__(idx)
+
+    def __len__(self):
+        return len(self.windows)
+
 class PolygonWindowGeoDataset(GeoDataset):
     def __init__(
         self,
         scene: Scene,
+        city: str,
         window_size: Union[PosInt, Tuple[PosInt, PosInt]],
         out_size: Optional[Union[PosInt, Tuple[PosInt, PosInt]]] = None,
         padding: Optional[Union[NonNegInt, Tuple[NonNegInt, NonNegInt]]] = None,
@@ -565,7 +639,8 @@ class PolygonWindowGeoDataset(GeoDataset):
             to_pytorch=to_pytorch,
             return_window=return_window,
         )
-
+        
+        self.city = city
         self.window_size: tuple[PosInt, PosInt] = ensure_tuple(window_size)
         self.padding = padding
         if self.padding is None:
@@ -681,9 +756,7 @@ class PolygonWindowGeoDataset(GeoDataset):
     def __len__(self):
         return len(self.windows)
 
-class CustomSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset):
-# Class to implement train, test, val split
-
+class SplittingSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(
             *args,
@@ -773,15 +846,402 @@ class CustomRasterizedSource(RasterizedSource):
             # Add third singleton dim since rasters must have >=1 channel.
             return np.expand_dims(chip, 2)
 
-# Visulaization helper functions
-# Preview Sentinel and Buildings batches
-vis_sent = SemanticSegmentationVisualizer(
-    class_names=class_config.names, class_colors=class_config.colors,
-    channel_display_groups={'RGB': (1,2,3), 'NIR': (0, )})
+class CustomSemanticSegmentationVisualizer(Visualizer):
+    def plot_batch(self,
+                   x: List[Tuple[torch.Tensor, torch.Tensor]],
+                   y: List[Tuple[torch.Tensor, torch.Tensor]],
+                   output_path: Optional[str] = None,
+                   z: Optional[Sequence] = None,
+                   batch_limit: Optional[int] = None,
+                   show: bool = False):
 
-vis_build = SemanticSegmentationVisualizer(
-    class_names=class_config.names, class_colors=class_config.colors,
-    channel_display_groups={'Buildings': (0,)})
+        sentinel_data = [item[0] for item in x]
+        buildings_data = [item[1] for item in x]
+        sentinel_labels = [item[0] for item in y]
+        buildings_labels = [item[1] for item in y]
+        
+        # Plot Sentinel data
+        self._plot_single_source(sentinel_data, sentinel_labels, output_path, z, batch_limit, show, "Sentinel")
+        
+        # Plot Buildings data
+        self._plot_single_source(buildings_data, buildings_labels, output_path, z, batch_limit, show, "Buildings")
+
+    def _plot_single_source(self,
+                            x: List[torch.Tensor],
+                            y: List[torch.Tensor],
+                            output_path: Optional[str] = None,
+                            z: Optional[Sequence] = None,
+                            batch_limit: Optional[int] = None,
+                            show: bool = False,
+                            title_prefix: str = ""):
+
+        batch_size = len(x)
+        if batch_limit is not None:
+            batch_size = min(batch_size, batch_limit)
+
+        fig, axs = plt.subplots(batch_size, 2, figsize=(10, 5*batch_size))
+        if batch_size == 1:
+            axs = axs.reshape(1, -1)
+
+        for i in range(batch_size):
+            # Plot input image
+            if title_prefix == "Sentinel":
+                img = x[i][:3].permute(1, 2, 0)  # Use first 3 channels for RGB
+            else:  # Buildings
+                img = x[i].squeeze()  # Remove singleton dimensions if any
+            axs[i, 0].imshow(img.cpu().numpy())
+            axs[i, 0].set_title(f"{title_prefix} Input")
+            axs[i, 0].axis('off')
+
+            # Plot ground truth
+            gt = y[i].squeeze()  # Squeeze out singleton dimensions
+            if gt.ndim > 2:
+                gt = gt[0]  # If still more than 2D, take the first slice
+            axs[i, 1].imshow(gt.cpu().numpy(), cmap='viridis')
+            axs[i, 1].set_title("Ground Truth")
+            axs[i, 1].axis('off')
+
+        plt.tight_layout()
+
+        if show:
+            plt.show()
+        if output_path is not None:
+            make_dir(output_path, use_dirname=True)
+            fig.savefig(f"{output_path}_{title_prefix.lower()}.png", bbox_inches='tight', pad_inches=0.2)
+
+        plt.close(fig)
+    
+    def plot_xyz(self,
+                 axs: Sequence,
+                 x: torch.Tensor,
+                 y: Optional[Union[torch.Tensor, np.ndarray]] = None,
+                 z: Optional[torch.Tensor] = None,
+                 plot_title: bool = True) -> None:
+        channel_groups = self.get_channel_display_groups(x.shape[1])
+
+        img_axes = axs[:len(channel_groups)]
+
+        # plot image
+        imgs = channel_groups_to_imgs(x, channel_groups)
+        plot_channel_groups(
+            img_axes, imgs, channel_groups, plot_title=plot_title)
+
+        if y is None and z is None:
+            return
+
+        # plot labels
+        class_colors = self.class_colors
+        colors = [
+            color_to_triple(c) if isinstance(c, str) else c
+            for c in class_colors
+        ]
+        colors = np.array(colors) / 255.
+        cmap = mcolors.ListedColormap(colors)
+
+        if y is not None:
+            label_ax: 'Axes' = axs[len(channel_groups)]
+            self.plot_gt(label_ax, y, num_classes=len(colors), cmap=cmap)
+            if plot_title:
+                label_ax.set_title('Ground truth')
+
+        if z is not None:
+            pred_ax = axs[-1]
+            self.plot_pred(pred_ax, z, num_classes=len(colors), cmap=cmap)
+            if plot_title:
+                pred_ax.set_title('Predicted labels')
+
+        # add a legend to the rightmost subplot
+        class_names = self.class_names
+        if class_names:
+            legend_items = [
+                mpatches.Patch(facecolor=col, edgecolor='black', label=name)
+                for col, name in zip(colors, class_names)
+            ]
+            axs[-1].legend(
+                handles=legend_items,
+                loc='center left',
+                bbox_to_anchor=(1., 0.5))
+
+    def plot_gt(self, ax: 'Axes', y: Union[torch.Tensor, np.ndarray],
+                num_classes: int, cmap: 'Colormap', **kwargs):
+        ax.imshow(
+            y,
+            vmin=0,
+            vmax=num_classes,
+            cmap=cmap,
+            interpolation='none',
+            **kwargs)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    def plot_pred(self, ax: 'Axes', z: Union[torch.Tensor, np.ndarray],
+                  num_classes: int, cmap: 'Colormap', **kwargs):
+        if z.ndim == 3:
+            z = z.argmax(dim=0)
+        self.plot_gt(ax, y=z, num_classes=num_classes, cmap=cmap, **kwargs)
+
+    def get_plot_ncols(self, **kwargs) -> int:
+        x = kwargs['x']
+        nb_img_channels = x.shape[1]
+        ncols = len(self.get_channel_display_groups(nb_img_channels))
+        if kwargs.get('y') is not None:
+            ncols += 1
+        if kwargs.get('z') is not None:
+            ncols += 1
+        return ncols
+
+def collate_fn(batch):
+    processed_batch = []
+    for item in batch:
+        image, label = item
+        
+        # Replace NaN values with 0 in the image
+        image = torch.nan_to_num(image, nan=0.0)
+        
+        # Check if there are still any NaN values in the label
+        if torch.isnan(label).any():
+            print(f"NaN found in label")
+            continue        
+        processed_batch.append((image, label))
+    
+    return torch.utils.data.dataloader.default_collate(processed_batch)
+
+class BaseCrossValidator:
+    def __init__(self, datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1):
+        self.datasets = datasets
+        self.n_splits = n_splits
+        self.val_ratio = val_ratio
+        self.test_ratio = test_ratio
+        self.city_splits = self._create_splits()
+
+    def _create_splits(self):
+        city_splits = {}
+        for city, dataset in self.datasets.items():
+            n_samples = len(dataset)
+            
+            # Create test set
+            train_val_idx, test_idx = train_test_split(
+                range(n_samples), 
+                test_size=self.test_ratio, 
+                random_state=42
+            )
+            
+            # Convert to lists
+            train_val_idx = list(train_val_idx)
+            test_idx = list(test_idx)
+            
+            # Create train-val splits
+            n_val = int(len(train_val_idx) * self.val_ratio / (1 - self.test_ratio))
+            
+            kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=42)
+            splits = list(kf.split(train_val_idx))
+            
+            # Adjust splits to maintain val_ratio
+            adjusted_splits = []
+            for train_idx, val_idx in splits:
+                if len(val_idx) > n_val:
+                    extra = len(val_idx) - n_val
+                    train_idx = np.concatenate([train_idx, val_idx[:extra]])
+                    val_idx = val_idx[extra:]
+                adjusted_splits.append((
+                    [train_val_idx[i] for i in train_idx],
+                    [train_val_idx[i] for i in val_idx],
+                    test_idx  # Now this is already a list
+                ))
+            
+            city_splits[city] = adjusted_splits
+        return city_splits
+
+    def get_split(self, split_index):
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def get_windows_and_labels_for_city(self, city, split_index):
+        raise NotImplementedError("Subclasses must implement this method")
+
+class SingleInputCrossValidator(BaseCrossValidator):
+    def get_split(self, split_index):
+        train_datasets = []
+        val_datasets = []
+        test_datasets = []
+
+        for city, dataset in self.datasets.items():
+            train_idx, val_idx, test_idx = self.city_splits[city][split_index]
+            train_subset = Subset(dataset, train_idx)
+            val_subset = Subset(dataset, val_idx)
+            test_subset = Subset(dataset, test_idx)
+            train_datasets.append(train_subset)
+            val_datasets.append(val_subset)
+            test_datasets.append(test_subset)
+
+        return ConcatDataset(train_datasets), ConcatDataset(val_datasets), ConcatDataset(test_datasets)
+
+    def get_windows_and_labels_for_city(self, city, split_index):
+        if city not in self.datasets:
+            raise ValueError(f"City '{city}' not found in datasets.")
+
+        dataset = self.datasets[city]
+        train_idx, val_idx, test_idx = self.city_splits[city][split_index]
+
+        windows = dataset.windows
+        labels = ['train' if i in train_idx else 'val' if i in val_idx else 'test' for i in range(len(windows))]
+
+        return windows, labels
+
+class MultiInputCrossValidator(BaseCrossValidator):
+    def get_split(self, split_index):
+        train_datasets = []
+        val_datasets = []
+        test_datasets = []
+
+        for city, dataset in self.datasets.items():
+            train_idx, val_idx, test_idx = self.city_splits[city][split_index]
+            train_subset = Subset(dataset, train_idx)
+            val_subset = Subset(dataset, val_idx)
+            test_subset = Subset(dataset, test_idx)
+            train_datasets.append(train_subset)
+            val_datasets.append(val_subset)
+            test_datasets.append(test_subset)
+
+        return ConcatDataset(train_datasets), ConcatDataset(val_datasets), ConcatDataset(test_datasets)
+
+    def get_windows_and_labels_for_city(self, city, split_index):
+        if city not in self.datasets:
+            raise ValueError(f"City '{city}' not found in datasets.")
+
+        dataset = self.datasets[city]
+        train_idx, val_idx, test_idx = self.city_splits[city][split_index]
+
+        # Assuming the first dataset in MergeDataset is the one with windows
+        windows = dataset.datasets[0].windows
+        labels = ['train' if i in train_idx else 'val' if i in val_idx else 'test' for i in range(len(windows))]
+
+        return windows, labels
+
+
+# Visulaization helper functions
+def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, show_buildings=True):
+    if city not in datasets:
+        raise ValueError(f"City '{city}' not found in datasets.")
+    
+    dataset = datasets[city]
+    
+    # Get the data for the specified window index
+    data = dataset[window_index]
+    
+    # Assuming data is a tuple (sentinel_data, buildings_data)
+    sentinel_data, buildings_data = data[0]
+    sentinel_label, _ = data[1]  # We only use sentinel_label
+    
+    # Set up the plot
+    n_cols = 3 if show_sentinel else 1
+    if show_buildings:
+        n_cols += 1
+    
+    fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 5))
+    if n_cols == 1:
+        axes = [axes]
+    
+    plot_index = 0
+    
+    if show_sentinel:
+        # Plot Sentinel data as RGB (R, G, B are channels 1, 2, 3)
+        sentinel_rgb = sentinel_data[1:4].permute(1, 2, 0)
+        sentinel_rgb = sentinel_rgb.float()  # Ensure it's float
+        
+        # Normalize to [0, 1] for display
+        sentinel_rgb = (sentinel_rgb - sentinel_rgb.min()) / (sentinel_rgb.max() - sentinel_rgb.min())
+        
+        axes[plot_index].imshow(sentinel_rgb.cpu().numpy())
+        axes[plot_index].set_title(f"{city} - Sentinel RGB")
+        axes[plot_index].axis('off')
+        plot_index += 1
+        
+        # Plot NIR as a separate grayscale image
+        nir = sentinel_data[0]
+        nir = (nir - nir.min()) / (nir.max() - nir.min())  # Normalize NIR
+        axes[plot_index].imshow(nir.cpu().numpy(), cmap='gray')
+        axes[plot_index].set_title(f"{city} - Sentinel NIR")
+        axes[plot_index].axis('off')
+        plot_index += 1
+        
+        # Plot Sentinel label
+        sentinel_label_squeezed = sentinel_label.squeeze()
+        axes[plot_index].imshow(sentinel_label_squeezed.cpu().numpy(), cmap='viridis')
+        axes[plot_index].set_title(f"{city} - Label")
+        axes[plot_index].axis('off')
+        plot_index += 1
+    
+    if show_buildings:
+        # Plot Buildings data
+        buildings_data_squeezed = buildings_data.squeeze()
+        axes[plot_index].imshow(buildings_data_squeezed.cpu().numpy(), cmap='gray')
+        axes[plot_index].set_title(f"{city} - Buildings Data")
+        axes[plot_index].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+def show_single_tile_sentinel(datasets, city, window_index):
+    dataset = datasets[city]
+    
+    # Get the data for the specified window index
+    data = dataset[window_index]
+    
+    # Assuming data is a tuple (sentinel_data, sentinel_label)
+    sentinel_data, sentinel_label = data
+    
+    # Set up the plot
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    # Plot Sentinel data as RGB (R, G, B are channels 1, 2, 3)
+    sentinel_rgb = sentinel_data[1:4].permute(1, 2, 0)
+    sentinel_rgb = sentinel_rgb.float()  # Ensure it's float
+    
+    # Normalize to [0, 1] for display
+    sentinel_rgb = (sentinel_rgb - sentinel_rgb.min()) / (sentinel_rgb.max() - sentinel_rgb.min())
+    
+    axes[0].imshow(sentinel_rgb.cpu().numpy())
+    axes[0].set_title(f"{city} - Sentinel Data (RGB)")
+    axes[0].axis('off')
+    
+    # Plot NIR as a separate grayscale image
+    nir = sentinel_data[0]
+    nir = (nir - nir.min()) / (nir.max() - nir.min())  # Normalize NIR
+    axes[1].imshow(nir.cpu().numpy(), cmap='gray')
+    axes[1].set_title(f"{city} - Sentinel NIR")
+    axes[1].axis('off')
+    
+    # Plot Sentinel label
+    sentinel_label_squeezed = sentinel_label.squeeze()
+    axes[2].imshow(sentinel_label_squeezed.cpu().numpy(), cmap='viridis')
+    axes[2].set_title(f"{city} - Sentinel Label")
+    axes[2].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+def show_single_tile_buildings(datasets, city, window_index):
+    dataset = datasets[city]
+    data = dataset[window_index]
+    print(f"Data shape: {data[0].max()}")
+    buildings_data, buildings_label = data
+    
+    # Set up the plot
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    
+    # Plot Buildings data
+    buildings_data_squeezed = buildings_data.squeeze()
+    axes[0].imshow(buildings_data_squeezed, cmap='gray')
+    axes[0].set_title(f"{city} - Buildings Data")
+    axes[0].axis('off')
+    
+    # Plot Buildings label
+    axes[1].imshow(buildings_label, cmap='grey')
+    axes[1].set_title(f"{city} - Buildings Label")
+    axes[1].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
 
 def show_windows(img, windows, window_labels, title=''):
     from matplotlib import pyplot as plt
@@ -825,8 +1285,21 @@ def buil_create_full_image(source) -> np.ndarray:
     chip = source._get_chip(extent)    
     return chip
 
+def get_label_source_from_merge_dataset(merge_dataset):
+    sentinel_dataset = merge_dataset.datasets[0]
+    return sentinel_dataset.scene.label_source
 
-# Function to get data from OMF
+def singlesource_show_windows_for_city(city, split_index, cv, datasets):
+    windows, labels = cv.get_windows_and_labels_for_city(city, split_index)
+    
+    # Get the full image for the city
+    img_full = senitnel_create_full_image(datasets[city].scene.label_source)
+    
+    # Show the windows
+    show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {split_index + 1})')
+
+
+# Functions to get data from OMF
 def query_buildings_data(xmin, ymin, xmax, ymax):
     import duckdb
     con = duckdb.connect(os.path.join(grandparent_dir, 'data/0/data.db'))
