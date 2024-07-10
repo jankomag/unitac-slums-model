@@ -205,6 +205,48 @@ cities = {
         }
 }
 
+def geoms_to_raster(df: gpd.GeoDataFrame, window: 'Box',
+                    background_class_id: int, all_touched: bool) -> np.ndarray:
+    """Rasterize geometries that intersect with the window.
+
+    Args:
+        df (gpd.GeoDataFrame): All label geometries in the scene.
+        window (Box): The part of the scene to rasterize.
+        background_class_id (int): Class ID to use for pixels that don't
+            fall under any label geometry.
+        all_touched (bool): If True, all pixels touched by geometries will be
+            burned in. If false, only pixels whose center is within the
+            polygon or that are selected by Bresenham's line algorithm will be
+            burned in. (See :func:`.rasterize` for more details).
+            Defaults to False.
+
+    Returns:
+        np.ndarray: A raster.
+    """
+    if len(df) == 0:
+        return np.full(window.size, background_class_id, dtype=np.uint8)
+
+    window_geom = window.to_shapely()
+
+    # subset to shapes that intersect window
+    df_int = df[df.intersects(window_geom)]
+    # transform to window frame of reference
+    shapes = df_int.translate(xoff=-window.xmin, yoff=-window.ymin)
+    # class IDs of each shape
+    class_ids = df_int['class_id']
+
+    if len(shapes) > 0:
+        raster = rasterize(
+            shapes=list(zip(shapes, class_ids)),
+            out_shape=window.size,
+            fill=background_class_id,
+            dtype=np.uint8,
+            all_touched=all_touched)
+    else:
+        raster = np.full(window.size, background_class_id, dtype=np.uint8)
+
+    return raster
+
 def _to_tuple(x: T, n: int = 2) -> Tuple[T, ...]:
     """Convert to n-tuple if not already an n-tuple."""
     if isinstance(x, tuple):
@@ -328,7 +370,7 @@ class CustomRasterizedSource(RasterSource):
             window,
             background_class_id=self.background_class_id,
             all_touched=self.all_touched)
-
+        
         if out_shape is not None:
             chip = self.resize(chip, out_shape)
 
@@ -569,7 +611,7 @@ class CustomSlidingWindowGeoDataset(GeoDataset):
             within_aoi: bool = True,
             transform: Optional[A.BasicTransform] = None,
             transform_type: Optional[TransformType] = None,
-            normalize: bool = True,
+            normalize: bool = False,
             to_pytorch: bool = True,
             return_window: bool = False):
         
@@ -624,7 +666,7 @@ class PolygonWindowGeoDataset(GeoDataset):
         padding: Optional[Union[NonNegInt, Tuple[NonNegInt, NonNegInt]]] = None,
         transform: Optional[A.BasicTransform] = None,
         transform_type: Optional[TransformType] = None,
-        normalize: bool = True,
+        normalize: bool = False,
         to_pytorch: bool = True,
         return_window: bool = False,
         within_aoi: bool = False,
@@ -828,24 +870,6 @@ class SplittingSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDatas
 
         return subset  
     
-class CustomRasterizedSource(RasterizedSource):
-        def _get_chip(self, window: 'Box', out_shape: Optional[Tuple[int, int]] = None) -> np.ndarray:
-            window = window.to_global_coords(self.bbox)
-            chip = geoms_to_raster(
-                self.df,
-                window,
-                background_class_id=self.background_class_id,
-                all_touched=self.all_touched)
-            
-            # Custom rasterization logic
-            chip = np.where(chip == 1, 1.0, np.where(chip == 2, 0.5, 0.0))
-
-            if out_shape is not None:
-                chip = self.resize(chip, out_shape)
-
-            # Add third singleton dim since rasters must have >=1 channel.
-            return np.expand_dims(chip, 2)
-
 class CustomSemanticSegmentationVisualizer(Visualizer):
     def plot_batch(self,
                    x: List[Tuple[torch.Tensor, torch.Tensor]],
@@ -1053,16 +1077,11 @@ class BaseCrossValidator:
         return city_splits
 
     def get_split(self, split_index):
-        raise NotImplementedError("Subclasses must implement this method")
-
-    def get_windows_and_labels_for_city(self, city, split_index):
-        raise NotImplementedError("Subclasses must implement this method")
-
-class SingleInputCrossValidator(BaseCrossValidator):
-    def get_split(self, split_index):
         train_datasets = []
         val_datasets = []
         test_datasets = []
+        val_city_indices = {}
+        current_val_index = 0
 
         for city, dataset in self.datasets.items():
             train_idx, val_idx, test_idx = self.city_splits[city][split_index]
@@ -1072,9 +1091,20 @@ class SingleInputCrossValidator(BaseCrossValidator):
             train_datasets.append(train_subset)
             val_datasets.append(val_subset)
             test_datasets.append(test_subset)
+            
+            # Store the indices for this city's validation set
+            val_city_indices[city] = (current_val_index, len(val_idx))
+            current_val_index += len(val_idx)
 
-        return ConcatDataset(train_datasets), ConcatDataset(val_datasets), ConcatDataset(test_datasets)
+        return (ConcatDataset(train_datasets), 
+                ConcatDataset(val_datasets), 
+                ConcatDataset(test_datasets), 
+                val_city_indices)
 
+    def get_windows_and_labels_for_city(self, city, split_index):
+        raise NotImplementedError("Subclasses must implement this method")
+
+class SingleInputCrossValidator(BaseCrossValidator):
     def get_windows_and_labels_for_city(self, city, split_index):
         if city not in self.datasets:
             raise ValueError(f"City '{city}' not found in datasets.")
@@ -1088,22 +1118,6 @@ class SingleInputCrossValidator(BaseCrossValidator):
         return windows, labels
 
 class MultiInputCrossValidator(BaseCrossValidator):
-    def get_split(self, split_index):
-        train_datasets = []
-        val_datasets = []
-        test_datasets = []
-
-        for city, dataset in self.datasets.items():
-            train_idx, val_idx, test_idx = self.city_splits[city][split_index]
-            train_subset = Subset(dataset, train_idx)
-            val_subset = Subset(dataset, val_idx)
-            test_subset = Subset(dataset, test_idx)
-            train_datasets.append(train_subset)
-            val_datasets.append(val_subset)
-            test_datasets.append(test_subset)
-
-        return ConcatDataset(train_datasets), ConcatDataset(val_datasets), ConcatDataset(test_datasets)
-
     def get_windows_and_labels_for_city(self, city, split_index):
         if city not in self.datasets:
             raise ValueError(f"City '{city}' not found in datasets.")
@@ -1116,8 +1130,7 @@ class MultiInputCrossValidator(BaseCrossValidator):
         labels = ['train' if i in train_idx else 'val' if i in val_idx else 'test' for i in range(len(windows))]
 
         return windows, labels
-
-
+    
 # Visulaization helper functions
 def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, show_buildings=True):
     if city not in datasets:
@@ -1223,7 +1236,6 @@ def show_single_tile_sentinel(datasets, city, window_index):
 def show_single_tile_buildings(datasets, city, window_index):
     dataset = datasets[city]
     data = dataset[window_index]
-    print(f"Data shape: {data[0].max()}")
     buildings_data, buildings_label = data
     
     # Set up the plot
@@ -1419,7 +1431,7 @@ def make_buildings_raster(image_path, labels_path, resolution=5):
     sentinel_label_raster_source = RasterizedSource(label_vector_source, background_class_id=class_config.null_class_id)
     label_source = SemanticSegmentationLabelSource(sentinel_label_raster_source, class_config=class_config)
     
-    rasterized_buildings_source = RasterizedSource(
+    rasterized_buildings_source = CustomRasterizedSource(
         buildings_vector_source,
         background_class_id=0,
         bbox=label_source.bbox)

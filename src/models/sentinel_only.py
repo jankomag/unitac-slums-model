@@ -49,9 +49,9 @@ sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
 from src.models.model_definitions import SentinelDeepLabV3, PredictionsIterator, create_predictions_and_ground_truth_plot, check_nan_params
-from src.features.dataloaders import (create_datasets, create_sentinel_scene, cities, CustomSlidingWindowGeoDataset,
-                                      senitnel_create_full_image, show_windows, PolygonWindowGeoDataset)
-                                      #SingleInputCrossValidator, singlesource_show_windows_for_city)
+from src.features.dataloaders import (create_datasets, create_sentinel_scene, cities, CustomSlidingWindowGeoDataset, collate_fn,
+                                      senitnel_create_full_image, show_windows, PolygonWindowGeoDataset,
+                                      SingleInputCrossValidator, singlesource_show_windows_for_city, show_single_tile_sentinel)
 
 from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
 from rastervision.core.data import (Scene, ClassInferenceTransformer, RasterizedSource,
@@ -151,11 +151,12 @@ cv = SingleInputCrossValidator(sentinel_datasets, n_splits=2, val_ratio=0.2, tes
 split_index = 0
 
 # Preview a city with sliding windows
-city = 'Belmopan'
-singlesource_show_windows_for_city(city, 1, cv, sentinel_datasets)
+city = 'BelizeCity'
+singlesource_show_windows_for_city(city, split_index, cv, sentinel_datasets)
+
 show_single_tile_sentinel(sentinel_datasets, city, 3)
 
-train_dataset, val_dataset, test_dataset = cv.get_split(split_index)
+train_dataset, val_dataset, test_dataset, val_city_indices = cv.get_split(split_index)
 
 print(f"Train dataset size: {len(train_dataset)}")
 print(f"Validation dataset size: {len(val_dataset)}")
@@ -170,6 +171,7 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin
 # Create model
 hyperparameters = {
     'model': 'DLV3',
+    'split_index': split_index,
     'train_cities': 'all',
     'batch_size': batch_size,
     'use_deeplnafrica': True,
@@ -201,7 +203,7 @@ run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     dirpath=output_dir,
-    filename='multimodal_runid{run_id}-{epoch:02d}-{val_loss:.4f}',
+    filename=f'multimodal_{split_index}_runid{run_id}-{{epoch:02d}}-{{val_loss:.4f}}',
     save_top_k=3,
     save_last=True,
     mode='min')
@@ -223,13 +225,52 @@ trainer = Trainer(
 trainer.fit(model, train_loader, val_loader)
 
 # Make predictions
-best_model_path = checkpoint_callback.best_model_path
+# best_model_path = checkpoint_callback.best_model_path
 # best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/last-1.ckpt"
-best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path) # SentinelSimpleSS SentinelDeeplabv3
+best_model = SentinelDeepLabV3() #.load_from_checkpoint(best_model_path)
 best_model.eval()
 check_nan_params(best_model)
 
-strided_fullds_SD, _, _, _ = create_datasets(SentinelScene_SD, imgsize=256, stride=128, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42)
+strided_fullds_SD = CustomSlidingWindowGeoDataset(SentinelScene_SD, size=256, stride=128, padding=0, city='SantoDomingo', transform=None, transform_type=TransformType.noop)
+
+class PredictionsIterator:
+    def __init__(self, model, dataset, device):
+        self.model = model
+        self.dataset = dataset
+        self.device = device
+        self.predictions = []
+        
+        for idx in range(len(dataset)):
+            x, _ = dataset[idx]
+            x = x.unsqueeze(0).to(device)
+            
+            with torch.no_grad():
+                output = model(x)
+            
+            probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+            
+            window = self.get_window(dataset, idx)
+            
+            self.predictions.append((window, probabilities))
+    
+    def get_window(self, dataset, idx):
+        if isinstance(dataset, Subset):
+            return self.get_window(dataset.dataset, dataset.indices[idx])
+        elif isinstance(dataset, ConcatDataset):
+            dataset_idx, sample_idx = self.get_concat_dataset_indices(dataset, idx)
+            return self.get_window(dataset.datasets[dataset_idx], sample_idx)
+        else:
+            return dataset.windows[idx]
+    
+    def get_concat_dataset_indices(self, concat_dataset, idx):
+        for dataset_idx, dataset in enumerate(concat_dataset.datasets):
+            if idx < len(dataset):
+                return dataset_idx, idx
+            idx -= len(dataset)
+        raise IndexError('Index out of range')
+    
+    def __iter__(self):
+        return iter(self.predictions)
 
 predictions_iterator = PredictionsIterator(best_model, strided_fullds_SD, device=device)
 windows, predictions = zip(*predictions_iterator)
@@ -253,6 +294,7 @@ plt.show()
 pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
     extent=pred_labels.extent,
     num_classes=len(class_config))
+
 scores = pred_labels.get_score_arr(pred_labels.extent)
 pred_array_discrete = (scores > 0.5).astype(int)
 pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
@@ -261,20 +303,21 @@ evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=
 inf_eval = evaluation.class_to_eval_item[1]
 inf_eval.f1
 
-def calculate_f1_score(model, sent_val_ds, device):
-    predictions_iterator = PredictionsIterator(model, sent_val_ds, device=device)
+# Calculate F1 scores
+def calculate_f1_score(model, dataset, device, scene):
+    predictions_iterator = PredictionsIterator(model, dataset, device=device)
     windows, predictions = zip(*predictions_iterator)
 
     # Create SemanticSegmentationLabels from predictions
     pred_labels = SemanticSegmentationLabels.from_predictions(
         windows,
         predictions,
-        extent=sent_val_ds.scene.extent,
+        extent=scene.extent,
         num_classes=len(class_config),
         smooth=True
     )
 
-    gt_labels = sent_val_ds.scene.label_source.get_labels()
+    gt_labels = scene.label_source.get_labels()
 
     # Evaluate against labels:
     pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
@@ -288,25 +331,41 @@ def calculate_f1_score(model, sent_val_ds, device):
     inf_eval = evaluation.class_to_eval_item[1]
     return inf_eval.f1
 
-# List of cities and their corresponding val datasets
-citie_valds = [
-    ('Santo Domingo', sent_val_ds_SD),
-    ('Guatemala City', sent_val_ds_GC),
-    ('Tegucigalpa', sent_val_ds_TG),
-    ('Managua', sent_val_ds_MN),
-    ('Panama', sent_val_ds_PN),
-    ('San Salvador', sent_val_ds_SS),
-    ('San Jose', sent_val_ds_SJ),
-    ('Belize City', sent_val_ds_BL),
-    ('Belmopan', sent_val_ds_BM)
-]
+city_f1_scores = {}
 
-# Iterate through each city and calculate F1 score
-for city_name, sent_val_ds in citie_valds:
-    f1_score = calculate_f1_score(best_model, sent_val_ds, device)
-    print(f"{city_name} - F1 Score: {f1_score:.4f}")
+for city, (dataset_index, num_samples) in val_city_indices.items():
+    # Skip cities with no validation samples
+    if num_samples == 0:
+        print(f"Skipping {city} as it has no validation samples.")
+        continue
 
+    # Get the subset of the validation dataset for this city
+    city_val_dataset = Subset(val_dataset, range(dataset_index, dataset_index + num_samples))
+    
+    # Get the scene for this city
+    city_scene = sentinel_datasets[city].scene
+    
+    try:
+        # Calculate F1 score for this city
+        f1_score = calculate_f1_score(best_model, city_val_dataset, device, city_scene)
+        
+        city_f1_scores[city] = f1_score
+        print(f"F1 score for {city}: {f1_score}")
+    except Exception as e:
+        print(f"Error calculating F1 score for {city}: {str(e)}")
 
+# Calculate overall F1 score
+try:
+    overall_f1 = calculate_f1_score(best_model, val_dataset, device, val_dataset.datasets[0].scene)
+    print(f"Overall F1 score: {overall_f1}")
+except Exception as e:
+    print(f"Error calculating overall F1 score: {str(e)}")
+
+# Print summary of cities with F1 scores
+print("\nSummary of F1 scores:")
+for city, score in city_f1_scores.items():
+    print(f"{city}: {score}")
+print(f"Number of cities with F1 scores: {len(city_f1_scores)}")
 
 # # # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(

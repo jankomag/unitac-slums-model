@@ -124,7 +124,7 @@ show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {s
 
 show_single_tile_multi(multimodal_datasets, city, 5, show_sentinel=True, show_buildings=True)
 
-train_dataset, val_dataset, test_dataset = cv.get_split(split_index)
+train_dataset, val_dataset, test_dataset, val_city_indices = cv.get_split(split_index)
 print(f"Train dataset size: {len(train_dataset)}")
 print(f"Validation dataset size: {len(val_dataset)}")
 print(f"Test dataset size: {len(test_dataset)}")
@@ -141,6 +141,7 @@ data_module = MultiModalDataModule(train_loader, val_loader)
 hyperparameters = {
     'model': 'DLV3',
     'train_cities': 'all',
+    'split_index': split_index,
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'labels_size': 256,
@@ -169,7 +170,7 @@ checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     save_last=True,
     dirpath=output_dir,
-    filename=f'multimodal_BCH{buil_channels}_BKR{buil_kernel}_{{epoch:02d}}-{{val_loss:.4f}}',
+    filename=f'multimodal_{split_index}_BCH{buil_channels}_BKR{buil_kernel}_{{epoch:02d}}-{{val_loss:.4f}}',
     save_top_k=6,
     mode='min')
 early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=40)
@@ -205,9 +206,9 @@ trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation
 # # best SD_DLV3/last.ckpt
-# best_model_path_dplv3 = os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/all_DLV3/last-v4.ckpt")
-best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=buil_channels, buil_kernel1=buil_kernel)
+best_model_path_dplv3 = os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/all_DLV3/last-v1.ckpt")
+# best_model_path_dplv3 = checkpoint_callback.best_model_path
+best_model = MultiResolutionDeepLabV3(buil_channels=64, buil_kernel1=3)
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict, strict=True)
@@ -215,11 +216,69 @@ best_model = best_model.to(device)
 best_model.eval()
 check_nan_params(best_model)
 
-# buildingsGeoDataset, _, _, _ = create_datasets(buildings_sceneSD, imgsize=512, stride = 256, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42, augment=False)
-# sentinelGeoDataset, _, _, _ = create_datasets(sentinel_sceneSD, imgsize=256, stride = 128, padding=0, val_ratio=0.2, test_ratio=0.1, seed=42,augment=False)
-# sentinelGeoDataset_SD, buildingsGeoDataset_SD
+class MultiResPredictionsIterator:
+    def __init__(self, model, merged_dataset, device='cuda'):
+        self.model = model
+        self.dataset = merged_dataset
+        self.device = device
+        
+        self.predictions = []
+        
+        with torch.no_grad():
+            for idx in range(len(merged_dataset)):
+                sentinel, buildings = self.get_item(merged_dataset, idx)
+                
+                sentinel_data = sentinel[0].unsqueeze(0).to(device)
+                sentlabels = sentinel[1].unsqueeze(0).to(device)
 
-predictions_iterator = MultiResPredictionsIterator(best_model, sent_val_ds_SD, buil_val_ds_SD, device=device)
+                buildings_data = buildings[0].unsqueeze(0).to(device)
+                labels = buildings[1].unsqueeze(0).to(device)
+
+                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
+                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
+                
+                # Store predictions along with window coordinates
+                window = self.get_window(merged_dataset, idx)
+                self.predictions.append((window, probabilities))
+
+    def get_item(self, dataset, idx):
+        if isinstance(dataset, Subset):
+            return self.get_item(dataset.dataset, dataset.indices[idx])
+        elif isinstance(dataset, ConcatDataset):
+            dataset_idx, sample_idx = self.get_concat_dataset_indices(dataset, idx)
+            return self.get_item(dataset.datasets[dataset_idx], sample_idx)
+        elif isinstance(dataset, MergeDataset):
+            return dataset[idx]
+        else:
+            raise TypeError(f"Unexpected dataset type: {type(dataset)}")
+
+    def get_window(self, dataset, idx):
+        if isinstance(dataset, Subset):
+            return self.get_window(dataset.dataset, dataset.indices[idx])
+        elif isinstance(dataset, ConcatDataset):
+            dataset_idx, sample_idx = self.get_concat_dataset_indices(dataset, idx)
+            return self.get_window(dataset.datasets[dataset_idx], sample_idx)
+        elif isinstance(dataset, MergeDataset):
+            # Assume the first dataset in MergeDataset has the windows
+            return dataset.datasets[0].windows[idx]
+        else:
+            raise TypeError(f"Unexpected dataset type: {type(dataset)}")
+
+    def get_concat_dataset_indices(self, concat_dataset, idx):
+        for dataset_idx, dataset in enumerate(concat_dataset.datasets):
+            if idx < len(dataset):
+                return dataset_idx, idx
+            idx -= len(dataset)
+        raise IndexError('Index out of range')
+
+    def __iter__(self):
+        return iter(self.predictions)
+    
+sent_strided_fullds_SD = CustomSlidingWindowGeoDataset(sentinel_sceneSD, size=256, stride=128, padding=0, city='SantoDomingo', transform=None, transform_type=TransformType.noop)
+buil_strided_fullds_SD = CustomSlidingWindowGeoDataset(buildings_sceneSD, size=512, stride=256, padding=0, city='SantoDomingo', transform=None, transform_type=TransformType.noop)
+mergedds = MergeDataset(sent_strided_fullds_SD, buil_strided_fullds_SD)
+
+predictions_iterator = MultiResPredictionsIterator(best_model, mergedds, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
@@ -252,22 +311,21 @@ evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=
 inf_eval = evaluation.class_to_eval_item[1]
 print(f"F1:{inf_eval.f1}")
 
-
-# Function to calculate F1 score
-def calculate_f1_score(model, sent_val_ds, buil_val_ds, device):
-    predictions_iterator = MultiResPredictionsIterator(model, sent_val_ds, buil_val_ds, device=device)
+# Calculate F1 scores
+def calculate_multimodal_f1_score(model, merged_dataset, device, scene):
+    predictions_iterator = MultiResPredictionsIterator(model, merged_dataset, device=device)
     windows, predictions = zip(*predictions_iterator)
 
     # Create SemanticSegmentationLabels from predictions
     pred_labels = SemanticSegmentationLabels.from_predictions(
         windows,
         predictions,
-        extent=sent_val_ds.scene.extent,
+        extent=scene.extent,
         num_classes=len(class_config),
         smooth=True
     )
 
-    gt_labels = sent_val_ds.scene.label_source.get_labels()
+    gt_labels = scene.label_source.get_labels()
 
     # Evaluate against labels:
     pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
@@ -281,24 +339,41 @@ def calculate_f1_score(model, sent_val_ds, buil_val_ds, device):
     inf_eval = evaluation.class_to_eval_item[1]
     return inf_eval.f1
 
-# List of cities and their corresponding val datasets
-citie_valds = [
-    ('Santo Domingo', sent_val_ds_SD, buil_val_ds_SD),
-    ('Guatemala City', sent_val_ds_GC, buil_val_ds_GC),
-    ('Tegucigalpa', sent_val_ds_TG, buil_val_ds_TG),
-    ('Managua', sent_val_ds_MN, buil_val_ds_MN),
-    ('Panama', sent_val_ds_PN, buil_val_ds_PN),
-    ('San Salvador', sent_val_ds_SS, buil_val_ds_SS),
-    ('San Jose', sent_val_ds_SJ, buil_val_ds_SJ),
-    ('Belize City', sent_val_ds_BL, buil_val_ds_BL),
-    ('Belmopan', sent_val_ds_BM, buil_val_ds_BM)
-]
+city_f1_scores = {}
 
-# Iterate through each city and calculate F1 score
-for city_name, sent_val_ds, buil_val_ds in citie_valds:
-    f1_score = calculate_f1_score(best_model, sent_val_ds, buil_val_ds, device)
-    print(f"{city_name} - F1 Score: {f1_score:.4f}")
+for city, (dataset_index, num_samples) in val_city_indices.items():
+    # Skip cities with no validation samples
+    if num_samples == 0:
+        print(f"Skipping {city} as it has no validation samples.")
+        continue
 
+    # Get the subset of the validation dataset for this city
+    city_val_dataset = Subset(val_dataset, range(dataset_index, dataset_index + num_samples))
+    
+    # Get the scene for this city
+    city_scene = multimodal_datasets[city].datasets[0].scene  # Assuming the first dataset is sentinel
+    
+    try:
+        # Calculate F1 score for this city
+        f1_score = calculate_multimodal_f1_score(best_model, city_val_dataset, device, city_scene)
+        
+        city_f1_scores[city] = f1_score
+        print(f"F1 score for {city}: {f1_score}")
+    except Exception as e:
+        print(f"Error calculating F1 score for {city}: {str(e)}")
+
+# Calculate overall F1 score
+try:
+    overall_f1 = calculate_multimodal_f1_score(best_model, val_dataset, device, val_dataset.datasets[0].datasets[0].scene)
+    print(f"Overall F1 score: {overall_f1}")
+except Exception as e:
+    print(f"Error calculating overall F1 score: {str(e)}")
+
+# Print summary of cities with F1 scores
+print("\nSummary of F1 scores:")
+for city, score in city_f1_scores.items():
+    print(f"{city}: {score}")
+print(f"Number of cities with F1 scores: {len(city_f1_scores)}")
 
 # # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(
