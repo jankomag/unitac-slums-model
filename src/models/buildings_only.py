@@ -15,6 +15,7 @@ import torch.nn.functional as F
 import json
 from shapely.geometry import shape, mapping
 from shapely.affinity import translate
+from torch.utils.data import ConcatDataset, Subset
 
 from typing import Any, Optional, Tuple, Union, Sequence
 from pyproj import Transformer
@@ -91,7 +92,7 @@ from src.models.model_definitions import (BuildingsDeepLabV3, CustomVectorOutput
 
 from src.features.dataloaders import (buil_create_full_image, senitnel_create_full_image, create_scenes_for_city,
     create_datasets, create_building_scene,cities, show_windows, SingleInputCrossValidator, singlesource_show_windows_for_city, show_single_tile_buildings,
-    PolygonWindowGeoDataset, MergeDataset, CustomSlidingWindowGeoDataset)
+    PolygonWindowGeoDataset, MergeDataset, CustomSlidingWindowGeoDataset, collate_fn)
 
 from rastervision.core.data import (
     ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
@@ -147,7 +148,6 @@ buildGeoDataset_BL = PolygonWindowGeoDataset(buildings_sceneBL,city='BelizeCity'
 # Belmopan
 buildings_sceneBM = create_building_scene('Belmopan', cities['Belmopan'])
 buildGeoDataset_BM = PolygonWindowGeoDataset(buildings_sceneBM, city='Belmopan', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-buildings_sceneBM.raster_source.get_chip(Box(0, 0, 512, 512)).max()
 
 # Create datasets for each city
 buildings_datasets = {
@@ -157,13 +157,13 @@ buildings_datasets = {
     'Managua': buildGeoDataset_MN,
     'Panama': buildGeoDataset_PN,
     'SanSalvador': buildGeoDataset_SS,
-    'SanJose': buildGeoDataset_SJ,
+    # 'SanJose': buildGeoDataset_SJ,
     'BelizeCity': buildGeoDataset_BL,
     'Belmopan': buildGeoDataset_BM
 }
 
 cv = SingleInputCrossValidator(buildings_datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1)
-split_index = 1
+split_index = 0
 
 # Preview a city with sliding windows
 city = 'SantoDomingo'
@@ -178,7 +178,7 @@ print(f"Validation dataset size: {len(val_dataset)}")
 print(f"Test dataset size: {len(test_dataset)}")
 
 # Create DataLoaders
-batch_size = 24
+batch_size = 16
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, collate_fn=collate_fn)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_fn)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_fn)
@@ -195,7 +195,7 @@ hyperparameters = {
     'weight_decay': 0,
     'gamma': 0.5,
     'sched_step_size': 20,
-    'pos_weight': 2.0,
+    'pos_weight': 3.0,
 }
 
 model = BuildingsDeepLabV3(
@@ -224,7 +224,7 @@ checkpoint_callback = ModelCheckpoint(
     mode='min',
     save_last=True)
 
-early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=20)
+early_stopping_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=35)
 
 # Define trainer
 trainer = Trainer(
@@ -232,7 +232,7 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=25,
+    min_epochs=40,
     max_epochs=150,
     num_sanity_val_steps=1,
     # overfit_batches=0.2,
@@ -241,10 +241,10 @@ trainer = Trainer(
 trainer.fit(model, train_loader, val_loader)
 
 # Best deeplab model path val=0.3083
-best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/DLV3/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
+# best_model_path_deeplab = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/DLV3/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=23-val_loss=0.3083.ckpt"
 # best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/buildings_only/deeplab/buildings_runidrun_id=0_image_size=00-batch_size=00-epoch=18-val_loss=0.1848.ckpt"
-# best_model_path = checkpoint_callback.best_model_path
-best_model = BuildingsDeepLabV3.load_from_checkpoint(best_model_path_deeplab)
+best_model_path = checkpoint_callback.best_model_path
+best_model = BuildingsDeepLabV3.load_from_checkpoint(best_model_path)
 best_model.eval()
 
 strided_fullds_SD = CustomSlidingWindowGeoDataset(buildings_sceneSD, size=256, stride=128, padding=0, city='SantoDomingo', transform=None, transform_type=TransformType.noop)
@@ -381,7 +381,7 @@ except Exception as e:
     print(f"Error calculating overall F1 score: {str(e)}")
 
 # Print summary of cities with F1 scores
-print("\nSummary of F1 scores:")
+print(f"\nSummary of F1 scores for {split_index}: ")
 for city, score in city_f1_scores.items():
     print(f"{city}: {score}")
 print(f"Number of cities with F1 scores: {len(city_f1_scores)}")

@@ -3,6 +3,7 @@ from subprocess import check_output
 import os
 
 os.environ['GDAL_DATA'] = check_output('pip show rasterio | grep Location | awk \'{print $NF"/rasterio/gdal_data/"}\'', shell=True).decode().strip()
+from torch.utils.data import ConcatDataset, Subset
 
 import sys
 from pathlib import Path
@@ -49,7 +50,7 @@ sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
 from src.models.model_definitions import SentinelDeepLabV3, PredictionsIterator, create_predictions_and_ground_truth_plot, check_nan_params
-from src.features.dataloaders import (create_datasets, create_sentinel_scene, cities, CustomSlidingWindowGeoDataset, collate_fn,
+from src.features.dataloaders import (create_sentinel_scene, cities, CustomSlidingWindowGeoDataset, collate_fn,
                                       senitnel_create_full_image, show_windows, PolygonWindowGeoDataset,
                                       SingleInputCrossValidator, singlesource_show_windows_for_city, show_single_tile_sentinel)
 
@@ -99,7 +100,7 @@ class_config = ClassConfig(names=['background', 'slums'],
                            null_class='background')
 
 # SantoDomingo
-SentinelScene_SD = create_sentinel_scene(cities['SantoDomingoDOM'], class_config)
+SentinelScene_SD = create_sentinel_scene(cities['SantoDomingo'], class_config)
 sentinelGeoDataset_SD = PolygonWindowGeoDataset(SentinelScene_SD, city= 'SantoDomingo', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
 # GuatemalaCity
@@ -107,8 +108,8 @@ sentinel_sceneGC = create_sentinel_scene(cities['GuatemalaCity'], class_config)
 sentinelGeoDataset_GC = PolygonWindowGeoDataset(sentinel_sceneGC, city='GuatemalaCity',window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
 # Tegucigalpa - UNITAC report mentions data is complete, so using all tiles
-sentinel_sceneTG = create_sentinel_scene(cities['TegucigalpaHND'], class_config)
-sentinelGeoDataset_TG = CustomSlidingWindowGeoDataset(sentinel_sceneTG, city='Tegucigalpa', size=256, stride = 256, out_size=256, padding=0, transform_type=TransformType.noop, transform=None)
+sentinel_sceneTG = create_sentinel_scene(cities['Tegucigalpa'], class_config)
+sentinelGeoDataset_TG = CustomSlidingWindowGeoDataset(sentinel_sceneTG, city='Tegucigalpa', size=256, stride = 256, out_size=256, padding=256, transform_type=TransformType.noop, transform=None)
 
 # Managua
 sentinel_sceneMN = create_sentinel_scene(cities['Managua'], class_config)
@@ -119,11 +120,11 @@ sentinel_scenePN = create_sentinel_scene(cities['Panama'], class_config)
 sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
 # San Salvador - UNITAC report mentions data is complete, so using all tiles
-sentinel_sceneSS = create_sentinel_scene(cities['SanSalvador_PS'], class_config)
-sentinelGeoDataset_SS = CustomSlidingWindowGeoDataset(sentinel_sceneSS, city='SanSalvador', size=256,stride=256,out_size=256,padding=0, transform_type=TransformType.noop,transform=None)
+sentinel_sceneSS = create_sentinel_scene(cities['SanSalvador'], class_config)
+sentinelGeoDataset_SS = CustomSlidingWindowGeoDataset(sentinel_sceneSS, city='SanSalvador', size=256,stride=256,out_size=256,padding=256, transform_type=TransformType.noop,transform=None)
 
 # SanJose - UNITAC report mentions data is complete, so using all tiles
-sentinel_sceneSJ = create_sentinel_scene(cities['SanJoseCRI'], class_config)
+sentinel_sceneSJ = create_sentinel_scene(cities['SanJose'], class_config)
 sentinelGeoDataset_SJ = CustomSlidingWindowGeoDataset(sentinel_sceneSJ, city='SanJose', size=256, stride = 256, out_size=256,padding=0, transform_type=TransformType.noop, transform=None)
 
 # BelizeCity
@@ -134,27 +135,40 @@ sentinelGeoDataset_BL = PolygonWindowGeoDataset(sentinel_sceneBL,city='BelizeCit
 sentinel_sceneBM = create_sentinel_scene(cities['Belmopan'], class_config)
 sentinelGeoDataset_BM = PolygonWindowGeoDataset(sentinel_sceneBM, city='Belmopan', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
-# Create datasets for each city
-sentinel_datasets = {
-    'SantoDomingo': sentinelGeoDataset_SD,
-    'GuatemalaCity': sentinelGeoDataset_GC,
-    'Tegucigalpa': sentinelGeoDataset_TG,
-    'Managua': sentinelGeoDataset_MN,
-    'Panama': sentinelGeoDataset_PN,
-    'SanSalvador': sentinelGeoDataset_SS,
-    'SanJose': sentinelGeoDataset_SJ,
-    'BelizeCity': sentinelGeoDataset_BL,
-    'Belmopan': sentinelGeoDataset_BM
-}
+# Create datasets
+train_cities = 'w_SSSJ'
+split_index = 1 # 0 or 1
+
+def get_sentinel_datasets(train_cities):
+    all_datasets = {
+        'SD': sentinelGeoDataset_SD,
+        'GC': sentinelGeoDataset_GC,
+        'TG': sentinelGeoDataset_TG,
+        'MN': sentinelGeoDataset_MN,
+        'PN': sentinelGeoDataset_PN,
+        # 'SS': sentinelGeoDataset_SS,
+        # 'SJ': sentinelGeoDataset_SJ,
+        'BL': sentinelGeoDataset_BL,
+        'BM': sentinelGeoDataset_BM
+    }
+    
+    if train_cities == 'w_SSSJ':
+        return all_datasets
+    elif isinstance(train_cities, str):
+        return {train_cities: all_datasets[train_cities]}
+    elif isinstance(train_cities, list):
+        return {city: all_datasets[city] for city in train_cities if city in all_datasets}
+    else:
+        raise ValueError("train_cities must be 'all', a string, or a list of strings")
+
+sentinel_datasets = get_sentinel_datasets(train_cities)
 
 cv = SingleInputCrossValidator(sentinel_datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1)
-split_index = 0
 
 # Preview a city with sliding windows
-city = 'BelizeCity'
+city = 'SD'
 singlesource_show_windows_for_city(city, split_index, cv, sentinel_datasets)
-
-show_single_tile_sentinel(sentinel_datasets, city, 3)
+show_single_tile_sentinel(sentinel_datasets, city, 4)
 
 train_dataset, val_dataset, test_dataset, val_city_indices = cv.get_split(split_index)
 
@@ -172,14 +186,14 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin
 hyperparameters = {
     'model': 'DLV3',
     'split_index': split_index,
-    'train_cities': 'all',
+    'train_cities': train_cities,
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-3,
     'weight_decay': 0,
     'gamma': 0.5,
-    'sched_step_size': 5,
+    'sched_step_size': 10,
     'pos_weight': 2.0
 }
 
@@ -192,7 +206,7 @@ model = SentinelDeepLabV3(use_deeplnafrica = hyperparameters['use_deeplnafrica']
                     pos_weight = hyperparameters['pos_weight'])
 model.to(device)
 
-output_dir = f'../../UNITAC-trained-models/sentinel_only/DLV3'
+output_dir = f'../../UNITAC-trained-models/sentinel_only/{train_cities}_DLV3'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-finetune-sentinel-only', config=hyperparameters)
@@ -203,11 +217,11 @@ run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     dirpath=output_dir,
-    filename=f'multimodal_{split_index}_runid{run_id}-{{epoch:02d}}-{{val_loss:.4f}}',
+    filename=f'sentinel_{train_cities}_cv{split_index}-{{epoch:02d}}-{{val_loss:.4f}}',
     save_top_k=3,
     save_last=True,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=25)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=15)
 
 # Define trainer
 trainer = Trainer(
@@ -225,13 +239,13 @@ trainer = Trainer(
 trainer.fit(model, train_loader, val_loader)
 
 # Make predictions
-# best_model_path = checkpoint_callback.best_model_path
-# best_model_path = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/sentinel_only/DLV3/last-1.ckpt"
-best_model = SentinelDeepLabV3() #.load_from_checkpoint(best_model_path)
+# model_id = 'sentinel_all_cv0-epoch=07-val_loss=0.2414.ckpt'
+# best_model_path = os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/DLV3/', model_id)
+scene_eval = SentinelScene_SD # sentinel_sceneSD #SentinelScene_SD
+best_model_path = checkpoint_callback.best_model_path
+best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path)
 best_model.eval()
 check_nan_params(best_model)
-
-strided_fullds_SD = CustomSlidingWindowGeoDataset(SentinelScene_SD, size=256, stride=128, padding=0, city='SantoDomingo', transform=None, transform_type=TransformType.noop)
 
 class PredictionsIterator:
     def __init__(self, model, dataset, device):
@@ -272,29 +286,27 @@ class PredictionsIterator:
     def __iter__(self):
         return iter(self.predictions)
 
-predictions_iterator = PredictionsIterator(best_model, strided_fullds_SD, device=device)
+strided_fullds = CustomSlidingWindowGeoDataset(scene_eval, size=256, stride=128, padding=0, city='SD', transform=None, transform_type=TransformType.noop)
+predictions_iterator = PredictionsIterator(best_model, strided_fullds, device=device)
 windows, predictions = zip(*predictions_iterator)
 
 # Create SemanticSegmentationLabels from predictions
 pred_labels = SemanticSegmentationLabels.from_predictions(
     windows,
     predictions,
-    extent=SentinelScene_SD.extent,
+    extent=scene_eval.extent,
     num_classes=len(class_config),
     smooth=True
 )
-gt_labels = SentinelScene_SD.label_source.get_labels()
+gt_labels = scene_eval.label_source.get_labels()
 
 # # Show predictions
 fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
 plt.show()
-# fig.savefig('predictions_and_ground_truth.png', dpi=300, bbox_inches='tight')
 
-# Evaluate against labels:
 pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
     extent=pred_labels.extent,
     num_classes=len(class_config))
-
 scores = pred_labels.get_score_arr(pred_labels.extent)
 pred_array_discrete = (scores > 0.5).astype(int)
 pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
@@ -336,36 +348,24 @@ city_f1_scores = {}
 for city, (dataset_index, num_samples) in val_city_indices.items():
     # Skip cities with no validation samples
     if num_samples == 0:
-        print(f"Skipping {city} as it has no validation samples.")
+        # print(f"Skipping {city} as it has no validation samples.")
         continue
 
     # Get the subset of the validation dataset for this city
     city_val_dataset = Subset(val_dataset, range(dataset_index, dataset_index + num_samples))
-    
-    # Get the scene for this city
     city_scene = sentinel_datasets[city].scene
     
     try:
         # Calculate F1 score for this city
-        f1_score = calculate_f1_score(best_model, city_val_dataset, device, city_scene)
-        
+        f1_score = calculate_f1_score(best_model, city_val_dataset, device, city_scene)        
         city_f1_scores[city] = f1_score
-        print(f"F1 score for {city}: {f1_score}")
     except Exception as e:
         print(f"Error calculating F1 score for {city}: {str(e)}")
 
-# Calculate overall F1 score
-try:
-    overall_f1 = calculate_f1_score(best_model, val_dataset, device, val_dataset.datasets[0].scene)
-    print(f"Overall F1 score: {overall_f1}")
-except Exception as e:
-    print(f"Error calculating overall F1 score: {str(e)}")
-
 # Print summary of cities with F1 scores
-print("\nSummary of F1 scores:")
+print(f"\nSummary of sentinel-only on {train_cities}, F1 scores for CV split {split_index}:")
 for city, score in city_f1_scores.items():
     print(f"{city}: {score}")
-print(f"Number of cities with F1 scores: {len(city_f1_scores)}")
 
 # # # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(

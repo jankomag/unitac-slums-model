@@ -1,0 +1,25 @@
+model:
+  name: "MultiResolutionFPN" # or MultiResolutionDeepLabV3
+  learning_rate: 1e-3
+  weight_decay: 0
+  gamma: 0.8
+  sched_step_size: 5
+  pos_weight: 4.0
+
+data:
+  train_cities: "SD"
+  split_index: 0
+  batch_size: 18
+  labels_size: 256
+  buil_channels: 128
+  buil_kernel: 5
+
+training:
+  min_epochs: 12
+  max_epochs: 250
+  precision: "16-mixed"
+  benchmark: True
+
+wandb:
+  project: "UNITAC-multi-modal"
+  log_model: True

@@ -160,17 +160,17 @@ class_config = ClassConfig(names=['background', 'slums'],
                                 null_class='background')
 
 cities = {
-    'SanJoseCRI': {
+    'SanJose': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_SanJose_2024.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
         'use_augmentation': False
     },
-    'TegucigalpaHND': {
+    'Tegucigalpa': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
         'use_augmentation': False
     },
-    'SantoDomingoDOM': {
+    'SantoDomingo': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
         'use_augmentation': False
@@ -190,7 +190,7 @@ cities = {
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
         'use_augmentation': False
     },
-    'SanSalvador_PS': {
+    'SanSalvador': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
         'use_augmentation': False
@@ -524,7 +524,7 @@ class FixedStatsTransformer(RasterTransformer):
             chip[..., i] /= stds[i]
 
         # Apply max_stds clipping
-        chip = np.clip(chip, -max_stds, max_stds)
+        # chip = np.clip(chip, -max_stds, max_stds)
     
         # Normalize to have standard deviation of 1
         for i in range(chip.shape[-1]):
@@ -608,7 +608,7 @@ class CustomSlidingWindowGeoDataset(GeoDataset):
             padding: Optional[Union[NonNegInt, Tuple[NonNegInt,
                                                      NonNegInt]]] = None,
             pad_direction: Literal['both', 'start', 'end'] = 'end',
-            within_aoi: bool = True,
+            within_aoi: bool = False,
             transform: Optional[A.BasicTransform] = None,
             transform_type: Optional[TransformType] = None,
             normalize: bool = False,
@@ -633,16 +633,20 @@ class CustomSlidingWindowGeoDataset(GeoDataset):
 
     def init_windows(self) -> None:
         """Pre-compute windows."""
-        windows = self.scene.extent.get_windows(
+        extent = self.scene.extent
+        
+        windows = extent.get_windows(
             self.size,
             stride=self.stride,
             padding=self.padding,
             pad_direction=self.pad_direction)
+                
         if len(self.scene.aoi_polygons_bbox_coords) > 0:
             windows = Box.filter_by_aoi(
                 windows,
                 self.scene.aoi_polygons_bbox_coords,
                 within=self.within_aoi)
+        
         self.windows = windows
 
     def __getitem__(self, idx):
@@ -798,78 +802,6 @@ class PolygonWindowGeoDataset(GeoDataset):
     def __len__(self):
         return len(self.windows)
 
-class SplittingSemanticSegmentationSlidingWindowGeoDataset(SlidingWindowGeoDataset):
-    def __init__(self, *args, **kwargs):
-        super().__init__(
-            *args,
-            **kwargs,
-            transform_type=TransformType.semantic_segmentation)
-
-    def split_train_val_test(self, val_ratio: float = 0.2, test_ratio: float = 0.2, seed: int = None) -> Tuple['CustomSemanticSegmentationSlidingWindowGeoDataset', 'CustomSemanticSegmentationSlidingWindowGeoDataset', 'CustomSemanticSegmentationSlidingWindowGeoDataset']:
-        """
-        Split the dataset into training, validation, and test subsets.
-
-        Args:
-            val_ratio (float): Ratio of validation data to total data. Defaults to 0.2.
-            test_ratio (float): Ratio of test data to total data. Defaults to 0.2.
-            seed (int): Seed for the random number generator. Defaults to None.
-
-        Returns:
-            Tuple[CustomSemanticSegmentationSlidingWindowGeoDataset, CustomSemanticSegmentationSlidingWindowGeoDataset, CustomSemanticSegmentationSlidingWindowGeoDataset]: 
-                Training, validation, and test subsets as CustomSemanticSegmentationSlidingWindowGeoDataset objects.
-        """
-        assert 0.0 < val_ratio < 1.0, "val_ratio should be between 0 and 1."
-        assert 0.0 < test_ratio < 1.0, "test_ratio should be between 0 and 1."
-        assert val_ratio + test_ratio < 1.0, "Sum of val_ratio and test_ratio should be less than 1."
-
-        if seed is not None:
-            random.seed(seed)
-
-        # Calculate number of samples for validation, test, and training
-        num_samples = len(self)
-        num_val = int(val_ratio * num_samples)
-        num_test = int(test_ratio * num_samples)
-        num_train = num_samples - num_val - num_test
-
-        # Create indices for train, validation, and test subsets
-        indices = list(range(num_samples))
-        random.shuffle(indices)  # Shuffle indices randomly
-
-        val_indices = indices[:num_val]
-        test_indices = indices[num_val:num_val + num_test]
-        train_indices = indices[num_val + num_test:]
-
-        # Create new datasets for training, validation, and test
-        train_dataset = self._create_subset(train_indices)
-        val_dataset = self._create_subset(val_indices)
-        test_dataset = self._create_subset(test_indices)
-
-        return train_dataset, val_dataset, test_dataset
-    
-    def _create_subset(self, indices):
-        """
-        Create a subset of the dataset using specified indices.
-
-        Args:
-            indices (list): List of indices to include in the subset.
-
-        Returns:
-            CustomSemanticSegmentationSlidingWindowGeoDataset: Subset of the dataset.
-        """
-        subset = CustomSemanticSegmentationSlidingWindowGeoDataset(
-            scene=self.scene,
-            size=self.size,
-            stride=self.stride,
-            out_size=self.out_size,
-            padding=self.padding
-            # Include other parameters as needed
-        )
-
-        # Initialize subset's windows based on provided indices
-        subset.windows = [self.windows[i] for i in indices]
-
-        return subset  
-    
 class CustomSemanticSegmentationVisualizer(Visualizer):
     def plot_batch(self,
                    x: List[Tuple[torch.Tensor, torch.Tensor]],
@@ -1029,6 +961,41 @@ def collate_fn(batch):
         processed_batch.append((image, label))
     
     return torch.utils.data.dataloader.default_collate(processed_batch)
+
+def collate_multi_fn(batch):
+    sentinel_data = []
+    buildings_data = []
+    labels = []
+
+    for item in batch:
+        sentinel_batch, buildings_batch = item
+        
+        sentinel_item, sentinel_label = sentinel_batch
+        buildings_item, buildings_label = buildings_batch
+
+        # Replace NaN values with 0 in the image data
+        sentinel_item = torch.nan_to_num(sentinel_item, nan=0.0)
+        buildings_item = torch.nan_to_num(buildings_item, nan=0.0)
+
+        # Check if there are any NaN values in the labels
+        if torch.isnan(sentinel_label).any() or torch.isnan(buildings_label).any():
+            print(f"NaN found in label")
+            continue
+        
+        sentinel_data.append(sentinel_item)
+        buildings_data.append(buildings_item)
+        labels.append(sentinel_label)  # Use sentinel_label as they should be the same
+
+    # If all items were skipped due to NaN values, return None
+    if len(sentinel_data) == 0:
+        return None
+
+    # Stack the data and labels
+    sentinel_data = torch.stack(sentinel_data)
+    buildings_data = torch.stack(buildings_data)
+    labels = torch.stack(labels)
+
+    return ((sentinel_data, labels), (buildings_data, labels))
 
 class BaseCrossValidator:
     def __init__(self, datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1):
@@ -1483,44 +1450,6 @@ def make_sentinel_raster(image_uri, label_uri, class_config, clip_to_label_sourc
     print(f"Loaded Sentinel data of size {sentinel_source_normalized.shape}, and dtype: {sentinel_source_normalized.dtype}")
     return sentinel_source_normalized, label_source
 
-def make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_buffer=2):
-    gdf = gpd.read_file(labels_path)
-    gdf = gdf.to_crs('EPSG:4326')
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-
-    crs_transformer = RasterioCRSTransformer.from_uri(image_path)
-    affine_transform = Affine(resolution, 0, xmin, 0, -resolution, ymax)
-    crs_transformer.transform = affine_transform
-
-    # Query buildings
-    buildings = query_buildings_data(xmin, ymin, xmax, ymax)
-    buildings['class_id'] = 1  # Assign class_id 1 to buildings
-    print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
-
-    # Query roads
-    roads = query_roads_data(xmin, ymin, xmax, ymax)
-    roads['class_id'] = 2  # Assign class_id 2 to roads
-    print(f"Roads data loaded successfully with {len(roads)} total road segments.")
-
-    # Buffer the roads
-    roads_buffered = roads.copy()
-    roads_buffered['geometry'] = roads_buffered.geometry.buffer(road_buffer)
-
-    combined_gdf = pd.concat([buildings, roads_buffered], ignore_index=True)
-
-    buildings_vector_source = CustomGeoJSONVectorSource(
-        gdf=combined_gdf,
-        crs_transformer=crs_transformer,
-        vector_transformers=[]
-    )
-
-    rasterized_source = CustomRasterizedSource(
-        buildings_vector_source,
-        background_class_id=0
-    )
-
-    return rasterized_source, crs_transformer
-
 
 ### Create scenes functions ###
 def create_sentinel_scene(city_data, class_config):
@@ -1592,27 +1521,47 @@ def create_scenes_for_city(city_name, city_data, class_config, resolution=5):
     return sentinel_scene, buildings_scene
 
 
-### Functions to create sliding window datasets ###
-def create_datasets(scene, imgsize=256, stride = 256, padding=50, val_ratio=0.2, test_ratio=0.1, augment = False, seed=42):
-  
-    data_augmentation_transform = A.Compose([
-        A.HorizontalFlip(p=1.0), # Flip every image horizontally
-        A.Rotate(limit=(180, 180), p=1.0), # Rotate every image by exactly 180 degrees
-    ])
-    
-    full_dataset = CustomSemanticSegmentationSlidingWindowGeoDataset(
-        scene=scene,
-        size=imgsize,
-        stride=stride,
-        out_size=imgsize,
-        padding=padding,
-        transform=data_augmentation_transform if augment else None)
 
-    # Splitting dataset into train, validation, and test
-    train_dataset, val_dataset, test_dataset = full_dataset.split_train_val_test(
-        val_ratio=val_ratio, test_ratio=test_ratio, seed=seed)
 
-    return full_dataset, train_dataset, val_dataset, test_dataset
+### Others ###
+def make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_buffer=2):
+    gdf = gpd.read_file(labels_path)
+    gdf = gdf.to_crs('EPSG:4326')
+    xmin, ymin, xmax, ymax = gdf.total_bounds
+
+    crs_transformer = RasterioCRSTransformer.from_uri(image_path)
+    affine_transform = Affine(resolution, 0, xmin, 0, -resolution, ymax)
+    crs_transformer.transform = affine_transform
+
+    # Query buildings
+    buildings = query_buildings_data(xmin, ymin, xmax, ymax)
+    buildings['class_id'] = 1  # Assign class_id 1 to buildings
+    print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
+
+    # Query roads
+    roads = query_roads_data(xmin, ymin, xmax, ymax)
+    roads['class_id'] = 2  # Assign class_id 2 to roads
+    print(f"Roads data loaded successfully with {len(roads)} total road segments.")
+
+    # Buffer the roads
+    roads_buffered = roads.copy()
+    roads_buffered['geometry'] = roads_buffered.geometry.buffer(road_buffer)
+
+    combined_gdf = pd.concat([buildings, roads_buffered], ignore_index=True)
+
+    buildings_vector_source = CustomGeoJSONVectorSource(
+        gdf=combined_gdf,
+        crs_transformer=crs_transformer,
+        vector_transformers=[]
+    )
+
+    rasterized_source = CustomRasterizedSource(
+        buildings_vector_source,
+        background_class_id=0
+    )
+
+    return rasterized_source, crs_transformer
+
 
 # belize_data = cities['SantoDomingoDOM']
 # image_path = belize_data['image_path']
@@ -1802,7 +1751,7 @@ def display_mosaic(mosaic_source):
     plt.colorbar(im, ax=ax)
     plt.show()
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
     label_uri = "../../data/0/SantoDomingo3857.geojson"
     image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
     class_config = ClassConfig(names=['background', 'slums'], 

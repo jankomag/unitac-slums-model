@@ -34,53 +34,6 @@ else:
     device = torch.device("mps")
     print("MPS is available.")
 
-
-cities = {
-    # 'SanJoseCRI': {
-    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_SanJose_2024.tif'),
-    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
-    #     'use_augmentation': False
-    # },
-    'TegucigalpaHND': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
-        'use_augmentation': False
-    },
-    'SantoDomingoDOM': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
-        'use_augmentation': True
-    },
-    'GuatemalaCity': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Guatemala_PS.shp'),
-        'use_augmentation': False
-    },
-    # 'Managua': {
-    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
-    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
-    #     'use_augmentation': False
-    # },
-    # 'Panama': {
-    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/PAN_Panama_2024.tif'),
-    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
-    #     'use_augmentation': False
-    # },
-    # 'SanSalvador_PS': {
-    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
-    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
-    #     'use_augmentation': False
-    # },
-    'BelizeCity': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')
-        }#,
-    # 'Belmopan': {
-    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
-    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')
-    #     }
-}
-
 models = {
     # 'deeplabv3_sentinel': {
     #     'name': 'deeplabv3_sentinel',
@@ -205,10 +158,6 @@ def prepare_data_for_deeplabv3_multimodal(location_name, image_path, labels_path
     location_labels = label_source.get_labels()
     scenes = (SentinelScene, BuilScene)
     return (scenes, location_labels)
-
-def prepare_data_for_pixel_based_RF(image_path, labels_path):
-    # Add code to prepare data for model_1
-    return (data, location_labels)
 
 # functions to make predictions
 def make_predictions_sentinel(model, inputs, image_path, labels_path, location_name):

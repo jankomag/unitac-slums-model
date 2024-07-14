@@ -1,48 +1,26 @@
+import os
+import torch
+import geopandas as gpd
+from tqdm import tqdm
+from pyproj import Transformer
+import rasterio
+from rastervision.core.box import Box
+from rastervision.core.data import ClassConfig, RasterioCRSTransformer
+from rastervision.core.data.label import SemanticSegmentationLabels
+from rastervision.core.data.label_store import SemanticSegmentationLabelStore
+from affine import Affine
+
 import sys
 import torch
-from affine import Affine
-import numpy as np
-from shapely.geometry import Polygon
-import geopandas as gpd
-from shapely.geometry import box
-from pathlib import Path
-import torch.nn as nn
-import cv2
-from os.path import join
-import pandas as pd
-from collections import OrderedDict
+from rastervision.core.data.label import SemanticSegmentationLabels
 
-import json
-import rasterio as rio
-from tqdm import tqdm
-from shapely.geometry import shape, mapping
-from shapely.affinity import translate
-from torchvision.models.segmentation import deeplabv3_resnet50
-from torchvision.models.segmentation.deeplabv3 import DeepLabHead
-from torchvision.models._utils import IntermediateLayerGetter
-import pandas as pd
+import numpy as np
 from typing import Any, Optional, Tuple, Union, Sequence
 from pyproj import Transformer
-from rasterio.transform import rowcol, xy
-from torch.utils.data import DataLoader
-from typing import List
-from rasterio.features import rasterize
-import rasterio
 import matplotlib.pyplot as plt
-from pytorch_lightning.loggers.wandb import WandbLogger
 import os
-from datetime import datetime
-import wandb
-from pytorch_lightning import Trainer
-import pytorch_lightning as pl
-import stackstac
-import pystac_client
 
 from typing import Iterator, Optional
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import MultiStepLR
-import torch
-from torch.utils.data import ConcatDataset
 
 # Project-specific imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -53,9 +31,9 @@ sys.path.append(grandparent_dir)
 
 from deeplnafrica.deepLNAfrica import init_segm_model
 from src.features.dataloaders import (
-    query_buildings_data, CustomGeoJSONVectorSource,
-    create_datasets,
-    show_windows, CustomSemanticSegmentationSlidingWindowGeoDataset
+    query_buildings_data, CustomGeoJSONVectorSource,MergeDataset,
+    create_datasets,FixedStatsTransformer,
+    show_windows, CustomRasterizedSource
 )
 from src.models.model_definitions import (MultiResolutionDeepLabV3, CustomVectorOutputConfig)
 
@@ -63,365 +41,200 @@ from rastervision.core.raster_stats import RasterStats
 from rastervision.core.data.raster_transformer import RasterTransformer
 from rastervision.core.data.raster_source import RasterSource
 from rastervision.core.data import (ClassConfig, GeoJSONVectorSourceConfig, GeoJSONVectorSource,
-                                    MinMaxTransformer, MultiRasterSource,
                                     RasterioSource, RasterizedSourceConfig,
                                     RasterizedSource, Scene, StatsTransformer, ClassInferenceTransformer,
                                     VectorSourceConfig, VectorSource, XarraySource, CRSTransformer,
-                                    IdentityCRSTransformer, RasterioCRSTransformer,
-                                    SemanticSegmentationLabelSource)
+                                    IdentityCRSTransformer, RasterioCRSTransformer)
 from rastervision.core.data.label_source.label_source import LabelSource
 from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.core.data.label_store import SemanticSegmentationLabelStore
 
-from rastervision.core.data.utils import pad_to_window_size
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-
-from rastervision.pytorch_learner import (SemanticSegmentationSlidingWindowGeoDataset,
-                                          SemanticSegmentationVisualizer, SlidingWindowGeoDataset)
-from rastervision.pipeline.utils import repr_with_args
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
-import logging
-from xarray import DataArray
-from rastervision.core.data.utils import listify_uris, merge_geojsons
 
 from typing import Any, Optional, Tuple, Union, Sequence
-from typing import List
-from rasterio.features import rasterize
-from rastervision.core.data.raster_transformer import RasterTransformer
 from rastervision.core.data.raster_source import RasterSource
-from rastervision.core.data import (VectorSource, XarraySource,
-                                    IdentityCRSTransformer, RasterioCRSTransformer,
-                                    RasterioCRSTransformer)
 
-
-# from src.models import BuildingsOnlyDeeplabv3SegmentationModel
-
-from rastervision.core.data import (
-    ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
-    VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
-)
-from typing import TYPE_CHECKING, List, Optional, Union
-import logging
-
-from rastervision.pipeline.file_system import download_if_needed
+from typing import Tuple, Optional
+import numpy as np
+import torch
 from rastervision.core.box import Box
-from rastervision.core.data.vector_source.vector_source import VectorSource
-from rastervision.core.data.utils import listify_uris, merge_geojsons
-from rastervision.pipeline.file_system import (
-    get_local_path, json_to_file, make_dir, sync_to_dir, file_exists,
-    download_if_needed, NotReadableError, get_tmp_dir)
-from rastervision.core.box import Box
-from rastervision.core.data import (CRSTransformer, ClassConfig)
-from rastervision.core.data.label import (SemanticSegmentationLabels,
-                                          SemanticSegmentationSmoothLabels)
-from rastervision.core.data.label_store import LabelStore
-from rastervision.core.data.label_source import SemanticSegmentationLabelSource
-from rastervision.core.data.raster_transformer import RGBClassTransformer
-from rastervision.core.data.raster_source import RasterioSource
-from rastervision.core.data.utils import write_window
-if TYPE_CHECKING:
-    from rastervision.core.data import CRSTransformer, VectorTransformer
+from rastervision.pytorch_learner.dataset.transform import TransformType
+from rastervision.core.data import Scene
+from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
 
-log = logging.getLogger(__name__)
-import duckdb
+def ensure_tuple(x):
+    if isinstance(x, (list, tuple)):
+        return tuple(x)
+    return (x, x)
 
-class PredictionsIterator:
-    def __init__(self, model, sentinelGeoDataset, buildingsGeoDataset, device='cuda'):
-        self.model = model
-        self.sentinelGeoDataset = sentinelGeoDataset
-        self.dataset = buildingsGeoDataset
-        self.device = device
-        
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(sentinelGeoDataset)):
-                buildings = buildingsGeoDataset[idx]
-                sentinel = sentinelGeoDataset[idx]
-                
-                sentinel_data = sentinel[0].unsqueeze(0).to(device)
-                sentlabels = sentinel[1].unsqueeze(0).to(device)
-
-                buildings_data = buildings[0].unsqueeze(0).to(device)
-                labels = buildings[1].unsqueeze(0).to(device)
-
-                output = self.model(((sentinel_data,sentlabels), (buildings_data,labels)))
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                # Store predictions along with window coordinates
-                window = buildingsGeoDataset.windows[idx]
-                self.predictions.append((window, probabilities))
-
-    def __iter__(self):
-        return iter(self.predictions)
-    
-class CustomStatsTransformer(RasterTransformer):
+class PolygonWindowGeoDataset:
     def __init__(self,
-                 means: Sequence[float],
-                 stds: Sequence[float],
-                 max_stds: float = 3.):
-        # shape = (1, 1, num_channels)
-        self.means = np.array(means, dtype=float)
-        self.stds = np.array(stds, dtype=float)
-        self.max_stds = max_stds
+                 scene: Scene,
+                 city: str,
+                 window_size: Union[int, Tuple[int, int]],
+                 out_size: Union[int, Tuple[int, int]],
+                 padding: Union[int, Tuple[int, int]] = 0,
+                 transform: Optional[A.Compose] = None,
+                 transform_type: TransformType = TransformType.noop,
+                 normalize: bool = False,
+                 to_pytorch: bool = True,
+                 return_window: bool = False,
+                 within_aoi: bool = True):
+        self.scene = scene
+        self.city = city
+        self.window_size = ensure_tuple(window_size)
+        self.out_size = ensure_tuple(out_size)
+        self.padding = (self.window_size[0] // 2, self.window_size[1] // 2)
+        self.padding: Tuple[NonNegInt, NonNegInt] = ensure_tuple(self.padding)
+        self.transform = transform
+        self.transform_type = transform_type
+        self.normalize = normalize
+        self.to_pytorch = to_pytorch
+        self.return_window = return_window
+        self.within_aoi = within_aoi
 
-    def transform(self,
-                  chip: np.ndarray,
-                  channel_order: Optional[Sequence[int]] = None) -> np.ndarray:
-        if chip.dtype == np.uint8:
-            return chip
+        self.windows = self.get_polygon_windows()
 
-        means = self.means
-        stds = self.stds
-        max_stds = self.max_stds
-        if channel_order is not None:
-            means = means[channel_order]
-            stds = stds[channel_order]
+        if self.transform is None:
+            transform_func = TF_TYPE_TO_TF_FUNC[self.transform_type]
+            if callable(transform_func):
+                self.transform = transform_func(self.out_size)
+            else:
+                print(f"Warning: transform_func is not callable: {transform_func}")
 
-        # Don't transform NODATA zero values.
-        nodata_mask = chip == 0
+    def get_polygon_windows(self):
+        windows = []
+        ymax = int(self.scene.extent.ymax)
+        xmax = int(self.scene.extent.xmax)
+        for y in range(0, ymax, self.window_size[0]):
+            for x in range(0, xmax, self.window_size[1]):
+                window = Box(y, x, min(y + self.window_size[0], ymax), min(x + self.window_size[1], xmax))
+                if self.has_data(window):
+                    windows.append(window)
+        return windows
 
-        # Convert chip to float (if not already)
-        chip = chip.astype(float)
+    def has_data(self, window):
+        """
+        Check if the given window contains any data.
+        """
+        try:
+            data_arr = self.scene.raster_source.get_chip(window)
+            return np.any(data_arr != 0)
+        except Exception as e:
+            print(f"Error in has_data for window {window}: {str(e)}")
+            return False
 
-        # Subtract mean and divide by std to get z-scores.
-        for i in range(chip.shape[-1]):  # Loop over channels
-            chip[..., i] -= means[i]
-            chip[..., i] /= stds[i]
-
-        # Apply max_stds clipping
-        chip = np.clip(chip, -max_stds, max_stds)
+    def __getitem__(self, index):
+        window = self.windows[index]
         
-        # Normalise to [0, 1]
-        # chip = (chip - chip.min()) / (chip.max() - chip.min())
-    
-        # Normalize to have standard deviation of 1
-        for i in range(chip.shape[-1]):
-            chip[..., i] /= np.std(chip[..., i])
-
-        chip[nodata_mask] = 0
+        img = self.scene.raster_source.get_chip(window)
         
-        return chip
+        if self.transform:
+            augmented = self.transform(image=img)
+            img = augmented['image']
+        
+        if self.normalize:
+            img = img.astype(np.float32) / 255.0
+        
+        if self.to_pytorch:
+            img = torch.from_numpy(img).float()
+            if len(img.shape) == 2:
+                img = img.unsqueeze(0)
+            else:
+                img = img.permute(2, 0, 1)
+        
+        if self.return_window:
+            return img, window
+        else:
+            return img
 
-    @classmethod
-    def from_raster_sources(cls,
-                            raster_sources: List['RasterSource'],
-                            sample_prob: Optional[float] = 0.1,
-                            max_stds: float = 3.,
-                            chip_sz: int = 300) -> 'CustomStatsTransformer':
-        stats = RasterStats()
-        stats.compute(
-            raster_sources=raster_sources,
-            sample_prob=sample_prob,
-            chip_sz=chip_sz)
-        stats_transformer = cls.from_raster_stats(
-            stats, max_stds=max_stds)
-        return stats_transformer
+    def __len__(self):
+        return len(self.windows)
+
+    @property
+    def extent(self):
+        return self.scene.extent
+
+    def get_labels(self):
+        return None  # Since we're not using labels
+
+    def get_image(self, window):
+        return self.scene.raster_source.get_chip(window)
+
+def make_buildings_raster(image_path, resolution=5):
+    with rasterio.open(image_path) as src:
+        bounds = src.bounds
+        xmin3857, ymin3857, xmax3857, ymax3857 = bounds.left, bounds.bottom, bounds.right, bounds.top
     
-    @classmethod
-    def from_raster_stats(cls, stats: RasterStats,
-                          max_stds: float = 3.) -> 'CustomStatsTransformer':
-        stats_transformer = cls(stats.means, stats.stds, max_stds=max_stds)
-        return stats_transformer
-    
-def rasterise_buildings(image_uri, buildings, xmin, ymax, resolution = 5):
-    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(resolution, 0, xmin, 0, -resolution, ymax)
+    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_path)
+    affine_transform_buildings = Affine(resolution, 0, xmin3857, 0, -resolution, ymax3857)
     crs_transformer_buildings.transform = affine_transform_buildings
-
-    crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
-    print("Got the crs transformer for buildings")
-    buildings_vector_source_crsimage = CustomGeoJSONVectorSource(
-            gdf = buildings,
-            crs_transformer = crs_transformer,
-            vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
     
-    buildings_vector_source_crsbuildings = CustomGeoJSONVectorSource(
-            gdf = buildings,
-            crs_transformer = crs_transformer_buildings,
-            vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-       
-    rasterized_buildings_source = RasterizedSource(
-        buildings_vector_source_crsbuildings,
-        background_class_id=0)
-            
-    # Define the bbox of buildings in the image crs 
-    buildings_extent = buildings_vector_source_crsimage.extent
+    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    xmin4326, ymin4326 = transformer.transform(xmin3857, ymin3857)
+    xmax4326, ymax4326 = transformer.transform(xmax3857, ymax3857)
     
-    print(f"Loaded Rasterised buildings data of size {rasterized_buildings_source.shape}, and dtype: {rasterized_buildings_source.dtype}")
-    return rasterized_buildings_source, buildings_extent, crs_transformer_buildings
+    buildings = query_buildings_data(xmin4326, ymin4326, xmax4326, ymax4326)
+    print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
+    
+    buildings_vector_source = CustomGeoJSONVectorSource(
+        gdf = buildings,
+        crs_transformer = crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+    
+    rasterized_buildings_source = CustomRasterizedSource(
+        buildings_vector_source,
+        background_class_id=0,
+        bbox=Box(xmin3857, ymin3857, xmax3857, ymax3857))
+    
+    return rasterized_buildings_source, crs_transformer_buildings
 
-def get_sentinel_source(image_uri, buildings_extent):
-    sentinel_source_unnormalized = RasterioSource(
-        image_uri,
-        allow_streaming=True)
+def make_sentinel_raster(image_uri):
+    # Define the means and stds in NIR-RGB order
+    nir_rgb_means = [2581.270, 1298.905, 1144.928, 934.346]  # NIR, R, G, B
+    nir_rgb_stds = [586.279, 458.048, 302.029, 244.423]  # NIR, R, G, B
 
-    # Calculate statistics transformer from the unnormalized source
-    calc_stats_transformer = CustomStatsTransformer.from_raster_sources(
-        raster_sources=[sentinel_source_unnormalized],
-        max_stds=3
-    )
-
+    fixed_stats_transformer = FixedStatsTransformer(
+        means=nir_rgb_means,
+        stds=nir_rgb_stds)
+    
     # Define a normalized raster source using the calculated transformer
-    sentinel_source = RasterioSource(
+    sentinel_source_normalized = RasterioSource(
         image_uri,
         allow_streaming=True,
-        raster_transformers=[calc_stats_transformer],
-        channel_order=[2, 1, 0, 3],
-        bbox=buildings_extent
+        raster_transformers=[fixed_stats_transformer],
+        channel_order=[3, 2, 1, 0]
     )
-    print(f"Loaded Sentinel data of size {sentinel_source.shape}, and dtype: {sentinel_source.dtype}")
+
+    print(f"Loaded Sentinel data of size {sentinel_source_normalized.shape}, and dtype: {sentinel_source_normalized.dtype}")
+    return sentinel_source_normalized
+
+def create_sentinel_scene(city_data):
+    image_path = city_data['image_path']
+
+    sentinel_source_normalized = make_sentinel_raster(image_path)
     
-    return sentinel_source
-
-def build_datasets(rasterized_buildings_source, sentinel_source):
-    build_scene = Scene(
-        id='city',
-        raster_source = rasterized_buildings_source)
-
-    sent_scene = Scene(
-        id='portauprince_buildings',
-        raster_source = sentinel_source)
-
-    build_ds = CustomSemanticSegmentationSlidingWindowGeoDataset(
-            scene=build_scene,
-            size=288,
-            stride=144,
-            out_size=288,
-            padding=0)
-
-    sent_ds = CustomSemanticSegmentationSlidingWindowGeoDataset(
-            scene=sent_scene,
-            size=144,
-            stride=72,
-            out_size=144,
-            padding=0)
-    
-    return build_ds, sent_ds, build_scene, sent_scene
-
-def save_predictions(model, sent_ds, buil_ds, build_scene, sent_scene, crs_transformer, country_code, city_name):
-    device = 'mps'
-    predictions_iterator = MultiRes144labPredictionsIterator(model, sent_ds, buil_ds, device=device)
-    windows, predictions = zip(*predictions_iterator)
-    print("Got predictions for: ", city_name, country_code)
-
-    # Ensure windows are Box instances
-    windows = [Box(*window.tolist()) if isinstance(window, torch.Tensor) else window for window in windows]
-
-    # Create SemanticSegmentationLabels from predictions
-    pred_labels = SemanticSegmentationLabels.from_predictions(
-        windows,
-        predictions,
-        extent=sent_scene.extent,
-        num_classes=len(class_config),
-        smooth=True
+    sentinel_scene = Scene(
+        id='scene_sentinel',
+        raster_source=sentinel_source_normalized
     )
+    return sentinel_scene
+
+def create_building_scene(city_name, city_data):
+    image_path = city_data['image_path']
+
+    # Create Buildings scene
+    rasterized_buildings_source, _ = make_buildings_raster(image_path, resolution=5)
     
-    vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
+    buildings_scene = Scene(
+        id=f'{city_name}_buildings',
+        raster_source=rasterized_buildings_source
+    )
 
-    crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(10, 0, common_xmin_3857, 0, -10, common_ymax_3857)
-    crs_transformer.transform = affine_transform_buildings
+    return buildings_scene
 
-    pred_label_store = SemanticSegmentationLabelStore(
-        uri=f'../../vectorised_model_predictions/multi-modal/DLV3/{country_code}/{city_name}_{country_code}',
-        crs_transformer = crs_transformer,
-        class_config = class_config,
-        vector_outputs = [vector_output_config],
-        discrete_output = True)
-
-    pred_label_store.save(pred_labels)
-
-# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/src/UNITAC-trained-models/multi_modal/SD_DLV3/best"
-# best_model_path_dplv3 = "/Users/janmagnuszewski/dev/slums-model-unitac/UNITAC-trained-models/multi_modal/SD_DLV3/multimodal_runidrun_id=0-epoch=09-val_loss=0.5749.ckpt"
-best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3.load_from_checkpoint(best_model_path_dplv3) #MultiResolutionDeepLabV3 MultiResolutionFPN
-best_model.eval()
-
-class_config = ClassConfig(names=['background', 'slums'], 
-                                colors=['lightgray', 'darkred'],
-                                null_class='background')
-
-con = duckdb.connect("../../data/0/data.db")
-con.install_extension('httpfs')
-con.install_extension('spatial')
-con.load_extension('httpfs')
-con.load_extension('spatial')
-con.execute("SET s3_region='us-west-2'")
-con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
-
-sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
-gdf = gpd.read_parquet(sica_cities)
-gdf = gdf.to_crs('EPSG:3857')
-# gdf = gdf.tail(2)
-# gdf = gdf[gdf['city_ascii'] == 'Tabarre']
-
-# old loop
-# for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
-#     city_name = row['city_ascii']
-#     country_code = row['iso3']
-#     image_uri =  f"../data/0/sentinel_Gee/{country_code}_{city_name}_2023.tif"
-    
-#     # Check if the image_uri exists
-#     if not os.path.exists(image_uri):
-#         print(f"Warning: File {image_uri} does not exist. Skipping to next row.")
-#         continue
-    
-#     gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = row['geometry'].bounds
-    
-#     try:
-#         with rasterio.open(image_uri) as src:
-#             bounds = src.bounds
-#             raster_xmin, raster_ymin, raster_xmax, raster_ymax = bounds.left, bounds.bottom, bounds.right, bounds.top
-            
-#     except Exception as e:
-#         print(f"Error processing {image_uri}: {e}")
-#         continue
-    
-#     # Define the common box in EPSG:3857
-#     common_xmin_3857 = max(gdf_xmin, raster_xmin)
-#     common_ymin_3857 = max(gdf_ymin, raster_ymin)
-#     common_xmax_3857 = min(gdf_xmax, raster_xmax)
-#     common_ymax_3857 = min(gdf_ymax, raster_ymax)
-
-#     transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-#     common_xmin_4326, common_ymin_4326 = transformer.transform(common_xmin_3857, common_ymin_3857)
-#     common_xmax_4326, common_ymax_4326 = transformer.transform(common_xmax_3857, common_ymax_3857)
-#     print("Got common extent for: ", city_name, country_code)
-    
-#     buildings = query_buildings_data(con, common_xmin_4326, common_ymin_4326, common_xmax_4326, common_ymax_4326)
-#     print("Got buildings extent for: ", city_name, country_code)
-
-#     rasterized_buildings_source, buildings_extent, crs_transformer_buildings = rasterise_buildings(image_uri, buildings, common_xmin_3857, common_ymax_3857)
-
-#     sentinel_source = get_sentinel_source(image_uri, buildings_extent)
-    
-#     buil_ds, sent_ds, build_scene, sent_scene = build_datasets(rasterized_buildings_source, sentinel_source)
-#     print("Got datasets extent for: ", city_name, country_code)
-
-#     save_predictions(best_model, sent_ds, buil_ds, build_scene, sent_scene, crs_transformer_buildings, country_code, city_name)
-#     print(f"Saved predictions data for {city_name}, {country_code}")
-
-# # con.close()
-
-### NEW LOOP ###
-import os
-import torch
-from tqdm import tqdm
-import geopandas as gpd
-import rasterio
-from pyproj import Transformer
-from affine import Affine
-from rastervision.core.data import ClassConfig
-from rastervision.core.data.label import SemanticSegmentationLabels
-from rastervision.core.box import Box
-
-# Load the best model
-best_model_path_dplv3 = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3(buil_channels=buil_channels, buil_kernel1=buil_kernel)
+best_model_path_dplv3 = os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/all_DLV3/multimodal_cv1_BCH128_BKR7_epoch=06-val_loss=0.1827.ckpt")
+best_model = MultiResolutionDeepLabV3(buil_channels=128, buil_kernel1=7)
 checkpoint = torch.load(best_model_path_dplv3)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict, strict=True)
@@ -435,7 +248,9 @@ class_config = ClassConfig(names=['background', 'slums'],
 sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
 gdf = gpd.read_parquet(sica_cities)
 gdf = gdf.to_crs('EPSG:3857')
+gdf = gdf.tail(2)
 
+# In your main loop
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
     country_code = row['iso3']
@@ -445,44 +260,24 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
         print(f"Warning: File {image_uri} does not exist. Skipping to next row.")
         continue
     
-    gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = row['geometry'].bounds
+    city_data = {
+        'image_path': image_uri,
+    }
     
-    try:
-        with rasterio.open(image_uri) as src:
-            bounds = src.bounds
-            raster_xmin, raster_ymin, raster_xmax, raster_ymax = bounds.left, bounds.bottom, bounds.right, bounds.top
-    except Exception as e:
-        print(f"Error processing {image_uri}: {e}")
-        continue
+    # Create scenes
+    sentinel_scene = create_sentinel_scene(city_data)
+    buildings_scene = create_building_scene(city_name, city_data)
     
-    common_xmin_3857 = max(gdf_xmin, raster_xmin)
-    common_ymin_3857 = max(gdf_ymin, raster_ymin)
-    common_xmax_3857 = min(gdf_xmax, raster_xmax)
-    common_ymax_3857 = min(gdf_ymax, raster_ymax)
-
-    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    common_xmin_4326, common_ymin_4326 = transformer.transform(common_xmin_3857, common_ymin_3857)
-    common_xmax_4326, common_ymax_4326 = transformer.transform(common_xmax_3857, common_ymax_3857)
+    # Create datasets
+    sentinelGeoDataset = PolygonWindowGeoDataset(sentinel_scene, city=city_name, window_size=256, out_size=256, padding=0, transform_type=TransformType.noop, transform=None)
+    buildingsGeoDataset = PolygonWindowGeoDataset(buildings_scene, city=city_name, window_size=512, out_size=512, padding=0, transform_type=TransformType.noop, transform=None)
     
-    # Get buildings data
-    buildings = query_buildings_data(common_xmin_4326, common_ymin_4326, common_xmax_4326, common_ymax_4326)
-    
-    # Create scenes and datasets
-    sentinel_scene, buildings_scene = create_scenes_for_city(city_name, 
-                                                             {'name': city_name, 'country': country_code, 
-                                                              'xmin': common_xmin_3857, 'ymin': common_ymin_3857, 
-                                                              'xmax': common_xmax_3857, 'ymax': common_ymax_3857},
-                                                             class_config)
-    
-    sentinelGeoDataset = PolygonWindowGeoDataset(sentinel_scene, window_size=256, out_size=256, padding=0, transform_type=TransformType.noop, transform=None)
-    buildingsGeoDataset = PolygonWindowGeoDataset(buildings_scene, window_size=512, out_size=512, padding=0, transform_type=TransformType.noop, transform=None)
+    # Create merged dataset
+    mergedds = MergeDataset(sentinelGeoDataset, buildingsGeoDataset)
     
     # Create prediction iterator
-    predictions_iterator = MultiResPredictionsIterator(best_model, sentinelGeoDataset, buildingsGeoDataset, device=device)
+    predictions_iterator = MultiResPredictionsIterator(best_model, mergedds, device=device)
     windows, predictions = zip(*predictions_iterator)
-    
-    # Ensure windows are Box instances
-    windows = [Box(*window.tolist()) if isinstance(window, torch.Tensor) else window for window in windows]
     
     # Create SemanticSegmentationLabels from predictions
     pred_labels = SemanticSegmentationLabels.from_predictions(
@@ -504,8 +299,11 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     affine_transform_buildings = Affine(10, 0, common_xmin_3857, 0, -10, common_ymax_3857)
     crs_transformer.transform = affine_transform_buildings
     
+    output_dir = f'../../vectorised_model_predictions/multi-modal/all_DLV3/{country_code}'
+    os.makedirs(output_dir, exist_ok=True)
+    
     pred_label_store = SemanticSegmentationLabelStore(
-        uri=f'../../vectorised_model_predictions/multi-modal/all_DLV3/{country_code}/{city_name}_{country_code}',
+        uri=os.path.join(output_dir, f'{city_name}_{country_code}.geojson'),
         crs_transformer=crs_transformer,
         class_config=class_config,
         vector_outputs=[vector_output_config],
@@ -514,11 +312,6 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     
     pred_label_store.save(pred_labels)
     print(f"Saved predictions data for {city_name}, {country_code}")
-
-
-
-
-
 
 
 

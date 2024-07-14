@@ -25,3 +25,4 @@ src/models/pixel-based-model.py
 rastervision/
 src/features/make_data.py
 src/models/poi.py
+src/clay/*
