@@ -23,10 +23,8 @@ import torch.nn as nn
 from collections import OrderedDict
 from pytorch_lightning import LightningDataModule
 
-
 from torchvision.models.segmentation import deeplabv3_resnet50
 from torchvision.models.segmentation.deeplabv3 import DeepLabHead
-
 
 # Project-specific imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -35,8 +33,8 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params,
-                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, MultiResolutionFPN,CustomDeepLabV3,
+from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params, CustomInterpolateMultiResolutionDeepLabV3,
+                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, MultiResolutionFPN, CustomMultiResolutionDeepLabV3,
                                           CustomVectorOutputConfig, FeatureMapVisualization, MultiResolution128DeepLabV3)
 from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple, MultiInputCrossValidator,
                                   senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn,
@@ -78,53 +76,33 @@ class_config = ClassConfig(names=['background', 'slums'],
                                 null_class='background')
 
 # # SantoDomingo
-sentinel_sceneSD, buildings_sceneSD = create_scenes_for_city('SantoDomingo', cities['SantoDomingo'], class_config, resolution=2)
+sentinel_sceneSD, buildings_sceneSD = create_scenes_for_city('SantoDomingo', cities['SantoDomingo'], class_config)
 sentinelGeoDataset_SD = PolygonWindowGeoDataset(sentinel_sceneSD, city= 'SantoDomingo', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 buildGeoDataset_SD = PolygonWindowGeoDataset(buildings_sceneSD, city= 'SantoDomingo',window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
 # # GuatemalaCity
-# sentinel_sceneGC, buildings_sceneGC = create_scenes_for_city('GuatemalaCity', cities['GuatemalaCity'], class_config)
-# sentinelGeoDataset_GC = PolygonWindowGeoDataset(sentinel_sceneGC, city='GuatemalaCity',window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-# buildGeoDataset_GC = PolygonWindowGeoDataset(buildings_sceneGC, city='GuatemalaCity',window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+sentinel_sceneGC, buildings_sceneGC = create_scenes_for_city('GuatemalaCity', cities['GuatemalaCity'], class_config)
+sentinelGeoDataset_GC = PolygonWindowGeoDataset(sentinel_sceneGC, city='GuatemalaCity',window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_GC = PolygonWindowGeoDataset(buildings_sceneGC, city='GuatemalaCity',window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
-# # Tegucigalpa - UNITAC report mentions data is complete, so using all tiles
-# sentinel_sceneTG, buildings_sceneTG = create_scenes_for_city('Tegucigalpa', cities['Tegucigalpa'], class_config)
-# sentinelGeoDataset_TG = CustomSlidingWindowGeoDataset(sentinel_sceneTG, city='Tegucigalpa', size=256, stride = 256, out_size=256, padding=256, transform_type=TransformType.noop, transform=None)
-# buildGeoDataset_TG = CustomSlidingWindowGeoDataset(buildings_sceneTG, city='Tegucigalpa', size=512, stride = 512, out_size=512, padding=512, transform_type=TransformType.noop, transform=None)
+# Tegucigalpa - UNITAC report mentions data is complete, so using all tiles
+sentinel_sceneTG, buildings_sceneTG = create_scenes_for_city('Tegucigalpa', cities['Tegucigalpa'], class_config)
+sentinelGeoDataset_TG = CustomSlidingWindowGeoDataset(sentinel_sceneTG, city='Tegucigalpa', size=256, stride = 256, out_size=256, padding=256, transform_type=TransformType.noop, transform=None)
+buildGeoDataset_TG = CustomSlidingWindowGeoDataset(buildings_sceneTG, city='Tegucigalpa', size=512, stride = 512, out_size=512, padding=512, transform_type=TransformType.noop, transform=None)
 
 # # Managua
-# sentinel_sceneMN, buildings_sceneMN = create_scenes_for_city('Managua', cities['Managua'], class_config)
-# sentinelGeoDataset_MN = PolygonWindowGeoDataset(sentinel_sceneMN, city='Managua', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-# buildGeoDataset_MN = PolygonWindowGeoDataset(buildings_sceneMN, city='Managua', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+sentinel_sceneMN, buildings_sceneMN = create_scenes_for_city('Managua', cities['Managua'], class_config)
+sentinelGeoDataset_MN = PolygonWindowGeoDataset(sentinel_sceneMN, city='Managua', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_MN = PolygonWindowGeoDataset(buildings_sceneMN, city='Managua', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
 # # Panama
-# sentinel_scenePN, buildings_scenePN = create_scenes_for_city('Panama', cities['Panama'], class_config)
-# sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-# buildGeoDataset_PN = PolygonWindowGeoDataset(buildings_scenePN, city='Panama', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-
-# # San Salvador - UNITAC report mentions data is complete, so using all tiles
-# sentinel_sceneSS, buildings_sceneSS = create_scenes_for_city('SanSalvador_PS', cities['SanSalvador'], class_config)
-# sentinelGeoDataset_SS = CustomSlidingWindowGeoDataset(sentinel_sceneSS, city='SanSalvador', size=256,stride=256,out_size=256,padding=256, transform_type=TransformType.noop,transform=None)
-# buildGeoDataset_SS = CustomSlidingWindowGeoDataset(buildings_sceneSS, city='SanSalvador', size=512,stride=256,out_size=512,padding=512, transform_type=TransformType.noop, transform=None)
-
-# # SanJose - UNITAC report mentions data is complete, so using all tiles
-# sentinel_sceneSJ, buildings_sceneSJ = create_scenes_for_city('SanJoseCRI', cities['SanJose'], class_config)
-# sentinelGeoDataset_SJ = CustomSlidingWindowGeoDataset(sentinel_sceneSJ, city='SanJose', size=256, stride = 256, out_size=256,padding=0, transform_type=TransformType.noop, transform=None)
-# buildGeoDataset_SJ = CustomSlidingWindowGeoDataset(buildings_sceneSJ, city='SanJose', size=512, stride = 256, out_size=512,padding=0, transform_type=TransformType.noop, transform=None)
-
-# # BelizeCity
-# sentinel_sceneBL, buildings_sceneBL = create_scenes_for_city('BelizeCity', cities['BelizeCity'], class_config)
-# sentinelGeoDataset_BL = PolygonWindowGeoDataset(sentinel_sceneBL,city='BelizeCity',window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-# buildGeoDataset_BL = PolygonWindowGeoDataset(buildings_sceneBL,city='BelizeCity',window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
-
-# # Belmopan - data mostly rural exluding from training
-sentinel_sceneBM, buildings_sceneBM = create_scenes_for_city('Belmopan', cities['Belmopan'], class_config, resolution=2)
-sentinelGeoDataset_BM = PolygonWindowGeoDataset(sentinel_sceneBM, city='Belmopan', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-buildGeoDataset_BM = PolygonWindowGeoDataset(buildings_sceneBM, city='Belmopan', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+sentinel_scenePN, buildings_scenePN = create_scenes_for_city('Panama', cities['Panama'], class_config)
+sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_PN = PolygonWindowGeoDataset(buildings_scenePN, city='Panama', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
 # Create datasets
-train_cities = 'SD' # 'all'
-split_index = 1 # 0 or 1
+train_cities = 'SD' # 'sel'
+split_index = 0 # 0 or 1
 buil_channels = 128
 buil_kernel = 5
 labels_size = 256
@@ -135,27 +113,22 @@ multimodal_datasets = {
     'Tegucigalpa': MergeDataset(sentinelGeoDataset_TG, buildGeoDataset_TG),
     'Managua': MergeDataset(sentinelGeoDataset_MN, buildGeoDataset_MN),
     'Panama': MergeDataset(sentinelGeoDataset_PN, buildGeoDataset_PN),
-    'SanSalvador': MergeDataset(sentinelGeoDataset_SS, buildGeoDataset_SS),
-    'SanJose': MergeDataset(sentinelGeoDataset_SJ, buildGeoDataset_SJ),
-    'BelizeCity': MergeDataset(sentinelGeoDataset_BL, buildGeoDataset_BL),
-    'Belmopan': MergeDataset(sentinelGeoDataset_BM, buildGeoDataset_BM)
-} if train_cities == 'all' else {'SantoDomingo': MergeDataset(sentinelGeoDataset_BM, buildGeoDataset_BM)}
+} if train_cities == 'sel' else {'SD': MergeDataset(sentinelGeoDataset_SD, buildGeoDataset_SD)}
 
-cv = MultiInputCrossValidator(multimodal_datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1)
+cv = MultiInputCrossValidator(multimodal_datasets, n_splits=2, val_ratio=0.5, test_ratio=0)
 
 # Preview a city with sliding windows
-city = 'SantoDomingo'
+city = 'SD'
 windows, labels = cv.get_windows_and_labels_for_city(city, split_index)
 img_full = senitnel_create_full_image(get_label_source_from_merge_dataset(multimodal_datasets[city]))
 show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {split_index + 1})')
-show_single_tile_multi(multimodal_datasets, city, 1, show_sentinel=True, show_buildings=True)
+show_single_tile_multi(multimodal_datasets, city, 11, show_sentinel=True, show_buildings=True)
 
-train_dataset, val_dataset, test_dataset, val_city_indices = cv.get_split(split_index)
+train_dataset, val_dataset, _, val_city_indices = cv.get_split(split_index)
 print(f"Train dataset size: {len(train_dataset)}") 
 print(f"Validation dataset size: {len(val_dataset)}")
-print(f"Test dataset size: {len(test_dataset)}")
 
-batch_size = 25
+batch_size = 16
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, collate_fn=collate_multi_fn)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_multi_fn)
 
@@ -173,10 +146,10 @@ hyperparameters = {
     'buil_channels': buil_channels,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-3,
-    'weight_decay': 0,
+    'weight_decay': 0.7,
     'gamma': 0.5,
-    'sched_step_size': 5,
-    'pos_weight': 3.0,
+    'sched_step_size': 14,
+    'pos_weight': 2.0,
     'buil_kernel': buil_kernel,
     'buil_out_chan': 4
 }
@@ -194,13 +167,11 @@ checkpoint_callback = ModelCheckpoint(
     save_last=True,
     dirpath=output_dir,
     filename=f'multimodal_{train_cities}_cv{split_index}_res{labels_size}_BCH{buil_channels}_BKR{buil_kernel}_{{epoch:02d}}-{{val_loss:.4f}}',
-    save_top_k=2,
+    save_top_k=3,
     mode='min')
 
-def generate_and_display_predictions(model, datamodule, device, epoch):
+def generate_and_display_predictions(model, eval_sent_scene, eval_buil_scene, device, epoch):
         # Set up the prediction dataset
-        eval_sent_scene = sentinel_sceneSD  #datamodule.val_dataloader().dataset.datasets[0].dataset
-        eval_buil_scene = buildings_sceneSD #datamodule.val_dataloader().dataset.datasets[1].dataset
         sent_strided_fullds = CustomSlidingWindowGeoDataset(eval_sent_scene, size=256, stride=256, padding=128, city='SD', transform=None, transform_type=TransformType.noop)
         buil_strided_fullds = CustomSlidingWindowGeoDataset(eval_buil_scene, size=512, stride=512, padding=256, city='SD', transform=None, transform_type=TransformType.noop)
         mergedds = MergeDataset(sent_strided_fullds, buil_strided_fullds)
@@ -249,37 +220,37 @@ class PredictionVisualizationCallback(Callback):
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
             device = pl_module.device  # Get the device from the model
-            generate_and_display_predictions(pl_module, trainer.datamodule, device, trainer.current_epoch)
+            generate_and_display_predictions(pl_module, sentinel_sceneSD, buildings_sceneSD, device, trainer.current_epoch)
 
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=10)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=8)
 visualization_callback = PredictionVisualizationCallback(every_n_epochs=5)  # Adjust the frequency as needed
 
-model = CustomDeepLabV3(
+model = CustomInterpolateMultiResolutionDeepLabV3(
     use_deeplnafrica=hyperparameters['use_deeplnafrica'],
     learning_rate=hyperparameters['learning_rate'],
-    # weight_decay=hyperparameters['weight_decay'],
-    # gamma=hyperparameters['gamma'],
-    # atrous_rates=hyperparameters['atrous_rates'],
-    # sched_step_size = hyperparameters['sched_step_size'],
-    # buil_channels = buil_channels,
-    # buil_kernel = buil_kernel,
-    # pos_weight=hyperparameters['pos_weight'],
-    # buil_out_chan = hyperparameters['buil_out_chan']
+    weight_decay=hyperparameters['weight_decay'],
+    gamma=hyperparameters['gamma'],
+    atrous_rates=hyperparameters['atrous_rates'],
+    sched_step_size = hyperparameters['sched_step_size'],
+    buil_channels = buil_channels,
+    buil_kernel = buil_kernel,
+    pos_weight=hyperparameters['pos_weight'],
+    buil_out_chan = hyperparameters['buil_out_chan']
 )
 
 model.to(device)
 
-for batch in train_loader:
-    sentinel, buildings = batch
-    sentinel_data = sentinel[0].to(device)
-    sentlabels = sentinel[1].to(device)
+# for batch in train_loader:
+#     sentinel, buildings = batch
+#     sentinel_data = sentinel[0].to(device)
+#     sentlabels = sentinel[1].to(device)
 
-    buildings_data = buildings[0].to(device)
-    labels = buildings[1].to(device)
+#     buildings_data = buildings[0].to(device)
+#     labels = buildings[1].to(device)
 
-    output = model(batch)# ((sentinel_data,sentlabels), (buildings_data,labels)))
-    print(output.shape)
-    break
+#     output = model(batch)# ((sentinel_data,sentlabels), (buildings_data,labels)))
+#     print("Output of the model",output.shape)
+#     break
 
 # Define trainer
 trainer = Trainer(
@@ -287,7 +258,7 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback, visualization_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=24,
+    min_epochs=25,
     max_epochs=250,
     num_sanity_val_steps=3,
     precision='16-mixed',
@@ -298,11 +269,11 @@ trainer = Trainer(
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation
-# model_id = 'last.ckpt'
+# model_id = 'last-v1.ckpt'
 # best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
 
 best_model_path = checkpoint_callback.best_model_path
-best_model = CustomMultiResolutionDeepLabV3()#buil_channels=buil_channels, buil_kernel=buil_kernel, buil_out_chan=4)
+best_model = CustomInterpolateMultiResolutionDeepLabV3()#buil_channels=buil_channels, buil_kernel=buil_kernel, buil_out_chan=4)
 checkpoint = torch.load(best_model_path)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict, strict=True)
@@ -345,8 +316,6 @@ evaluator = SemanticSegmentationEvaluator(class_config)
 evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
 inf_eval = evaluation.class_to_eval_item[1]
 print(f"F1:{inf_eval.f1}")
-
-
 
 # Calculate F1 scores
 def calculate_multimodal_f1_score(model, merged_dataset, device, scene):
@@ -403,27 +372,28 @@ print(f"\nSummary of multimodal F1 scores for split {split_index}:")
 for city, score in city_f1_scores.items():
     print(f"{city}: {score}")
 
-# Saving predictions as GEOJSON
-# vector_output_config = CustomVectorOutputConfig(
-#     class_id=1,
-#     denoise=8,
-#     threshold=0.5)
+vector_output_config = CustomVectorOutputConfig(
+    class_id=1,
+    denoise=8,
+    threshold=0.5)
 
-# crs_transformer = RasterioCRSTransformer.from_uri(cities['SanJose']['image_path'])
-# gdf = gpd.read_file(cities['SanJose']['labels_path'])
-# gdf = gdf.to_crs('epsg:3857')
-# xmin3857, ymin, xmax, ymax3857 = gdf.total_bounds
-# affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
-# crs_transformer.transform = affine_transform_buildings
+crs_transformer = RasterioCRSTransformer.from_uri(cities['SantoDomingo']['image_path'])
+gdf = gpd.read_file(cities['SantoDomingo']['labels_path'])
+gdf = gdf.to_crs('epsg:3857')
+xmin3857, ymin, xmax, ymax3857 = gdf.total_bounds
+affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
+crs_transformer.transform = affine_transform_buildings
 
-# pred_label_store = SemanticSegmentationLabelStore(
-#     uri=f'../../vectorised_model_predictions/multi-modal/{train_cities}_DLV3/',
-#     crs_transformer = crs_transformer,
-#     class_config = class_config,
-#     vector_outputs = [vector_output_config],
-#     discrete_output = True)
+pred_label_store = SemanticSegmentationLabelStore(
+    uri=f'../../vectorised_model_predictions/multi-modal/{train_cities}_DLV3/',
+    crs_transformer = crs_transformer,
+    class_config = class_config,
+    vector_outputs = [vector_output_config],
+    discrete_output = True)
 
-# pred_label_store.save(pred_labels)
+pred_label_store.save(pred_labels)
+
+
 
 
 

@@ -1136,6 +1136,506 @@ class MultiResolutionFPN(pl.LightningModule):
             if isinstance(module, nn.Conv2d):
                 module.register_forward_hook(hook_fn)
 
+class CustomMultiResolutionDeepLabV3(pl.LightningModule):
+    def __init__(self,
+                 use_deeplnafrica: bool = True,
+                 learning_rate: float = 1e-3,
+                 weight_decay: float = 1e-1,
+                 gamma: float = 0.1,
+                 atrous_rates = (12, 24, 36),
+                 sched_step_size = 10,
+                 buil_channels = 128,
+                 buil_kernel = 5,
+                 pos_weight = 1.0,
+                 buil_out_chan = 4):
+        super().__init__()
+        
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.atrous_rates = atrous_rates
+        self.gamma = gamma
+        self.pos_weight = torch.tensor(pos_weight, device='mps')
+        self.sched_step_size = sched_step_size
+        self.buil_channels = buil_channels
+        self.buil_kernel1 = buil_kernel
+        self.buil_out_chan = buil_out_chan
+
+        # Modified buildings encoder
+        self.buildings_encoder = nn.ModuleList([
+            self._make_buildings_layer(1, 2, stride=2),    # 512x512 -> 256x256
+            self._make_buildings_layer(2, 4, stride=4),   # 256x256 -> 64x64
+            self._make_buildings_layer(4, 8, stride=2),  # 64x64 -> 32x32
+            self._make_buildings_layer(8, 16, stride=1), # 32x32 -> 32x32
+        ])
+
+        # Modified main encoder
+        self.encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)
+        self.encoder.backbone.conv1 = nn.Conv2d(4 + 2, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        
+        if use_deeplnafrica:
+            allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
+            checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
+            original_state_dict = checkpoint["state_dict"]
+
+            # Convert any float64 weights to float32
+            for key, value in original_state_dict.items():
+                if value.dtype == torch.float64:
+                    original_state_dict[key] = value.to(torch.float32)
+                
+            # removing prefix
+            state_dict = OrderedDict()
+            for key, value in original_state_dict.items():
+                if key.startswith('segm_model.'):
+                    new_key = key[len('segm_model.'):]
+                    state_dict[new_key] = value
+
+            # Extract the original weights of the first convolutional layer
+            original_conv1_weight = state_dict['backbone.conv1.weight']
+            new_conv1_weight = torch.zeros((64, 4 + 2, 7, 7))
+            new_conv1_weight[:, :4, :, :] = original_conv1_weight
+            nn.init.kaiming_normal_(new_conv1_weight[:, 4:, :, :], mode='fan_out', nonlinearity='relu')
+            state_dict['backbone.conv1.weight'] = new_conv1_weight
+                
+            self.encoder.load_state_dict(state_dict, strict=False)
+            
+        # Modify ResNet layers to output intermediate features
+        self.encoder.backbone.layer1.register_forward_hook(self._get_intermediate_feat)
+        self.encoder.backbone.layer2.register_forward_hook(self._get_intermediate_feat)
+        self.encoder.backbone.layer3.register_forward_hook(self._get_intermediate_feat)
+
+        # Fusion layers
+        self.fusion_layers = nn.ModuleList([
+            nn.Conv2d(256 + 4, 256, kernel_size=1),    # After layer1
+            nn.Conv2d(512 + 8, 512, kernel_size=1),   # After layer2
+            nn.Conv2d(1024 + 16, 1024, kernel_size=1), # After layer3
+        ])
+        
+    def _make_buildings_layer(self, in_channels, out_channels, stride):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def _get_intermediate_feat(self, module, input, output):
+        setattr(self, f'{module.__class__.__name__}_feat', output)
+
+    def forward(self, batch):
+        sentinel_batch, buildings_batch = batch
+        buildings_data, _ = buildings_batch
+        buildings_data = buildings_data.to(self.device)
+        sentinel_data, _ = sentinel_batch
+        sentinel_data = sentinel_data.to(self.device)
+        
+        input_shape = sentinel_data.shape[-2:]
+
+        # Process buildings data
+        b_feats = []
+        x = buildings_data
+        for layer in self.buildings_encoder:
+            x = layer(x)
+            # print(f"Shape of buildings features: {x.shape}")
+            b_feats.append(x)
+
+        # Process sentinel data
+        x = torch.cat([sentinel_data, b_feats[0]], dim=1)
+        # print(f"Shape after initial concatenation: {x.shape}")
+        
+        x = self.encoder.backbone.conv1(x)
+        x = self.encoder.backbone.bn1(x)
+        x = self.encoder.backbone.relu(x)
+        x = self.encoder.backbone.maxpool(x)
+        # print(f"Shape after initial main encoder layers: {x.shape}")
+        
+        # Apply ResNet layers and fuse with buildings features
+        x = self.encoder.backbone.layer1(x)
+        # print(f"Shape after layer1: {x.shape}")
+        x = self.fusion_layers[0](torch.cat([x, b_feats[1]], dim=1))
+        # print(f"Shape after fusion1: {x.shape}")
+
+        x = self.encoder.backbone.layer2(x)
+        x = self.fusion_layers[1](torch.cat([x, b_feats[2]], dim=1))
+        # print(f"Shape after layer2 and fusion2: {x.shape}")
+
+        x = self.encoder.backbone.layer3(x)
+        # print(f"Shape after layer3: {x.shape}")
+        x = self.fusion_layers[2](torch.cat([x, b_feats[3]], dim=1))
+        # print(f"Shape after fusion3: {x.shape}")
+
+        x = self.encoder.backbone.layer4(x)
+        # print(f"Shape after layer4: {x.shape}")
+
+        x = self.encoder.classifier(x)
+        # print(f"Shape after classifier: {x.shape}")
+
+        x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
+        
+        return x.squeeze(1)
+
+    def training_step(self, batch):
+        sentinel_batch, _ = batch
+        _, sentinel_labels = sentinel_batch
+        sentinel_labels = sentinel_labels.to(self.device)
+        sentinel_labels = sentinel_labels.squeeze(-1)
+
+        segmentation = self.forward(batch)
+        
+        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, sentinel_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+        
+        self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
+        self.log('train_precision', mean_precision)
+        self.log('train_recall', mean_recall)
+                
+        return loss
+    
+    def validation_step(self, batch):
+        sentinel_batch, _ = batch
+        _, sentinel_labels = sentinel_batch
+        sentinel_labels = sentinel_labels.to(self.device)
+        sentinel_labels = sentinel_labels.squeeze(-1)
+
+        segmentation = self.forward(batch)      
+        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        val_loss = loss_fn(segmentation, sentinel_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+        
+        self.log('val_mean_iou', mean_iou)
+        self.log('val_loss', val_loss, prog_bar=True, logger=True)
+        self.log('val_precision', mean_precision)
+        self.log('val_recall', mean_recall)
+    
+    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
+        sentinel_batch, _ = batch
+        _, sentinel_labels = sentinel_batch
+        sentinel_labels = sentinel_labels.to(self.device)
+        sentinel_labels = sentinel_labels.squeeze(-1)
+
+        segmentation = self.forward(batch)     
+        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        test_loss = loss_fn(segmentation, sentinel_labels)
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+
+        self.log('test_loss', test_loss)
+        self.log('test_mean_iou', mean_iou)
+        self.log('test_precision', mean_precision)
+        self.log('test_recall', mean_recall)
+        
+    def compute_metrics(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        
+        # IoU computation
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        mean_iou = iou.mean()
+        
+        # Precision and Recall computation
+        true_positives = (preds & target).sum((1, 2))
+        predicted_positives = preds.sum((1, 2))
+        actual_positives = target.sum((1, 2))
+        
+        precision = true_positives.float() / (predicted_positives.float() + 1e-10)
+        recall = true_positives.float() / (actual_positives.float() + 1e-10)
+        
+        mean_precision = precision.mean()
+        mean_recall = recall.mean()
+        
+        return mean_iou, mean_precision, mean_recall
+    
+    def configure_optimizers(self) -> dict:
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=self.sched_step_size,  # adjust step_size to your needs
+            gamma=self.gamma      # adjust gamma to your needs
+        )
+
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+
+class CustomInterpolateMultiResolutionDeepLabV3(pl.LightningModule):
+    def __init__(self,
+                 use_deeplnafrica: bool = True,
+                 learning_rate: float = 1e-3,
+                 weight_decay: float = 1e-1,
+                 gamma: float = 0.1,
+                 atrous_rates = (12, 24, 36),
+                 sched_step_size = 10,
+                 buil_channels = 128,
+                 buil_kernel = 5,
+                 pos_weight = 1.0,
+                 buil_out_chan = 4):
+        super().__init__()
+        
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.atrous_rates = atrous_rates
+        self.gamma = gamma
+        self.pos_weight = torch.tensor(pos_weight, device='mps')
+        self.sched_step_size = sched_step_size
+        self.buil_channels = buil_channels
+        self.buil_kernel1 = buil_kernel
+        self.buil_out_chan = buil_out_chan
+
+        # Modified buildings encoder
+        self.buildings_encoder = nn.ModuleList([
+            self._make_buildings_layer(1, 2, stride=2),    # 512x512 -> 256x256
+            self._make_buildings_layer(2, 4, stride=4),   # 256x256 -> 64x64
+            self._make_buildings_layer(4, 8, stride=2),  # 64x64 -> 32x32
+            self._make_buildings_layer(8, 16, stride=1), # 32x32 -> 32x32
+        ])
+
+        # Modified main encoder
+        self.encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)
+        self.encoder.backbone.conv1 = nn.Conv2d(4 + 2, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        
+        if use_deeplnafrica:
+            allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
+            checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
+            original_state_dict = checkpoint["state_dict"]
+
+            # Convert any float64 weights to float32
+            for key, value in original_state_dict.items():
+                if value.dtype == torch.float64:
+                    original_state_dict[key] = value.to(torch.float32)
+                
+            # removing prefix
+            state_dict = OrderedDict()
+            for key, value in original_state_dict.items():
+                if key.startswith('segm_model.'):
+                    new_key = key[len('segm_model.'):]
+                    state_dict[new_key] = value
+
+            # Extract the original weights of the first convolutional layer
+            original_conv1_weight = state_dict['backbone.conv1.weight']
+            new_conv1_weight = torch.zeros((64, 4 + 2, 7, 7))
+            new_conv1_weight[:, :4, :, :] = original_conv1_weight
+            nn.init.kaiming_normal_(new_conv1_weight[:, 4:, :, :], mode='fan_out', nonlinearity='relu')
+            state_dict['backbone.conv1.weight'] = new_conv1_weight
+                
+            self.encoder.load_state_dict(state_dict, strict=False)
+            
+        # Modify ResNet layers to output intermediate features
+        self.encoder.backbone.layer1.register_forward_hook(self._get_intermediate_feat)
+        self.encoder.backbone.layer2.register_forward_hook(self._get_intermediate_feat)
+        self.encoder.backbone.layer3.register_forward_hook(self._get_intermediate_feat)
+
+        # Fusion layers
+        self.fusion_layers = nn.ModuleList([
+            nn.Conv2d(256 + 4, 256, kernel_size=1),    # After layer1
+            nn.Conv2d(512 + 8, 512, kernel_size=1),   # After layer2
+            nn.Conv2d(1024 + 16, 1024, kernel_size=1), # After layer3
+        ])
+        
+        self.fusion_64 = nn.Conv2d(256 + 1, 1, kernel_size=3, padding=1)
+
+    def _make_buildings_layer(self, in_channels, out_channels, stride):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def _get_intermediate_feat(self, module, input, output):
+        setattr(self, f'{module.__class__.__name__}_feat', output)
+
+    def forward(self, batch):
+        sentinel_batch, buildings_batch = batch
+        buildings_data, _ = buildings_batch
+        buildings_data = buildings_data.to(self.device)
+        sentinel_data, _ = sentinel_batch
+        sentinel_data = sentinel_data.to(self.device)
+        
+        input_shape = sentinel_data.shape[-2:]
+
+        # Process buildings data
+        b_feats = []
+        x = buildings_data
+        for layer in self.buildings_encoder:
+            x = layer(x)
+            # print(f"Shape of buildings features: {x.shape}")
+            b_feats.append(x)
+
+        # Process sentinel data
+        x = torch.cat([sentinel_data, b_feats[0]], dim=1)
+        # print(f"Shape after initial concatenation: {x.shape}")
+        
+        x = self.encoder.backbone.conv1(x)
+        x = self.encoder.backbone.bn1(x)
+        x = self.encoder.backbone.relu(x)
+        x = self.encoder.backbone.maxpool(x)
+        # print(f"Shape after initial main encoder layers: {x.shape}")
+        
+        # Apply ResNet layers and fuse with buildings features
+        x = self.encoder.backbone.layer1(x)
+        x_fus64 = self.fusion_layers[0](torch.cat([x, b_feats[1]], dim=1))
+        # print(f"Shape after fusion1: {x_fus64.shape}") # Fused has shape torch.Size([16, 256, 64, 64])
+
+        x = self.encoder.backbone.layer2(x_fus64)
+        x = self.fusion_layers[1](torch.cat([x, b_feats[2]], dim=1))
+        # print(f"Shape after layer2 and fusion2: {x.shape}") # Fused has shape torch.Size([16, 512, 32, 32])
+        
+        x = self.encoder.backbone.layer3(x)
+        # print(f"Shape after layer3: {x.shape}")
+        x = self.fusion_layers[2](torch.cat([x, b_feats[3]], dim=1))
+        # print(f"Shape after fusion3: {x.shape}")
+
+        x = self.encoder.backbone.layer4(x)
+        # print(f"Shape after layer4: {x.shape}")
+
+        x = self.encoder.classifier(x)
+        # print(f"Shape after classifier: {x.shape}") # torch.Size([16, 1, 32, 32])
+        
+        # Upsample to 64x64
+        x_64 = F.interpolate(x, size=(64, 64), mode='bilinear', align_corners=False)
+        # print(f"Shape after upsampling to 64x64: {x_64.shape}") # torch.Size([16, 1, 64, 64])
+        
+        # Fuse with encoder features (assuming low_level_feat is 128x128)
+        fused_64 = self.fusion_64(torch.cat([x_64, x_fus64], dim=1))
+
+        # Final upsampling to input size (256x256)
+        x = F.interpolate(fused_64, size=input_shape, mode='bilinear', align_corners=False)
+                
+        return x.squeeze(1)
+
+    def training_step(self, batch):
+        sentinel_batch, _ = batch
+        _, sentinel_labels = sentinel_batch
+        sentinel_labels = sentinel_labels.to(self.device)
+        sentinel_labels = sentinel_labels.squeeze(-1)
+
+        segmentation = self.forward(batch)
+        
+        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        loss = loss_fn(segmentation, sentinel_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+        
+        self.log('train_loss', loss)
+        self.log('train_mean_iou', mean_iou)
+        self.log('train_precision', mean_precision)
+        self.log('train_recall', mean_recall)
+                
+        return loss
+    
+    def validation_step(self, batch):
+        sentinel_batch, _ = batch
+        _, sentinel_labels = sentinel_batch
+        sentinel_labels = sentinel_labels.to(self.device)
+        sentinel_labels = sentinel_labels.squeeze(-1)
+
+        segmentation = self.forward(batch)      
+        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+        val_loss = loss_fn(segmentation, sentinel_labels.float())
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+        
+        self.log('val_mean_iou', mean_iou)
+        self.log('val_loss', val_loss, prog_bar=True, logger=True)
+        self.log('val_precision', mean_precision)
+        self.log('val_recall', mean_recall)
+    
+    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
+        sentinel_batch, _ = batch
+        _, sentinel_labels = sentinel_batch
+        sentinel_labels = sentinel_labels.to(self.device)
+        sentinel_labels = sentinel_labels.squeeze(-1)
+
+        segmentation = self.forward(batch)     
+        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
+
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        test_loss = loss_fn(segmentation, sentinel_labels)
+        
+        preds = torch.sigmoid(segmentation) > 0.5
+        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+
+        self.log('test_loss', test_loss)
+        self.log('test_mean_iou', mean_iou)
+        self.log('test_precision', mean_precision)
+        self.log('test_recall', mean_recall)
+        
+    def compute_metrics(self, preds, target):
+        preds = preds.bool()
+        target = target.bool()
+        smooth = 1e-6
+        
+        # IoU computation
+        intersection = (preds & target).float().sum((1, 2))
+        union = (preds | target).float().sum((1, 2))
+        iou = (intersection + smooth) / (union + smooth)
+        mean_iou = iou.mean()
+        
+        # Precision and Recall computation
+        true_positives = (preds & target).sum((1, 2))
+        predicted_positives = preds.sum((1, 2))
+        actual_positives = target.sum((1, 2))
+        
+        precision = true_positives.float() / (predicted_positives.float() + 1e-10)
+        recall = true_positives.float() / (actual_positives.float() + 1e-10)
+        
+        mean_precision = precision.mean()
+        mean_recall = recall.mean()
+        
+        return mean_iou, mean_precision, mean_recall
+    
+    def configure_optimizers(self) -> dict:
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=self.sched_step_size,  # adjust step_size to your needs
+            gamma=self.gamma      # adjust gamma to your needs
+        )
+
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+
+
 # Feature Map Visualisation class
 class FeatureMapVisualization:
     def __init__(self, model, device):
@@ -1443,468 +1943,3 @@ class MultiResolutionFPNwASPP(pl.LightningModule):
         for name, module in self.named_modules():
             if isinstance(module, nn.Conv2d):
                 module.register_forward_hook(hook_fn)
-
-
-class CustomMultiResolutionDeepLabV3(pl.LightningModule):
-    def __init__(self,
-                 use_deeplnafrica: bool = True,
-                 learning_rate: float = 1e-3,
-                 weight_decay: float = 1e-1,
-                 gamma: float = 0.1,
-                 atrous_rates = (12, 24, 36),
-                 sched_step_size = 10,
-                 buil_channels = 128,
-                 buil_kernel = 5,
-                 pos_weight = 1.0,
-                 buil_out_chan = 4):
-        super().__init__()
-        
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.atrous_rates = atrous_rates
-        self.gamma = gamma
-        self.pos_weight = torch.tensor(pos_weight, device='mps')
-        self.sched_step_size = sched_step_size
-        self.buil_channels = buil_channels
-        self.buil_kernel1 = buil_kernel
-        self.buil_out_chan = buil_out_chan
-
-        # Modified buildings encoder
-        self.buildings_encoder = nn.ModuleList([
-            self._make_buildings_layer(1, 2, stride=2),    # 512x512 -> 256x256
-            self._make_buildings_layer(2, 4, stride=4),   # 256x256 -> 64x64
-            self._make_buildings_layer(4, 8, stride=2),  # 64x64 -> 32x32
-            self._make_buildings_layer(8, 16, stride=1), # 32x32 -> 32x32
-        ])
-
-        # Modified main encoder
-        self.encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)
-        self.encoder.backbone.conv1 = nn.Conv2d(4 + 2, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        
-        if use_deeplnafrica:
-            allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
-            checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
-            original_state_dict = checkpoint["state_dict"]
-
-            # Convert any float64 weights to float32
-            for key, value in original_state_dict.items():
-                if value.dtype == torch.float64:
-                    original_state_dict[key] = value.to(torch.float32)
-                
-            # removing prefix
-            state_dict = OrderedDict()
-            for key, value in original_state_dict.items():
-                if key.startswith('segm_model.'):
-                    new_key = key[len('segm_model.'):]
-                    state_dict[new_key] = value
-
-            # Extract the original weights of the first convolutional layer
-            original_conv1_weight = state_dict['backbone.conv1.weight']
-            new_conv1_weight = torch.zeros((64, 4 + 2, 7, 7))
-            new_conv1_weight[:, :4, :, :] = original_conv1_weight
-            nn.init.kaiming_normal_(new_conv1_weight[:, 4:, :, :], mode='fan_out', nonlinearity='relu')
-            state_dict['backbone.conv1.weight'] = new_conv1_weight
-                
-            self.encoder.load_state_dict(state_dict, strict=False)
-            
-        # Modify ResNet layers to output intermediate features
-        self.encoder.backbone.layer1.register_forward_hook(self._get_intermediate_feat)
-        self.encoder.backbone.layer2.register_forward_hook(self._get_intermediate_feat)
-        self.encoder.backbone.layer3.register_forward_hook(self._get_intermediate_feat)
-
-        # Fusion layers
-        self.fusion_layers = nn.ModuleList([
-            nn.Conv2d(256 + 4, 256, kernel_size=1),    # After layer1
-            nn.Conv2d(512 + 8, 512, kernel_size=1),   # After layer2
-            nn.Conv2d(1024 + 16, 1024, kernel_size=1), # After layer3
-        ])
-        
-    def _make_buildings_layer(self, in_channels, out_channels, stride):
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def _get_intermediate_feat(self, module, input, output):
-        setattr(self, f'{module.__class__.__name__}_feat', output)
-
-    def forward(self, batch):
-        sentinel_batch, buildings_batch = batch
-        buildings_data, _ = buildings_batch
-        buildings_data = buildings_data.to(self.device)
-        sentinel_data, _ = sentinel_batch
-        sentinel_data = sentinel_data.to(self.device)
-        
-        input_shape = sentinel_data.shape[-2:]
-
-        # Process buildings data
-        b_feats = []
-        x = buildings_data
-        for layer in self.buildings_encoder:
-            x = layer(x)
-            # print(f"Shape of buildings features: {x.shape}")
-            b_feats.append(x)
-
-        # Process sentinel data
-        x = torch.cat([sentinel_data, b_feats[0]], dim=1)
-        # print(f"Shape after initial concatenation: {x.shape}")
-        
-        x = self.encoder.backbone.conv1(x)
-        x = self.encoder.backbone.bn1(x)
-        x = self.encoder.backbone.relu(x)
-        x = self.encoder.backbone.maxpool(x)
-        # print(f"Shape after initial main encoder layers: {x.shape}")
-        
-        # Apply ResNet layers and fuse with buildings features
-        x = self.encoder.backbone.layer1(x)
-        # print(f"Shape after layer1: {x.shape}")
-        x = self.fusion_layers[0](torch.cat([x, b_feats[1]], dim=1))
-        # print(f"Shape after fusion1: {x.shape}")
-
-        x = self.encoder.backbone.layer2(x)
-        x = self.fusion_layers[1](torch.cat([x, b_feats[2]], dim=1))
-        # print(f"Shape after layer2 and fusion2: {x.shape}")
-
-        x = self.encoder.backbone.layer3(x)
-        # print(f"Shape after layer3: {x.shape}")
-        x = self.fusion_layers[2](torch.cat([x, b_feats[3]], dim=1))
-        # print(f"Shape after fusion3: {x.shape}")
-
-        x = self.encoder.backbone.layer4(x)
-        # print(f"Shape after layer4: {x.shape}")
-
-        x = self.encoder.classifier(x)
-        # print(f"Shape after classifier: {x.shape}")
-
-        x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
-        
-        return x.squeeze(1)
-
-    def training_step(self, batch):
-        sentinel_batch, _ = batch
-        _, sentinel_labels = sentinel_batch
-        sentinel_labels = sentinel_labels.to(self.device)
-        sentinel_labels = sentinel_labels.squeeze(-1)
-
-        segmentation = self.forward(batch)
-        
-        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
-        loss = loss_fn(segmentation, sentinel_labels.float())
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
-        
-        self.log('train_loss', loss)
-        self.log('train_mean_iou', mean_iou)
-        self.log('train_precision', mean_precision)
-        self.log('train_recall', mean_recall)
-                
-        return loss
-    
-    def validation_step(self, batch):
-        sentinel_batch, _ = batch
-        _, sentinel_labels = sentinel_batch
-        sentinel_labels = sentinel_labels.to(self.device)
-        sentinel_labels = sentinel_labels.squeeze(-1)
-
-        segmentation = self.forward(batch)      
-        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
-        val_loss = loss_fn(segmentation, sentinel_labels.float())
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
-        
-        self.log('val_mean_iou', mean_iou)
-        self.log('val_loss', val_loss, prog_bar=True, logger=True)
-        self.log('val_precision', mean_precision)
-        self.log('val_recall', mean_recall)
-    
-    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
-        sentinel_batch, _ = batch
-        _, sentinel_labels = sentinel_batch
-        sentinel_labels = sentinel_labels.to(self.device)
-        sentinel_labels = sentinel_labels.squeeze(-1)
-
-        segmentation = self.forward(batch)     
-        assert segmentation.shape == sentinel_labels.shape, f"Shapes mismatch: {segmentation.shape} vs {sentinel_labels.shape}"
-
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        test_loss = loss_fn(segmentation, sentinel_labels)
-        
-        preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
-
-        self.log('test_loss', test_loss)
-        self.log('test_mean_iou', mean_iou)
-        self.log('test_precision', mean_precision)
-        self.log('test_recall', mean_recall)
-        
-    def compute_metrics(self, preds, target):
-        preds = preds.bool()
-        target = target.bool()
-        smooth = 1e-6
-        
-        # IoU computation
-        intersection = (preds & target).float().sum((1, 2))
-        union = (preds | target).float().sum((1, 2))
-        iou = (intersection + smooth) / (union + smooth)
-        mean_iou = iou.mean()
-        
-        # Precision and Recall computation
-        true_positives = (preds & target).sum((1, 2))
-        predicted_positives = preds.sum((1, 2))
-        actual_positives = target.sum((1, 2))
-        
-        precision = true_positives.float() / (predicted_positives.float() + 1e-10)
-        recall = true_positives.float() / (actual_positives.float() + 1e-10)
-        
-        mean_precision = precision.mean()
-        mean_recall = recall.mean()
-        
-        return mean_iou, mean_precision, mean_recall
-    
-    def configure_optimizers(self) -> dict:
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay
-        )
-
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=self.sched_step_size,  # adjust step_size to your needs
-            gamma=self.gamma      # adjust gamma to your needs
-        )
-
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'epoch',
-                'frequency': 1
-            }
-        }
-
-
-
-
-
-class ASPPConv(nn.Sequential):
-    def __init__(self, in_channels, out_channels, dilation):
-        modules = [
-            nn.Conv2d(in_channels, out_channels, 3, padding=dilation, dilation=dilation, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU()
-        ]
-        super(ASPPConv, self).__init__(*modules)
-
-class ASPPPooling(nn.Sequential):
-    def __init__(self, in_channels, out_channels):
-        super(ASPPPooling, self).__init__(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_channels, out_channels, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU())
-
-    def forward(self, x):
-        size = x.shape[-2:]
-        for mod in self:
-            x = mod(x)
-        return F.interpolate(x, size=size, mode='bilinear', align_corners=False)
-
-class ASPP(nn.Module):
-    def __init__(self, in_channels, atrous_rates, out_channels=256):
-        super(ASPP, self).__init__()
-        modules = []
-        modules.append(nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU()))
-
-        rates = tuple(atrous_rates)
-        for rate in rates:
-            modules.append(ASPPConv(in_channels, out_channels, rate))
-
-        modules.append(ASPPPooling(in_channels, out_channels))
-
-        self.convs = nn.ModuleList(modules)
-
-        self.project = nn.Sequential(
-            nn.Conv2d(len(self.convs) * out_channels, out_channels, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(),
-            nn.Dropout(0.5))
-
-    def forward(self, x):
-        res = []
-        for conv in self.convs:
-            res.append(conv(x))
-        res = torch.cat(res, dim=1)
-        return self.project(res)
-
-class DeepLabV3PlusDecoder(nn.Module):
-    def __init__(self, low_level_channels, aspp_channels, num_classes):
-        super(DeepLabV3PlusDecoder, self).__init__()
-        self.conv1 = nn.Conv2d(low_level_channels, 48, 1, bias=False)
-        self.bn1 = nn.BatchNorm2d(48)
-        self.relu = nn.ReLU(inplace=True)
-        self.output = nn.Sequential(
-            nn.Conv2d(48 + aspp_channels, 256, 3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, 3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, num_classes, 1)
-        )
-
-    def forward(self, x, low_level_feat):
-        low_level_feat = self.conv1(low_level_feat)
-        low_level_feat = self.bn1(low_level_feat)
-        low_level_feat = self.relu(low_level_feat)
-
-        x = F.interpolate(x, size=low_level_feat.shape[2:], mode='bilinear', align_corners=False)
-        x = torch.cat((x, low_level_feat), dim=1)
-        x = self.output(x)
-        return x
-
-class CustomDeepLabV3Plus(pl.LightningModule):
-    def __init__(self, num_classes=1, use_deeplnafrica=True, learning_rate=1e-3, weight_decay=1e-1):
-        super(CustomDeepLabV3Plus, self).__init__()
-        
-        
-        # Load pretrained ResNet50
-        self.encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=num_classes)
-        
-        # Modify the first convolutional layer to accept 12 channels (4 sentinel + 8 buildings)
-        self.encoder.backbone.conv1 = nn.Conv2d(4 + 8, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        
-        if use_deeplnafrica:
-            self._load_pretrained_weights()
-        
-        # Freeze encoder
-        for param in self.encoder.backbone.parameters():
-            param.requires_grad = False
-
-        # Buildings encoder
-        self.buildings_encoder = nn.ModuleList([
-            self._make_buildings_layer(1, 8, stride=2),    # 512x512 -> 256x256
-            self._make_buildings_layer(8, 64, stride=4),   # 256x256 -> 64x64
-            self._make_buildings_layer(64, 256, stride=2), # 64x64 -> 32x32
-            self._make_buildings_layer(256, 512, stride=1) # 32x32 -> 32x32
-        ])
-
-        # ASPP
-        self.aspp = ASPP(2048 + 512, [12, 24, 36])  # 2048 from ResNet50, 512 from buildings encoder
-
-        # Decoder
-        self.decoder = DeepLabV3PlusDecoder(2048, 256, num_classes)  # 2048 is the number of channels from ResNet50's layer4
-
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        
-    def _make_buildings_layer(self, in_channels, out_channels, stride):
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def _load_pretrained_weights(self):
-        allcts_path = '/Users/janmagnuszewski/dev/slums-model-unitac/deeplnafrica/deeplnafrica_trained_models/all_countries/TAN_KEN_SA_UGA_SIE_SUD/checkpoints/best-val-epoch=44-step=1035-val_loss=0.2.ckpt'
-        checkpoint = torch.load(allcts_path, map_location='cpu')  # Load to CPU first
-        original_state_dict = checkpoint["state_dict"]
-
-        # Convert any float64 weights to float32
-        for key, value in original_state_dict.items():
-            if value.dtype == torch.float64:
-                original_state_dict[key] = value.to(torch.float32)
-            
-        # removing prefix
-        state_dict = OrderedDict()
-        for key, value in original_state_dict.items():
-            if key.startswith('segm_model.'):
-                new_key = key[len('segm_model.'):]
-                state_dict[new_key] = value
-
-        # Extract the original weights of the first convolutional layer
-        original_conv1_weight = state_dict['backbone.conv1.weight']
-        new_conv1_weight = torch.zeros((64, 4 + 8, 7, 7))
-        new_conv1_weight[:, :4, :, :] = original_conv1_weight
-        nn.init.kaiming_normal_(new_conv1_weight[:, 4:, :, :], mode='fan_out', nonlinearity='relu')
-        state_dict['backbone.conv1.weight'] = new_conv1_weight
-            
-        self.encoder.load_state_dict(state_dict, strict=False)
-
-    def forward(self, batch):
-        sentinel_batch, buildings_batch = batch
-        sentinel_data, _ = sentinel_batch
-
-        buildings_data, _ = buildings_batch
-        sentinel_data = sentinel_data.to(self.device)
-        buildings_data = buildings_data.to(self.device)
-
-        # Process buildings data
-        b_feat = buildings_data
-        for layer in self.buildings_encoder:
-            b_feat = layer(b_feat)
-
-        # Concatenate sentinel data and first buildings feature
-        x = torch.cat([sentinel_data, self.buildings_encoder[0](buildings_data)], dim=1)
-
-        # Process through encoder
-        features = self.encoder.backbone(x)
-        
-        # Extract features
-        low_level_feat = features['out']  # This might need adjustment based on your exact ResNet implementation
-        x = features['out']
-
-        # Concatenate sentinel and buildings features
-        x = torch.cat([x, b_feat], dim=1)
-
-        # ASPP
-        x = self.aspp(x)
-
-        # Decoder
-        x = self.decoder(x, low_level_feat)
-
-        # Upsample to input resolution
-        x = F.interpolate(x, size=sentinel_data.shape[2:], mode='bilinear', align_corners=False)
-
-        return x
-
-    def configure_optimizers(self):
-        params = list(self.buildings_encoder.parameters()) + list(self.aspp.parameters()) + list(self.decoder.parameters())
-        optimizer = torch.optim.AdamW(params, lr=self.learning_rate, weight_decay=self.weight_decay)
-        return optimizer
-
-    def training_step(self, batch, batch_idx):
-        sentinel_data, buildings_data = batch
-        y_hat = self(sentinel_data, buildings_data)
-        loss = F.binary_cross_entropy_with_logits(y_hat, buildings_data)
-        self.log('train_loss', loss)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        sentinel_data, buildings_data = batch
-        y_hat = self(sentinel_data, buildings_data)
-        loss = F.binary_cross_entropy_with_logits(y_hat, buildings_data)
-        self.log('val_loss', loss)
-        return loss
-
-    def on_epoch_end(self):
-        # After a certain number of epochs, unfreeze the encoder for fine-tuning
-        if self.current_epoch == 20:  # adjust as needed
-            print("Unfreezing encoder for fine-tuning")
-            for param in self.encoder.backbone.parameters():
-                param.requires_grad = True
-            self.optimizers().add_param_group({
-                'params': self.encoder.backbone.parameters(), 
-                'lr': self.learning_rate * 0.1
-            })
-            

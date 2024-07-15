@@ -1010,16 +1010,21 @@ class BaseCrossValidator:
         for city, dataset in self.datasets.items():
             n_samples = len(dataset)
             
-            # Create test set
-            train_val_idx, test_idx = train_test_split(
-                range(n_samples), 
-                test_size=self.test_ratio, 
-                random_state=42
-            )
-            
-            # Convert to lists
-            train_val_idx = list(train_val_idx)
-            test_idx = list(test_idx)
+            if self.test_ratio > 0:
+                # Create test set
+                train_val_idx, test_idx = train_test_split(
+                    range(n_samples), 
+                    test_size=self.test_ratio, 
+                    random_state=42
+                )
+                
+                # Convert to lists
+                train_val_idx = list(train_val_idx)
+                test_idx = list(test_idx)
+            else:
+                # Use all samples for train and validation
+                train_val_idx = list(range(n_samples))
+                test_idx = []
             
             # Create train-val splits
             n_val = int(len(train_val_idx) * self.val_ratio / (1 - self.test_ratio))
@@ -1054,18 +1059,20 @@ class BaseCrossValidator:
             train_idx, val_idx, test_idx = self.city_splits[city][split_index]
             train_subset = Subset(dataset, train_idx)
             val_subset = Subset(dataset, val_idx)
-            test_subset = Subset(dataset, test_idx)
             train_datasets.append(train_subset)
             val_datasets.append(val_subset)
-            test_datasets.append(test_subset)
             
             # Store the indices for this city's validation set
             val_city_indices[city] = (current_val_index, len(val_idx))
             current_val_index += len(val_idx)
 
+            if test_idx:
+                test_subset = Subset(dataset, test_idx)
+                test_datasets.append(test_subset)
+
         return (ConcatDataset(train_datasets), 
                 ConcatDataset(val_datasets), 
-                ConcatDataset(test_datasets), 
+                ConcatDataset(test_datasets) if test_datasets else None, 
                 val_city_indices)
 
     def get_windows_and_labels_for_city(self, city, split_index):
@@ -1092,12 +1099,11 @@ class MultiInputCrossValidator(BaseCrossValidator):
         dataset = self.datasets[city]
         train_idx, val_idx, test_idx = self.city_splits[city][split_index]
 
-        # Assuming the first dataset in MergeDataset is the one with windows
         windows = dataset.datasets[0].windows
         labels = ['train' if i in train_idx else 'val' if i in val_idx else 'test' for i in range(len(windows))]
 
         return windows, labels
-    
+        
 # Visulaization helper functions
 def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, show_buildings=True):
     if city not in datasets:
@@ -1109,8 +1115,8 @@ def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, sho
     data = dataset[window_index]
     
     # Assuming data is a tuple (sentinel_data, buildings_data)
-    sentinel_data, buildings_data = data[0]
-    sentinel_label, _ = data[1]  # We only use sentinel_label
+    sentinel_data, sentinel_labels = data[0]
+    buildings_data, _ = data[1]  # We only use sentinel_label
     
     # Set up the plot
     n_cols = 3 if show_sentinel else 1
@@ -1145,17 +1151,17 @@ def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, sho
         plot_index += 1
         
         # Plot Sentinel label
-        sentinel_label_squeezed = sentinel_label.squeeze()
-        axes[plot_index].imshow(sentinel_label_squeezed.cpu().numpy(), cmap='viridis')
-        axes[plot_index].set_title(f"{city} - Label")
+        buildings_data_squeezed = buildings_data.squeeze()
+        axes[plot_index].imshow(buildings_data_squeezed.cpu().numpy(), cmap='gray')
+        axes[plot_index].set_title(f"{city} - Building Footprints")
         axes[plot_index].axis('off')
         plot_index += 1
     
     if show_buildings:
         # Plot Buildings data
-        buildings_data_squeezed = buildings_data.squeeze()
-        axes[plot_index].imshow(buildings_data_squeezed.cpu().numpy(), cmap='gray')
-        axes[plot_index].set_title(f"{city} - Buildings Data")
+        sentinel_labels_squeezed = sentinel_labels.squeeze()
+        axes[plot_index].imshow(sentinel_labels_squeezed.cpu().numpy(), cmap='gray')
+        axes[plot_index].set_title(f"{city} - GT Labels")
         axes[plot_index].axis('off')
     
     plt.tight_layout()
