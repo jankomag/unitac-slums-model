@@ -9,6 +9,7 @@ from rastervision.core.data import ClassConfig, RasterioCRSTransformer
 from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.core.data.label_store import SemanticSegmentationLabelStore
 from affine import Affine
+from pystac_client import Client
 
 import sys
 import torch
@@ -32,10 +33,15 @@ sys.path.append(grandparent_dir)
 from deeplnafrica.deepLNAfrica import init_segm_model
 from src.features.dataloaders import (
     query_buildings_data, CustomGeoJSONVectorSource,MergeDataset,
-    create_datasets,FixedStatsTransformer,
+    FixedStatsTransformer,
     show_windows, CustomRasterizedSource
 )
-from src.models.model_definitions import (MultiResolutionDeepLabV3, CustomVectorOutputConfig)
+from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params, CustomInterpolateMultiResolutionDeepLabV3,
+                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, MultiResolutionFPN, CustomMultiResolutionDeepLabV3,
+                                          CustomVectorOutputConfig, FeatureMapVisualization, MultiResolution128DeepLabV3)
+from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple, MultiInputCrossValidator, create_sentinel_mosaic,
+                                  senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn, get_sentinel_items,
+                                  MergeDataset, show_single_tile_multi, get_label_source_from_merge_dataset, create_scenes_for_city, PolygonWindowGeoDataset)
 
 from rastervision.core.raster_stats import RasterStats
 from rastervision.core.data.raster_transformer import RasterTransformer
@@ -61,6 +67,15 @@ from rastervision.core.box import Box
 from rastervision.pytorch_learner.dataset.transform import TransformType
 from rastervision.core.data import Scene
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
+
+BANDS = [
+    'blue', # B02
+    'green', # B03
+    'red', # B04
+    'nir', # B08
+]
+URL = 'https://earth-search.aws.element84.com/v1'
+catalog = Client.open(URL)
 
 def ensure_tuple(x):
     if isinstance(x, (list, tuple)):
@@ -233,75 +248,220 @@ def create_building_scene(city_name, city_data):
 
     return buildings_scene
 
-best_model_path_dplv3 = os.path.join(grandparent_dir, "UNITAC-trained-models/multi_modal/all_DLV3/multimodal_cv1_BCH128_BKR7_epoch=06-val_loss=0.1827.ckpt")
-best_model = MultiResolutionDeepLabV3(buil_channels=128, buil_kernel1=7)
-checkpoint = torch.load(best_model_path_dplv3)
-state_dict = checkpoint['state_dict']
-best_model.load_state_dict(state_dict, strict=True)
-best_model = best_model.to(device)
-best_model.eval()
+def get_sentinel_items(bbox_geometry, bbox):
+    items = catalog.search(
+        intersects=bbox_geometry,
+        collections=['sentinel-2-c1-l2a'],
+        datetime='2024-01-01/2024-07-16',
+        query={'eo:cloud_cover': {'lt': 20}},
+        # Remove max_items=1 to get multiple items
+    ).item_collection()
+    
+    if not items:
+        print("No items found for this area.")
+        return None
+    # items = get_sentinel_items(bbox_geometry, bbox)
+
+    return items
+
+def create_sentinel_mosaic(items, bbox):
+    # Create the initial XarraySource with temporal=True
+    sentinel_source = XarraySource.from_stac(
+        items,
+        bbox_map_coords=tuple(bbox),
+        stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
+        allow_streaming=True,
+        temporal=True
+    )
+    
+    print(f"Initial data shape: {sentinel_source.data_array.shape}")
+    print(f"Initial bbox: {sentinel_source.bbox}")
+    print(f"Data coordinates: {sentinel_source.data_array.coords}")
+    
+    crs_transformer = sentinel_source.crs_transformer
+    
+    # Get the CRS of the data
+    data_crs = sentinel_source.crs_transformer.image_crs
+    
+    # Use the original bbox of the data
+    data_bbox = sentinel_source.bbox
+    
+    print(f"Data bbox: {data_bbox}")
+    
+    # Apply mosaic function to combine the temporal dimension
+    mosaic_data = sentinel_source.data_array.median(dim='time')
+    
+    print(f"Mosaic data shape: {mosaic_data.shape}")
+    print(f"Mosaic data coordinates: {mosaic_data.coords}")
+    
+    nir_rgb_means = [2581.270, 1298.905, 1144.928, 934.346]  # NIR, R, G, B
+    nir_rgb_stds = [586.279, 458.048, 302.029, 244.423]  # NIR, R, G, B
+
+    fixed_stats_transformer = FixedStatsTransformer(
+        means=nir_rgb_means,
+        stds=nir_rgb_stds)
+    
+    # Create the final normalized XarraySource
+    normalized_mosaic_source = XarraySource(
+        mosaic_data,
+        crs_transformer=sentinel_source.crs_transformer,
+        bbox=data_bbox,
+        channel_order=[3,2,1,0],
+        temporal=False,
+        raster_transformers=[fixed_stats_transformer]
+    )
+    
+    print(f"Created normalized mosaic of size {normalized_mosaic_source.shape}, and dtype: {normalized_mosaic_source.dtype}")
+    print(f"Normalized mosaic bbox: {normalized_mosaic_source.bbox}")
+    print(f"Data CRS: {data_crs}")
+    # sentinel_source_SD, crs_transformer = create_sentinel_mosaic(items, bbox)
+
+    return normalized_mosaic_source, crs_transformer
+
+def display_mosaic(mosaic_source):
+    print(f"Mosaic source shape: {mosaic_source.shape}")
+    
+    if mosaic_source.shape[0] == 0 or mosaic_source.shape[1] == 0:
+        print("The mosaic has zero width or height. There might be no data for the specified region.")
+        return
+    
+    chip = mosaic_source[:, :, [1, 2, 3]]  # RGB channels
+    
+    print(f"Chip shape: {chip.shape}")
+    print(f"Chip min: {np.min(chip)}, max: {np.max(chip)}")
+    
+    # For normalized data, we might want to clip to a reasonable range
+    vmin, vmax = -3, 3
+    normalized_chip = np.clip(chip, vmin, vmax)
+    
+    # Scale to [0, 1] for display
+    normalized_chip = (normalized_chip - vmin) / (vmax - vmin)
+    
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    im = ax.imshow(normalized_chip, interpolation='nearest', aspect='equal')
+    ax.set_title("Normalized Mosaic RGB")
+    plt.colorbar(im, ax=ax)
+    plt.show()
+    
+def load_model(model_path, device):
+    model = CustomInterpolateMultiResolutionDeepLabV3()
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['state_dict'], strict=True)
+    model = model.to(device)
+    model.eval()
+    return model
+
+def make_predictions(model, dataset, device):
+    predictions_iterator = MultiResPredictionsIterator(model, dataset, device=device)
+    windows, predictions = zip(*predictions_iterator)
+    return windows, predictions
+
+def average_predictions(pred1, pred2):
+    return [(p1 + p2) / 2 for p1, p2 in zip(pred1, pred2)]
 
 class_config = ClassConfig(names=['background', 'slums'], 
                            colors=['lightgray', 'darkred'],
                            null_class='background')
 
+# Load models
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model_paths = [
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_res256_BCH128_BKR5_epoch=08-val_loss=0.5143.ckpt'),
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_res256_BCH128_BKR5_epoch=23-val_loss=0.3972.ckpt')
+]
+models = [load_model(path, device) for path in model_paths]
+
+# Load GeoDataFrame
 sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
 gdf = gpd.read_parquet(sica_cities)
-gdf = gdf.to_crs('EPSG:3857')
-gdf = gdf.tail(2)
+# filter to counties where iso3 is HTI
+gdf = gdf[gdf['iso3'] == 'HTI']
+gdf = gdf.to_crs('EPSG:4326')
+gdf = gdf.tail(1)
 
-# In your main loop
+# Main loop
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
     country_code = row['iso3']
-    image_uri = f"../../data/0/sentinel_Gee/{country_code}_{city_name}_2023.tif"
-    
-    if not os.path.exists(image_uri):
-        print(f"Warning: File {image_uri} does not exist. Skipping to next row.")
-        continue
-    
-    city_data = {
-        'image_path': image_uri,
+    xmin4326, ymin4326, xmax4326, ymax4326 = row.geometry.bounds
+
+    # Create bbox and bbox_geometry for PySTAC query
+    bbox = Box(ymin=ymin4326, xmin=xmin4326, ymax=ymax4326, xmax=xmax4326)
+    bbox_geometry = {
+        'type': 'Polygon',
+        'coordinates': [
+            [
+                (xmin4326, ymin4326),
+                (xmin4326, ymax4326),
+                (xmax4326, ymax4326),
+                (xmax4326, ymin4326),
+                (xmin4326, ymin4326)
+            ]
+        ]
     }
+
+    # Get Sentinel data
+    items = get_sentinel_items(bbox_geometry, bbox)
+    if items is None:
+        print(f"No Sentinel data found for {city_name}. Skipping.")
+        continue
+
+    # Create Sentinel mosaic
+    sentinel_source, crs_transformer = create_sentinel_mosaic(items, bbox)
+    print(f"Created Sentinel mosaic for {city_name}, {country_code}.")
+    display_mosaic(sentinel_source)
+
+    # Query buildings data
+    buildings = query_buildings_data(xmin4326, ymin4326, xmax4326, ymax4326)
+    print(f"Got buildings for {city_name}, {country_code}, in the amoint of {len(buildings)}.")
     
     # Create scenes
-    sentinel_scene = create_sentinel_scene(city_data)
-    buildings_scene = create_building_scene(city_name, city_data)
+    sentinel_scene = Scene(
+        id=f'{city_name}_sentinel',
+        raster_source=sentinel_source,
+        label_source=None  # No labels for prediction
+    )
     
+    buildings_scene = create_building_scene(buildings, bbox, crs_transformer)
+
     # Create datasets
-    sentinelGeoDataset = PolygonWindowGeoDataset(sentinel_scene, city=city_name, window_size=256, out_size=256, padding=0, transform_type=TransformType.noop, transform=None)
-    buildingsGeoDataset = PolygonWindowGeoDataset(buildings_scene, city=city_name, window_size=512, out_size=512, padding=0, transform_type=TransformType.noop, transform=None)
-    
+    sentinel_dataset = CustomSlidingWindowGeoDataset(sentinel_scene, city=city_name, size=256, stride=128, out_size=256, padding=256, transform_type=TransformType.noop, transform=None)
+    buildings_dataset = CustomSlidingWindowGeoDataset(buildings_scene, city=city_name, size=512, stride=256, out_size=512, padding=512, transform_type=TransformType.noop, transform=None)
+
     # Create merged dataset
-    mergedds = MergeDataset(sentinelGeoDataset, buildingsGeoDataset)
-    
-    # Create prediction iterator
-    predictions_iterator = MultiResPredictionsIterator(best_model, mergedds, device=device)
-    windows, predictions = zip(*predictions_iterator)
-    
-    # Create SemanticSegmentationLabels from predictions
+    merged_dataset = MergeDataset(sentinel_dataset, buildings_dataset)
+
+    # Make predictions with both models and average
+    windows = None
+    avg_predictions = None
+
+    for model in models:
+        windows, predictions = make_predictions(model, merged_dataset, device)
+        if avg_predictions is None:
+            avg_predictions = predictions
+        else:
+            avg_predictions = average_predictions(avg_predictions, predictions)
+
+    # Create SemanticSegmentationLabels from averaged predictions
     pred_labels = SemanticSegmentationLabels.from_predictions(
         windows,
-        predictions,
+        avg_predictions,
         extent=sentinel_scene.extent,
         num_classes=len(class_config),
         smooth=True
     )
-    
+
     # Save predictions
     vector_output_config = CustomVectorOutputConfig(
         class_id=1,
         denoise=8,
         threshold=0.5
     )
-    
-    crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(10, 0, common_xmin_3857, 0, -10, common_ymax_3857)
-    crs_transformer.transform = affine_transform_buildings
-    
-    output_dir = f'../../vectorised_model_predictions/multi-modal/all_DLV3/{country_code}'
+
+    output_dir = f'../../vectorised_model_predictions/other_cities/{country_code}'
     os.makedirs(output_dir, exist_ok=True)
-    
+
     pred_label_store = SemanticSegmentationLabelStore(
         uri=os.path.join(output_dir, f'{city_name}_{country_code}.geojson'),
         crs_transformer=crs_transformer,
@@ -309,158 +469,8 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
         vector_outputs=[vector_output_config],
         discrete_output=True
     )
-    
+
     pred_label_store.save(pred_labels)
     print(f"Saved predictions data for {city_name}, {country_code}")
 
-
-
-# # Merge geojson for cities
-# def merge_geojson_files(country_directory, output_file):
-#     # Create an empty GeoDataFrame with an appropriate schema
-#     merged_gdf = gpd.GeoDataFrame()
-    
-#     # Traverse the directory structure
-#     for city in os.listdir(country_directory):
-#         city_path = os.path.join(country_directory, city)
-#         vector_output_path = os.path.join(city_path, 'vector_output')
-        
-#         if os.path.isdir(vector_output_path):
-#             # Find the .json file in the vector_output directory
-#             for file in os.listdir(vector_output_path):
-#                 if file.endswith('.json'):
-#                     file_path = os.path.join(vector_output_path, file)
-#                     # Load the GeoJSON file into a GeoDataFrame
-#                     gdf = gpd.read_file(file_path)
-#                     # Add the city name as an attribute to each feature
-#                     gdf['city'] = city
-#                     # Append to the merged GeoDataFrame
-#                     merged_gdf = pd.concat([merged_gdf, gdf], ignore_index=True)
-    
-#     # Save the merged GeoDataFrame to a GeoJSON file
-#     merged_gdf.to_file(output_file, driver='GeoJSON')
-#     print(f'Merged GeoJSON file saved to {output_file}')
-
-# # Specify the country directory and the output file path
-# country_directory = '../vectorised_model_predictions/multi-modal/SD_GC/SLV/'
-# output_file = os.path.join(country_directory, 'SLV_multimodal_SDGC.geojson')
-
-# # Merge the GeoJSON files
-# merge_geojson_files(country_directory, output_file)
-
-
-
-
-# # From STAC
-# BANDS = [
-#     'blue', # B02
-#     'green', # B03
-#     'red', # B04
-#     'nir', # B08
-# ]
-
-# URL = 'https://earth-search.aws.element84.com/v1'
-# catalog = pystac_client.Client.open(URL)
-
-# from stackstac import mosaic
-# def mosaic_sentinel_images(items, bbox):
-#     # Convert items to XarraySource
-#     sentinel_source_unnormalized = XarraySource.from_stac(
-#         items,
-#         bbox_map_coords=tuple(bbox),
-#         stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
-#         allow_streaming=True,
-#     )
-    
-#     # Mosaic the images
-#     mosaic_image = mosaic(sentinel_source_unnormalized.data_array, reverse=True)
-    
-#     return mosaic_image
-
-# def get_sentinel_item(bbox_geometry, bbox):
-#     items = catalog.search(
-#         intersects=bbox_geometry,
-#         collections=['sentinel-2-c1-l2a'],
-#         datetime='2023-01-01/2024-06-27',
-#         query={'eo:cloud_cover': {'lt': 3}},
-#         max_items=1,
-#     ).item_collection()
-    
-#     if not items:
-#         print("No items found for this city.")
-#         return None
-    
-#     sentinel_source_unnormalized = XarraySource.from_stac(
-#         items,
-#         bbox_map_coords=tuple(bbox),
-#         stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
-#         allow_streaming=True,
-#     )
-
-#     stats_tf = CustomStatsTransformer.from_raster_sources([sentinel_source_unnormalized],max_stds=3)
-
-#     sentinel_source = XarraySource.from_stac(
-#         items,
-#         bbox_map_coords=tuple(bbox),
-#         raster_transformers=[stats_tf],
-#         stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
-#         allow_streaming=True,
-#         channel_order=[2, 1, 0, 3],
-#     )
-    
-#     print(f"Loaded Sentinel data of size {sentinel_source.shape}, and dtype: {sentinel_source.dtype}")
-    
-#     chip = sentinel_source[:, :, [0, 1, 2]]
-#     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-#     ax.imshow(chip)
-#     plt.show()
-    
-#     return sentinel_source
-
-
-
-# # for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
-#     city_name = row['city_ascii']
-#     country_code = row['iso3']
-#     print("Doing predictions for: ", city_name, country_code)
-    
-#     gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = row['geometry'].bounds
-    
-#     transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-#     xmin_4326, ymin_4326 = transformer.transform(gdf_xmin, gdf_ymin)
-#     xmax_4326, ymax_4326 = transformer.transform(gdf_xmax, gdf_ymax)
-
-#     bbox = Box(ymin=ymin_4326, xmin=xmin_4326, ymax=ymax_4326, xmax=xmax_4326)
-#     bbox_geometry = {
-#         'type': 'Polygon',
-#         'coordinates': [
-#             [
-#                 (xmin_4326, ymin_4326),
-#                 (xmin_4326, ymax_4326),
-#                 (xmax_4326, ymax_4326),
-#                 (xmax_4326, ymin_4326),
-#                 (xmin_4326, ymin_4326)
-#             ]
-#         ]
-#     }
-    
-#     # Getting Sentinel data
-#     try:
-#         sentinel_source = get_sentinel_item(bbox_geometry, bbox)
-#         if sentinel_source is None:
-#             continue
-#     except Exception as e:
-#         print(f"An error occurred for {city_name}, {country_code}: {e}")
-#         continue
-    
-#     # Getting Buildings data    
-#     buildings = query_buildings_data(con, xmin_4326, ymin_4326, xmax_4326, ymax_4326)
-#     print("Got buildings for: ", city_name, country_code)
-
-#     rasterized_buildings_source, buildings_extent, crs_transformer_buildings = rasterise_buildings(image_uri, buildings, gdf_xmin, gdf_ymax)
-    
-#     buil_ds, sent_ds, build_scene = build_datasets(rasterized_buildings_source, sentinel_source)
-#     print("Got datasets extent for: ", city_name, country_code)
-    
-#     save_predictions(best_model, sent_ds, buil_ds, build_scene, crs_transformer_buildings, country_code, city_name)
-#     print(f"Saved predictions data for {city_name}, {country_code}")
+print("Finished processing all cities.")

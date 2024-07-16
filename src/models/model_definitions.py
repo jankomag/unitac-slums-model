@@ -544,7 +544,7 @@ class MultiResPredictionsIterator:
     def __iter__(self):
         return iter(self.predictions)
 
-class MultiResolutionDeepLabV3(pl.LightningModule):
+class OriginalMultiResolutionDeepLabV3(pl.LightningModule):
     def __init__(self,
                 use_deeplnafrica: bool = True,
                 learning_rate: float = 1e-2,
@@ -1136,7 +1136,7 @@ class MultiResolutionFPN(pl.LightningModule):
             if isinstance(module, nn.Conv2d):
                 module.register_forward_hook(hook_fn)
 
-class CustomMultiResolutionDeepLabV3(pl.LightningModule):
+class LateralMultiResolutionDeepLabV3(pl.LightningModule):
     def __init__(self,
                  use_deeplnafrica: bool = True,
                  learning_rate: float = 1e-3,
@@ -1381,7 +1381,7 @@ class CustomMultiResolutionDeepLabV3(pl.LightningModule):
             }
         }
 
-class CustomInterpolateMultiResolutionDeepLabV3(pl.LightningModule):
+class MultiResolutionDeepLabV3(pl.LightningModule):
     def __init__(self,
                  use_deeplnafrica: bool = True,
                  learning_rate: float = 1e-3,
@@ -1448,14 +1448,18 @@ class CustomInterpolateMultiResolutionDeepLabV3(pl.LightningModule):
         self.encoder.backbone.layer2.register_forward_hook(self._get_intermediate_feat)
         self.encoder.backbone.layer3.register_forward_hook(self._get_intermediate_feat)
 
-        # Fusion layers
+        # Fusion layers for the encoder
         self.fusion_layers = nn.ModuleList([
             nn.Conv2d(256 + 4, 256, kernel_size=1),    # After layer1
             nn.Conv2d(512 + 8, 512, kernel_size=1),   # After layer2
             nn.Conv2d(1024 + 16, 1024, kernel_size=1), # After layer3
         ])
         
-        self.fusion_64 = nn.Conv2d(256 + 1, 1, kernel_size=3, padding=1)
+        # Additional fusion layer to reduce dimensions of fused features
+        self.xtra_fusion = nn.Conv2d(256, 2, kernel_size=1, padding='same')
+
+        # Fusion layer for the decoder
+        self.decoder_fusion = nn.Conv2d(3, 1, kernel_size=1, padding='same')
 
     def _make_buildings_layer(self, in_channels, out_channels, stride):
         return nn.Sequential(
@@ -1481,45 +1485,39 @@ class CustomInterpolateMultiResolutionDeepLabV3(pl.LightningModule):
         x = buildings_data
         for layer in self.buildings_encoder:
             x = layer(x)
-            # print(f"Shape of buildings features: {x.shape}")
             b_feats.append(x)
+            # print(f"Shape of buildings features: {x.shape}")
 
         # Process sentinel data
         x = torch.cat([sentinel_data, b_feats[0]], dim=1)
-        # print(f"Shape after initial concatenation: {x.shape}")
         
         x = self.encoder.backbone.conv1(x)
         x = self.encoder.backbone.bn1(x)
         x = self.encoder.backbone.relu(x)
         x = self.encoder.backbone.maxpool(x)
-        # print(f"Shape after initial main encoder layers: {x.shape}")
         
         # Apply ResNet layers and fuse with buildings features
         x = self.encoder.backbone.layer1(x)
-        x_fus64 = self.fusion_layers[0](torch.cat([x, b_feats[1]], dim=1))
-        # print(f"Shape after fusion1: {x_fus64.shape}") # Fused has shape torch.Size([16, 256, 64, 64])
+        # print(f"x layer 1: {x.shape}")
+        x = self.fusion_layers[0](torch.cat([x, b_feats[1]], dim=1))
+        x_fus64 = self.xtra_fusion(x)
+        # print(f"x_fus64 shape: {x_fus64.shape}")
 
-        x = self.encoder.backbone.layer2(x_fus64)
+        x = self.encoder.backbone.layer2(x)
         x = self.fusion_layers[1](torch.cat([x, b_feats[2]], dim=1))
-        # print(f"Shape after layer2 and fusion2: {x.shape}") # Fused has shape torch.Size([16, 512, 32, 32])
         
         x = self.encoder.backbone.layer3(x)
-        # print(f"Shape after layer3: {x.shape}")
         x = self.fusion_layers[2](torch.cat([x, b_feats[3]], dim=1))
-        # print(f"Shape after fusion3: {x.shape}")
 
         x = self.encoder.backbone.layer4(x)
-        # print(f"Shape after layer4: {x.shape}")
 
-        x = self.encoder.classifier(x)
-        # print(f"Shape after classifier: {x.shape}") # torch.Size([16, 1, 32, 32])
+        x = self.encoder.classifier(x) # torch.Size([16, 1, 32, 32])
         
         # Upsample to 64x64
-        x_64 = F.interpolate(x, size=(64, 64), mode='bilinear', align_corners=False)
-        # print(f"Shape after upsampling to 64x64: {x_64.shape}") # torch.Size([16, 1, 64, 64])
-        
-        # Fuse with encoder features (assuming low_level_feat is 128x128)
-        fused_64 = self.fusion_64(torch.cat([x_64, x_fus64], dim=1))
+        x_64 = F.interpolate(x, size=(64, 64), mode='bilinear', align_corners=False) #torch.Size([16, 1, 64, 64])
+        # print(f"x_64 shape: {x_64.shape}")
+        # Fuse with encoder features which are also 64x64
+        fused_64 = self.decoder_fusion(torch.cat([x_64, x_fus64], dim=1))
 
         # Final upsampling to input size (256x256)
         x = F.interpolate(fused_64, size=input_shape, mode='bilinear', align_corners=False)

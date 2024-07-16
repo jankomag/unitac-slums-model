@@ -27,6 +27,7 @@ import torch
 from torch.utils.data import Dataset
 from shapely.ops import unary_union
 from sklearn.model_selection import train_test_split
+# from pystac_client import Client
 
 from rastervision.core.box import Box
 from rastervision.core.data import Scene, BufferTransformer
@@ -143,7 +144,8 @@ if TYPE_CHECKING:
     from rastervision.core.data import RasterTransformer, CRSTransformer
 
 log = logging.getLogger(__name__)
-
+from rastervision.core.data.label_store import SemanticSegmentationLabelStore
+from os.path import join
 import random
 from typing import Tuple, List, Union, Optional
 from rastervision.core.box import Box
@@ -1104,6 +1106,11 @@ class MultiInputCrossValidator(BaseCrossValidator):
 
         return windows, labels
         
+class CustomSemanticSegmentationLabelStore(SemanticSegmentationLabelStore):
+    @property
+    def vector_output_uri(self) -> str:
+        return self.root_uri
+    
 # Visulaization helper functions
 def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, show_buildings=True):
     if city not in datasets:
@@ -1618,7 +1625,7 @@ def make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_
 #     'nir', # B08
 # ]
 # URL = 'https://earth-search.aws.element84.com/v1'
-# catalog = pystac_client.Client.open(URL)
+# # catalog = pystac_client.Client.open(URL)
 
 # bbox = Box(ymin=ymin4326, xmin=xmin4326, ymax=ymax4326, xmax=xmax4326)
 # bbox_geometry = {

@@ -4,7 +4,7 @@ import os
 
 os.environ['GDAL_DATA'] = check_output('pip show rasterio | grep Location | awk \'{print $NF"/rasterio/gdal_data/"}\'', shell=True).decode().strip()
 from torch.utils.data import ConcatDataset, Subset
-
+import math
 import sys
 from pathlib import Path
 from typing import Iterator, Optional
@@ -87,13 +87,6 @@ else:
 # gdf_filled = gdf_filled.to_crs('EPSG:3857')
 # gdf_filled.to_file("../../data/0/SantoDomingo3857_buffered.geojson", driver="GeoJSON")
 
-# Preproceess SS labels to select Lotificacion Illegal
-# label_uriSS = os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_particular.shp')
-# gdf = gpd.read_file(label_uriSS)
-# gdf = gdf[gdf['TIPO_AUP'] == 'Lotificación Ilegal']
-# gdf = gdf.to_crs('EPSG:3857')
-# gdf.to_file(os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'), driver="GeoJSON")
-
 # Load training data
 class_config = ClassConfig(names=['background', 'slums'], 
                            colors=['lightgray', 'darkred'],
@@ -119,24 +112,8 @@ sentinelGeoDataset_MN = PolygonWindowGeoDataset(sentinel_sceneMN, city='Managua'
 sentinel_scenePN = create_sentinel_scene(cities['Panama'], class_config)
 sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
-# San Salvador - UNITAC report mentions data is complete, so using all tiles
-sentinel_sceneSS = create_sentinel_scene(cities['SanSalvador'], class_config)
-sentinelGeoDataset_SS = CustomSlidingWindowGeoDataset(sentinel_sceneSS, city='SanSalvador', size=256,stride=256,out_size=256,padding=256, transform_type=TransformType.noop,transform=None)
-
-# SanJose - UNITAC report mentions data is complete, so using all tiles
-sentinel_sceneSJ = create_sentinel_scene(cities['SanJose'], class_config)
-sentinelGeoDataset_SJ = CustomSlidingWindowGeoDataset(sentinel_sceneSJ, city='SanJose', size=256, stride = 256, out_size=256,padding=0, transform_type=TransformType.noop, transform=None)
-
-# BelizeCity
-sentinel_sceneBL = create_sentinel_scene(cities['BelizeCity'], class_config)
-sentinelGeoDataset_BL = PolygonWindowGeoDataset(sentinel_sceneBL,city='BelizeCity',window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-
-# Belmopan - data mostly rural exluding from training
-sentinel_sceneBM = create_sentinel_scene(cities['Belmopan'], class_config)
-sentinelGeoDataset_BM = PolygonWindowGeoDataset(sentinel_sceneBM, city='Belmopan', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
-
 # Create datasets
-train_cities = 'w_SSSJ'
+train_cities = 'sel'
 split_index = 1 # 0 or 1
 
 def get_sentinel_datasets(train_cities):
@@ -146,41 +123,33 @@ def get_sentinel_datasets(train_cities):
         'TG': sentinelGeoDataset_TG,
         'MN': sentinelGeoDataset_MN,
         'PN': sentinelGeoDataset_PN,
-        # 'SS': sentinelGeoDataset_SS,
-        # 'SJ': sentinelGeoDataset_SJ,
-        'BL': sentinelGeoDataset_BL,
-        'BM': sentinelGeoDataset_BM
     }
-    
-    if train_cities == 'w_SSSJ':
+    if train_cities == 'sel':
         return all_datasets
     elif isinstance(train_cities, str):
         return {train_cities: all_datasets[train_cities]}
     elif isinstance(train_cities, list):
         return {city: all_datasets[city] for city in train_cities if city in all_datasets}
     else:
-        raise ValueError("train_cities must be 'all', a string, or a list of strings")
+        raise ValueError("train_cities must be 'sel', a string, or a list of strings")
 
 sentinel_datasets = get_sentinel_datasets(train_cities)
 
-cv = SingleInputCrossValidator(sentinel_datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1)
+cv = SingleInputCrossValidator(sentinel_datasets, n_splits=2, val_ratio=0.5, test_ratio=0)
 
 # Preview a city with sliding windows
 city = 'SD'
 singlesource_show_windows_for_city(city, split_index, cv, sentinel_datasets)
 show_single_tile_sentinel(sentinel_datasets, city, 4)
 
-train_dataset, val_dataset, test_dataset, val_city_indices = cv.get_split(split_index)
-
+train_dataset, val_dataset, _, val_city_indices = cv.get_split(split_index)
 print(f"Train dataset size: {len(train_dataset)}")
 print(f"Validation dataset size: {len(val_dataset)}")
-print(f"Test dataset size: {len(test_dataset)}")
 
 # Create DataLoaders
 batch_size = 24
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, collate_fn=collate_fn)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_fn)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_fn)
 
 # Create model
 hyperparameters = {
@@ -192,7 +161,7 @@ hyperparameters = {
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-3,
     'weight_decay': 0,
-    'gamma': 0.5,
+    'gamma': 0.9,
     'sched_step_size': 10,
     'pos_weight': 2.0
 }
@@ -218,10 +187,10 @@ checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     dirpath=output_dir,
     filename=f'sentinel_{train_cities}_cv{split_index}-{{epoch:02d}}-{{val_loss:.4f}}',
-    save_top_k=3,
+    save_top_k=5,
     save_last=True,
     mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=15)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=30)
 
 # Define trainer
 trainer = Trainer(
@@ -229,7 +198,7 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=25,
+    min_epochs=55,
     max_epochs=250,
     num_sanity_val_steps=3,
     # overfit_batches=0.5
@@ -239,10 +208,11 @@ trainer = Trainer(
 trainer.fit(model, train_loader, val_loader)
 
 # Make predictions
-# model_id = 'sentinel_all_cv0-epoch=07-val_loss=0.2414.ckpt'
-# best_model_path = os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/DLV3/', model_id)
-scene_eval = SentinelScene_SD # sentinel_sceneSD #SentinelScene_SD
-best_model_path = checkpoint_callback.best_model_path
+model_id = 'last-v1.ckpt'
+best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/sentinel_only/{train_cities}_DLV3/', model_id)
+# best_model_path = checkpoint_callback.best_model_path
+
+scene_eval = SentinelScene_SD  # Assuming this is your sentinel scene for evaluation
 best_model = SentinelDeepLabV3.load_from_checkpoint(best_model_path)
 best_model.eval()
 check_nan_params(best_model)
@@ -300,23 +270,11 @@ pred_labels = SemanticSegmentationLabels.from_predictions(
 )
 gt_labels = scene_eval.label_source.get_labels()
 
-# # Show predictions
+# Show predictions
 fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
 plt.show()
 
-pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
-    extent=pred_labels.extent,
-    num_classes=len(class_config))
-scores = pred_labels.get_score_arr(pred_labels.extent)
-pred_array_discrete = (scores > 0.5).astype(int)
-pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
-evaluator = SemanticSegmentationEvaluator(class_config)
-evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
-inf_eval = evaluation.class_to_eval_item[1]
-inf_eval.f1
-
-# Calculate F1 scores
-def calculate_f1_score(model, dataset, device, scene):
+def calculate_sentinel_metrics(model, dataset, device, scene):
     predictions_iterator = PredictionsIterator(model, dataset, device=device)
     windows, predictions = zip(*predictions_iterator)
 
@@ -341,31 +299,68 @@ def calculate_f1_score(model, dataset, device, scene):
     evaluator = SemanticSegmentationEvaluator(class_config)
     evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
     inf_eval = evaluation.class_to_eval_item[1]
-    return inf_eval.f1
+    return {
+        'f1': inf_eval.f1,
+        'precision': inf_eval.precision,
+        'recall': inf_eval.recall
+    }
 
-city_f1_scores = {}
+city_metrics = {}
+excluded_cities = []
 
 for city, (dataset_index, num_samples) in val_city_indices.items():
     # Skip cities with no validation samples
     if num_samples == 0:
-        # print(f"Skipping {city} as it has no validation samples.")
+        print(f"Skipping {city} as it has no validation samples.")
         continue
 
     # Get the subset of the validation dataset for this city
     city_val_dataset = Subset(val_dataset, range(dataset_index, dataset_index + num_samples))
+    
+    # Get the scene for this city
     city_scene = sentinel_datasets[city].scene
     
     try:
-        # Calculate F1 score for this city
-        f1_score = calculate_f1_score(best_model, city_val_dataset, device, city_scene)        
-        city_f1_scores[city] = f1_score
+        # Calculate metrics for this city
+        metrics = calculate_sentinel_metrics(best_model, city_val_dataset, device, city_scene)
+        
+        city_metrics[city] = metrics
     except Exception as e:
-        print(f"Error calculating F1 score for {city}: {str(e)}")
+        print(f"Error calculating metrics for {city}: {str(e)}")
 
-# Print summary of cities with F1 scores
-print(f"\nSummary of sentinel-only on {train_cities}, F1 scores for CV split {split_index}:")
-for city, score in city_f1_scores.items():
-    print(f"{city}: {score}")
+# Print metrics for each city
+print(f"\nMetrics for split {split_index}:")
+for city, metrics in city_metrics.items():
+    print(f"\nMetrics for {city}:")
+    if any(math.isnan(value) for value in metrics.values()):
+        print("No correct predictions made. Metrics are NaN.")
+        excluded_cities.append(city)
+    else:
+        print(f"F1 Score: {metrics['f1']:.4f}")
+        print(f"Precision: {metrics['precision']:.4f}")
+        print(f"Recall: {metrics['recall']:.4f}")
+
+# Calculate and print average metrics across all cities
+valid_metrics = {k: v for k, v in city_metrics.items() if not any(math.isnan(value) for value in v.values())}
+
+if valid_metrics:
+    avg_metrics = {
+        'f1': sum(m['f1'] for m in valid_metrics.values()) / len(valid_metrics),
+        'precision': sum(m['precision'] for m in valid_metrics.values()) / len(valid_metrics),
+        'recall': sum(m['recall'] for m in valid_metrics.values()) / len(valid_metrics)
+    }
+
+    print("\nAverage metrics across cities:")
+    print(f"F1 Score: {avg_metrics['f1']:.4f}")
+    print(f"Precision: {avg_metrics['precision']:.4f}")
+    print(f"Recall: {avg_metrics['recall']:.4f}")
+    
+    if excluded_cities:
+        print(f"\n(Note: {', '.join(excluded_cities)} {'was' if len(excluded_cities) == 1 else 'were'} excluded due to NaN metrics)")
+else:
+    print("\nUnable to calculate average metrics. All cities have NaN values.")
+
+
 
 # # # Saving predictions as GEOJSON
 # vector_output_config = CustomVectorOutputConfig(

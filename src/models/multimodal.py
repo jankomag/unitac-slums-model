@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import torch
 import wandb
 import geopandas as gpd
-from torch.utils.data import ConcatDataset
 import matplotlib.pyplot as plt
 # from fvcore.nn import FlopCountAnalysis
 import albumentations as A
@@ -22,6 +21,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from collections import OrderedDict
 from pytorch_lightning import LightningDataModule
+import math
 
 from torchvision.models.segmentation import deeplabv3_resnet50
 from torchvision.models.segmentation.deeplabv3 import DeepLabHead
@@ -33,8 +33,8 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params, CustomInterpolateMultiResolutionDeepLabV3,
-                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, MultiResolutionFPN, CustomMultiResolutionDeepLabV3,
+from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params, MultiResolutionDeepLabV3,
+                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, MultiResolutionFPN,
                                           CustomVectorOutputConfig, FeatureMapVisualization, MultiResolution128DeepLabV3)
 from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple, MultiInputCrossValidator,
                                   senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn,
@@ -101,11 +101,8 @@ sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama',
 buildGeoDataset_PN = PolygonWindowGeoDataset(buildings_scenePN, city='Panama', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
 # Create datasets
-train_cities = 'SD' # 'sel'
+train_cities = 'sel' # 'sel'
 split_index = 0 # 0 or 1
-buil_channels = 128
-buil_kernel = 5
-labels_size = 256
 
 multimodal_datasets = {
     'SantoDomingo': MergeDataset(sentinelGeoDataset_SD, buildGeoDataset_SD),
@@ -113,22 +110,22 @@ multimodal_datasets = {
     'Tegucigalpa': MergeDataset(sentinelGeoDataset_TG, buildGeoDataset_TG),
     'Managua': MergeDataset(sentinelGeoDataset_MN, buildGeoDataset_MN),
     'Panama': MergeDataset(sentinelGeoDataset_PN, buildGeoDataset_PN),
-} if train_cities == 'sel' else {'SD': MergeDataset(sentinelGeoDataset_SD, buildGeoDataset_SD)}
+} if train_cities == 'sel' else {'SantoDomingo': MergeDataset(sentinelGeoDataset_SD, buildGeoDataset_SD)}
 
 cv = MultiInputCrossValidator(multimodal_datasets, n_splits=2, val_ratio=0.5, test_ratio=0)
 
 # Preview a city with sliding windows
-city = 'SD'
+city = 'Panama'
 windows, labels = cv.get_windows_and_labels_for_city(city, split_index)
 img_full = senitnel_create_full_image(get_label_source_from_merge_dataset(multimodal_datasets[city]))
 show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {split_index + 1})')
-show_single_tile_multi(multimodal_datasets, city, 11, show_sentinel=True, show_buildings=True)
+show_single_tile_multi(multimodal_datasets, city, 1, show_sentinel=True, show_buildings=True)
 
 train_dataset, val_dataset, _, val_city_indices = cv.get_split(split_index)
 print(f"Train dataset size: {len(train_dataset)}") 
 print(f"Validation dataset size: {len(val_dataset)}")
 
-batch_size = 16
+batch_size = 24
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, collate_fn=collate_multi_fn)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, collate_fn=collate_multi_fn)
 
@@ -142,15 +139,15 @@ hyperparameters = {
     'split_index': split_index,
     'batch_size': batch_size,
     'use_deeplnafrica': True,
-    'labels_size': labels_size,
-    'buil_channels': buil_channels,
+    # 'labels_size': labels_size,
+    # 'buil_channels': buil_channels,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-3,
     'weight_decay': 0.7,
-    'gamma': 0.5,
-    'sched_step_size': 14,
+    'gamma': 1,
+    'sched_step_size': 15,
     'pos_weight': 2.0,
-    'buil_kernel': buil_kernel,
+    # 'buil_kernel': buil_kernel,
     'buil_out_chan': 4
 }
 
@@ -161,13 +158,12 @@ wandb.init(project='UNITAC-multi-modal', config=hyperparameters)
 wandb_logger = WandbLogger(project='UNITAC-multi-modal', log_model=True)
 
 # Loggers and callbacks
-run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     save_last=True,
     dirpath=output_dir,
-    filename=f'multimodal_{train_cities}_cv{split_index}_res{labels_size}_BCH{buil_channels}_BKR{buil_kernel}_{{epoch:02d}}-{{val_loss:.4f}}',
-    save_top_k=3,
+    filename=f'multimodal_{train_cities}_cv{split_index}_{{epoch:02d}}-{{val_loss:.4f}}',
+    save_top_k=5,
     mode='min')
 
 def generate_and_display_predictions(model, eval_sent_scene, eval_buil_scene, device, epoch):
@@ -222,18 +218,16 @@ class PredictionVisualizationCallback(Callback):
             device = pl_module.device  # Get the device from the model
             generate_and_display_predictions(pl_module, sentinel_sceneSD, buildings_sceneSD, device, trainer.current_epoch)
 
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=8)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=25)
 visualization_callback = PredictionVisualizationCallback(every_n_epochs=5)  # Adjust the frequency as needed
 
-model = CustomInterpolateMultiResolutionDeepLabV3(
+model = MultiResolutionDeepLabV3(
     use_deeplnafrica=hyperparameters['use_deeplnafrica'],
     learning_rate=hyperparameters['learning_rate'],
     weight_decay=hyperparameters['weight_decay'],
     gamma=hyperparameters['gamma'],
     atrous_rates=hyperparameters['atrous_rates'],
     sched_step_size = hyperparameters['sched_step_size'],
-    buil_channels = buil_channels,
-    buil_kernel = buil_kernel,
     pos_weight=hyperparameters['pos_weight'],
     buil_out_chan = hyperparameters['buil_out_chan']
 )
@@ -258,7 +252,7 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback, visualization_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=25,
+    min_epochs=55,
     max_epochs=250,
     num_sanity_val_steps=3,
     precision='16-mixed',
@@ -269,11 +263,11 @@ trainer = Trainer(
 trainer.fit(model, datamodule=data_module)
 
 # Use best model for evaluation
-# model_id = 'last-v1.ckpt'
+# model_id = 'last-v3.ckpt'
 # best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
 
 best_model_path = checkpoint_callback.best_model_path
-best_model = CustomInterpolateMultiResolutionDeepLabV3()#buil_channels=buil_channels, buil_kernel=buil_kernel, buil_out_chan=4)
+best_model = MultiResolutionDeepLabV3()#buil_channels=buil_channels, buil_kernel=buil_kernel, buil_out_chan=4)
 checkpoint = torch.load(best_model_path)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict, strict=True)
@@ -315,10 +309,9 @@ pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
 evaluator = SemanticSegmentationEvaluator(class_config)
 evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
 inf_eval = evaluation.class_to_eval_item[1]
-print(f"F1:{inf_eval.f1}")
+print(f"F1 on city full DS:{inf_eval.f1}")
 
-# Calculate F1 scores
-def calculate_multimodal_f1_score(model, merged_dataset, device, scene):
+def calculate_multimodal_metrics(model, merged_dataset, device, scene):
     predictions_iterator = MultiResPredictionsIterator(model, merged_dataset, device=device)
     windows, predictions = zip(*predictions_iterator)
 
@@ -343,9 +336,14 @@ def calculate_multimodal_f1_score(model, merged_dataset, device, scene):
     evaluator = SemanticSegmentationEvaluator(class_config)
     evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
     inf_eval = evaluation.class_to_eval_item[1]
-    return inf_eval.f1
+    return {
+        'f1': inf_eval.f1,
+        'precision': inf_eval.precision,
+        'recall': inf_eval.recall
+    }
 
-city_f1_scores = {}
+city_metrics = {}
+excluded_cities = []
 
 for city, (dataset_index, num_samples) in val_city_indices.items():
     # Skip cities with no validation samples
@@ -360,46 +358,362 @@ for city, (dataset_index, num_samples) in val_city_indices.items():
     city_scene = multimodal_datasets[city].datasets[0].scene  # Assuming the first dataset is sentinel
     
     try:
-        # Calculate F1 score for this city
-        f1_score = calculate_multimodal_f1_score(best_model, city_val_dataset, device, city_scene)
+        # Calculate metrics for this city
+        metrics = calculate_multimodal_metrics(best_model, city_val_dataset, device, city_scene)
         
-        city_f1_scores[city] = f1_score
+        city_metrics[city] = metrics
     except Exception as e:
-        print(f"Error calculating F1 score for {city}: {str(e)}")
+        print(f"Error calculating metrics for {city}: {str(e)}")
 
-# Print summary of cities with F1 scores
-print(f"\nSummary of multimodal F1 scores for split {split_index}:")
-for city, score in city_f1_scores.items():
-    print(f"{city}: {score}")
+# Print metrics for each city
+print(f"\nMetrics for split {split_index}:")
+# print(f"Model id: {model_id}")
+for city, metrics in city_metrics.items():
+    print(f"\nMetrics for {city}:")
+    if any(math.isnan(value) for value in metrics.values()):
+        print("No correct predictions made. Metrics are NaN.")
+        excluded_cities.append(city)
+    else:
+        print(f"F1 Score: {metrics['f1']:.4f}")
+        print(f"Precision: {metrics['precision']:.4f}")
+        print(f"Recall: {metrics['recall']:.4f}")
 
-vector_output_config = CustomVectorOutputConfig(
-    class_id=1,
-    denoise=8,
-    threshold=0.5)
+# Calculate and print average metrics across all cities
+valid_metrics = {k: v for k, v in city_metrics.items() if not any(math.isnan(value) for value in v.values())}
 
-crs_transformer = RasterioCRSTransformer.from_uri(cities['SantoDomingo']['image_path'])
-gdf = gpd.read_file(cities['SantoDomingo']['labels_path'])
-gdf = gdf.to_crs('epsg:3857')
-xmin3857, ymin, xmax, ymax3857 = gdf.total_bounds
-affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
-crs_transformer.transform = affine_transform_buildings
+if valid_metrics:
+    avg_metrics = {
+        'f1': sum(m['f1'] for m in valid_metrics.values()) / len(valid_metrics),
+        'precision': sum(m['precision'] for m in valid_metrics.values()) / len(valid_metrics),
+        'recall': sum(m['recall'] for m in valid_metrics.values()) / len(valid_metrics)
+    }
 
-pred_label_store = SemanticSegmentationLabelStore(
-    uri=f'../../vectorised_model_predictions/multi-modal/{train_cities}_DLV3/',
-    crs_transformer = crs_transformer,
-    class_config = class_config,
-    vector_outputs = [vector_output_config],
-    discrete_output = True)
-
-pred_label_store.save(pred_labels)
-
+    print("\nAverage metrics across cities:")
+    print(f"F1 Score: {avg_metrics['f1']:.4f}")
+    print(f"Precision: {avg_metrics['precision']:.4f}")
+    print(f"Recall: {avg_metrics['recall']:.4f}")
+    
+    if excluded_cities:
+        print(f"\n(Note: {', '.join(excluded_cities)} {'was' if len(excluded_cities) == 1 else 'were'} excluded due to NaN metrics)")
+else:
+    print("\nUnable to calculate average metrics. All cities have NaN values.")
 
 
+# vector_output_config = CustomVectorOutputConfig(
+#     class_id=1,
+#     denoise=8,
+#     threshold=0.5)
+
+# crs_transformer = RasterioCRSTransformer.from_uri(cities['SantoDomingo']['image_path'])
+# gdf = gpd.read_file(cities['SantoDomingo']['labels_path'])
+# gdf = gdf.to_crs('epsg:3857')
+# xmin3857, ymin, xmax, ymax3857 = gdf.total_bounds
+# affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
+# crs_transformer.transform = affine_transform_buildings
+
+# pred_label_store = SemanticSegmentationLabelStore(
+#     uri=f'../../vectorised_model_predictions/multi-modal/{train_cities}_DLV3/',
+#     crs_transformer = crs_transformer,
+#     class_config = class_config,
+#     vector_outputs = [vector_output_config],
+#     discrete_output = True)
+
+# pred_label_store.save(pred_labels)
+
+
+### SAVING ALL PREDICTIONS FOR UNSEEN DATA ###
+def load_model(model_path):
+    model = MultiResolutionDeepLabV3()
+    checkpoint = torch.load(model_path)
+    model.load_state_dict(checkpoint['state_dict'], strict=True)
+    model = model.to(device)
+    model.eval()
+    return model
+
+def make_predictions(model, dataset, device):
+    predictions_iterator = MultiResPredictionsIterator(model, dataset, device=device)
+    windows, predictions = zip(*predictions_iterator)
+    return windows, predictions
+
+def save_predictions_as_geojson(pred_labels, city, output_dir, cities):
+    vector_output_config = CustomVectorOutputConfig(
+        class_id=1,
+        denoise=8,
+        threshold=0.5
+    )
+
+    crs_transformer = RasterioCRSTransformer.from_uri(cities[city]['image_path'])
+    gdf = gpd.read_file(cities[city]['labels_path'])
+    gdf = gdf.to_crs('epsg:3857')
+    xmin3857, ymin, xmax, ymax3857 = gdf.total_bounds
+    affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
+    crs_transformer.transform = affine_transform_buildings
+
+    pred_label_store = SemanticSegmentationLabelStore(
+        uri=os.path.join(output_dir, f'{city}_predictions.geojson'),
+        crs_transformer=crs_transformer,
+        class_config=class_config,
+        vector_outputs=[vector_output_config],
+        discrete_output=True
+    )
+
+    pred_label_store.save(pred_labels)
+
+# Load both models
+model_paths = [
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_res256_BCH128_BKR5_epoch=08-val_loss=0.5143.ckpt'),
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_res256_BCH128_BKR5_epoch=23-val_loss=0.3972.ckpt')
+]
+models = [load_model(path) for path in model_paths]
+
+# Create datasets for all cities
+all_cities = ['SantoDomingo', 'GuatemalaCity', 'Tegucigalpa', 'Managua', 'Panama']
+all_datasets = {city: multimodal_datasets[city] for city in all_cities}
+
+# Predict and evaluate for each split
+output_dir = '../../vectorised_model_predictions/multi-modal/unseen_predictions/'
+os.makedirs(output_dir, exist_ok=True)
+
+all_metrics = {}
+
+for split_index in [0, 1]:
+    model = models[split_index]
+    _, val_dataset, _, val_city_indices = cv.get_split(split_index)
+    
+    for city, (dataset_index, num_samples) in val_city_indices.items():
+        if num_samples == 0:
+            continue
+        
+        city_val_dataset = Subset(val_dataset, range(dataset_index, dataset_index + num_samples))
+        city_scene = all_datasets[city].datasets[0].scene
+        
+        windows, predictions = make_predictions(model, city_val_dataset, device)
+        
+        pred_labels = SemanticSegmentationLabels.from_predictions(
+            windows,
+            predictions,
+            extent=city_scene.extent,
+            num_classes=len(class_config),
+            smooth=True
+        )
+        
+        save_predictions_as_geojson(pred_labels, city, output_dir, cities)
+        
+        metrics = calculate_multimodal_metrics(model, city_val_dataset, device, city_scene)
+        all_metrics[city] = metrics
+
+# Print and save metrics
+with open(os.path.join(output_dir, 'metrics.txt'), 'w') as f:
+    for city, metrics in all_metrics.items():
+        print(f"\nMetrics for {city}:")
+        f.write(f"\nMetrics for {city}:\n")
+        if any(math.isnan(value) for value in metrics.values()):
+            print("No correct predictions made. Metrics are NaN.")
+            f.write("No correct predictions made. Metrics are NaN.\n")
+        else:
+            for metric, value in metrics.items():
+                print(f"{metric.capitalize()}: {value:.4f}")
+                f.write(f"{metric.capitalize()}: {value:.4f}\n")
+
+    # Calculate and print average metrics
+    valid_metrics = {k: v for k, v in all_metrics.items() if not any(math.isnan(value) for value in v.values())}
+    if valid_metrics:
+        avg_metrics = {
+            metric: sum(city_metrics[metric] for city_metrics in valid_metrics.values()) / len(valid_metrics)
+            for metric in ['f1', 'precision', 'recall']
+        }
+        print("\nAverage metrics across cities:")
+        f.write("\nAverage metrics across cities:\n")
+        for metric, value in avg_metrics.items():
+            print(f"{metric.capitalize()}: {value:.4f}")
+            f.write(f"{metric.capitalize()}: {value:.4f}\n")
+        
+        excluded_cities = set(all_metrics.keys()) - set(valid_metrics.keys())
+        if excluded_cities:
+            note = f"\n(Note: {', '.join(excluded_cities)} {'was' if len(excluded_cities) == 1 else 'were'} excluded due to NaN metrics)"
+            print(note)
+            f.write(note + "\n")
+    else:
+        print("\nUnable to calculate average metrics. All cities have NaN values.")
+        f.write("\nUnable to calculate average metrics. All cities have NaN values.\n")
+
+print(f"Predictions and metrics have been saved to {output_dir}")
+
+
+
+### SAVING ALL PREDICTIONS FOR Strided and avergaed tiles ###
+from typing import Dict
+
+def create_strided_dataset(scene, city, size, stride):
+    return CustomSlidingWindowGeoDataset(
+        scene,
+        city=city,
+        size=size,
+        stride=stride,
+        out_size=size,
+        padding=size,
+        transform_type=TransformType.noop,
+        transform=None
+    )
+
+def load_model(model_path, device):
+    model = MultiResolutionDeepLabV3()
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['state_dict'], strict=True)
+    model = model.to(device)
+    model.eval()
+    return model
+
+def make_predictions(model, dataset, device):
+    predictions_iterator = MultiResPredictionsIterator(model, dataset, device=device)
+    windows, predictions = zip(*predictions_iterator)
+    return windows, predictions
+
+def average_predictions(pred1, pred2):
+    return [(p1 + p2) / 2 for p1, p2 in zip(pred1, pred2)]
+
+def save_predictions_as_geojson(pred_labels, city, output_dir, cities):
+    vector_output_config = CustomVectorOutputConfig(
+        class_id=1,
+        denoise=8,
+        threshold=0.5
+    )
+
+    crs_transformer = RasterioCRSTransformer.from_uri(cities[city]['image_path'])
+    gdf = gpd.read_file(cities[city]['labels_path'])
+    gdf = gdf.to_crs('epsg:3857')
+    xmin3857, ymin, xmax, ymax3857 = gdf.total_bounds
+    affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
+    crs_transformer.transform = affine_transform_buildings
+
+    pred_label_store = SemanticSegmentationLabelStore(
+        uri=os.path.join(output_dir, f'{city}_predictions.geojson'),
+        crs_transformer=crs_transformer,
+        class_config=class_config,
+        vector_outputs=[vector_output_config],
+        discrete_output=True
+    )
+
+    pred_label_store.save(pred_labels)
+
+def calculate_metrics(pred_labels, gt_labels):
+    # Convert predicted labels to discrete format
+    pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
+        extent=pred_labels.extent,
+        num_classes=len(class_config))
+    scores = pred_labels.get_score_arr(pred_labels.extent)
+    pred_array_discrete = (scores > 0.5).astype(int)
+    pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
+
+    # Evaluate predictions
+    evaluator = SemanticSegmentationEvaluator(class_config)
+    evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
+    inf_eval = evaluation.class_to_eval_item[1]
+
+    return {
+        'f1': inf_eval.f1,
+        'precision': inf_eval.precision,
+        'recall': inf_eval.recall
+    }
+
+def process_city(city: str, sentinel_scene: Scene, buildings_scene: Scene, models: list, device: torch.device, output_dir: str, cities: dict):
+    sentinel_dataset = create_strided_dataset(sentinel_scene, city, size=256, stride=128)
+    buildings_dataset = create_strided_dataset(buildings_scene, city, size=512, stride=256)
+    merged_dataset = MergeDataset(sentinel_dataset, buildings_dataset)
+
+    windows = None
+    avg_predictions = None
+
+    for model in models:
+        windows, predictions = make_predictions(model, merged_dataset, device)
+        if avg_predictions is None:
+            avg_predictions = predictions
+        else:
+            avg_predictions = average_predictions(avg_predictions, predictions)
+
+    pred_labels = SemanticSegmentationLabels.from_predictions(
+        windows,
+        avg_predictions,
+        extent=sentinel_scene.extent,
+        num_classes=len(class_config),
+        smooth=True
+    )
+
+    save_predictions_as_geojson(pred_labels, city, output_dir, cities)
+
+    # Calculate metrics using the averaged predictions
+    gt_labels = sentinel_scene.label_source.get_labels()
+    metrics = calculate_metrics(pred_labels, gt_labels)
+    
+    return metrics
+
+# Main execution
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+models = [load_model(path, device) for path in model_paths]
+
+output_dir = '../../vectorised_model_predictions/multi-modal/final_predictions_averaged/'
+os.makedirs(output_dir, exist_ok=True)
+
+# Use existing scenes and datasets
+scenes = {
+    'SantoDomingo': (sentinel_sceneSD, buildings_sceneSD),
+    'GuatemalaCity': (sentinel_sceneGC, buildings_sceneGC),
+    'Tegucigalpa': (sentinel_sceneTG, buildings_sceneTG),
+    'Managua': (sentinel_sceneMN, buildings_sceneMN),
+    'Panama': (sentinel_scenePN, buildings_scenePN)
+}
+
+all_metrics = {}
+
+for city, (sentinel_scene, buildings_scene) in scenes.items():
+    print(f"Processing {city}...")
+    all_metrics[city] = process_city(city, sentinel_scene, buildings_scene, models, device, output_dir, cities)
+
+# Print and save metrics
+with open(os.path.join(output_dir, 'metrics.txt'), 'w') as f:
+    for city, metrics in all_metrics.items():
+        print(f"\nMetrics for {city}:")
+        f.write(f"\nMetrics for {city}:\n")
+        if any(math.isnan(value) for value in metrics.values()):
+            print("No correct predictions made. Metrics are NaN.")
+            f.write("No correct predictions made. Metrics are NaN.\n")
+        else:
+            for metric, value in metrics.items():
+                print(f"{metric.capitalize()}: {value:.4f}")
+                f.write(f"{metric.capitalize()}: {value:.4f}\n")
+
+    # Calculate and print average metrics
+    valid_metrics = {k: v for k, v in all_metrics.items() if not any(math.isnan(value) for value in v.values())}
+    if valid_metrics:
+        avg_metrics = {
+            metric: sum(city_metrics[metric] for city_metrics in valid_metrics.values()) / len(valid_metrics)
+            for metric in ['f1', 'precision', 'recall']
+        }
+        print("\nAverage metrics across cities:")
+        f.write("\nAverage metrics across cities:\n")
+        for metric, value in avg_metrics.items():
+            print(f"{metric.capitalize()}: {value:.4f}")
+            f.write(f"{metric.capitalize()}: {value:.4f}\n")
+        
+        excluded_cities = set(all_metrics.keys()) - set(valid_metrics.keys())
+        if excluded_cities:
+            note = f"\n(Note: {', '.join(excluded_cities)} {'was' if len(excluded_cities) == 1 else 'were'} excluded due to NaN metrics)"
+            print(note)
+            f.write(note + "\n")
+    else:
+        print("\nUnable to calculate average metrics. All cities have NaN values.")
+        f.write("\nUnable to calculate average metrics. All cities have NaN values.\n")
+
+print(f"Predictions and metrics have been saved to {output_dir}")
 
 
 
 
-# best_model = best_model.to(device)
+
+
+
+# # Visualise feature maps
 
 # def recursive_to_device(module, device):
 #     for child in module.children():
@@ -409,7 +723,6 @@ pred_label_store.save(pred_labels)
 # # Use it like this:
 # recursive_to_device(best_model, device)
 
-# # Visualise feature maps
 # visualizer = FeatureMapVisualization(best_model, device=device)
 # visualizer.add_hooks([
 #     'buildings_encoder.0', # conv2d
