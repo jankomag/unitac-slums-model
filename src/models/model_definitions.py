@@ -17,7 +17,7 @@ import pytorch_lightning as pl
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from torch.utils.data import ConcatDataset, Subset
-
+import math
 from typing import Iterator, Optional
 from torch.optim import AdamW
 import torch
@@ -48,6 +48,38 @@ def check_nan_params(model):
     for name, param in model.named_parameters():
         if torch.isnan(param).any():
             print(f"NaN found in {name}")
+
+def merge_geojson_files(country_directory, output_file):
+    merged_gdf = gpd.GeoDataFrame()
+    for city in os.listdir(country_directory):
+        city_path = os.path.join(country_directory, city)
+        if os.path.isdir(city_path):
+            for split in ['split0_predictions', 'split1_predictions']:
+                split_path = os.path.join(city_path, split)
+                vector_output_path = os.path.join(split_path, 'vector_output')
+                if os.path.isdir(vector_output_path):
+                    json_file = os.path.join(vector_output_path, 'class-1-slums.json')
+                    if os.path.exists(json_file):
+                        try:
+                            gdf = gpd.read_file(json_file)
+                            if not gdf.empty and 'geometry' in gdf.columns:
+                                gdf['city'] = city
+                                gdf['split'] = split
+                                merged_gdf = pd.concat([merged_gdf, gdf], ignore_index=True)
+                            else:
+                                print(f"Skipping empty or invalid GeoJSON file: {json_file}")
+                        except Exception as e:
+                            print(f"Error reading file {json_file}: {str(e)}")
+                    else:
+                        print(f"JSON file not found: {json_file}")
+                else:
+                    print(f"Vector output directory not found: {vector_output_path}")
+    
+    if not merged_gdf.empty and 'geometry' in merged_gdf.columns:
+        merged_gdf.to_file(output_file, driver='GeoJSON')
+        print(f'Merged GeoJSON file saved to {output_file}')
+    else:
+        print("No valid geometries found. Merged GeoJSON file not created.")
 
 # Show predictions function
 def create_predictions_and_ground_truth_plot(pred_labels, gt_labels, threshold=0.5,  class_id=1, figsize=(30, 10)):

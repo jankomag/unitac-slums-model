@@ -207,6 +207,13 @@ cities = {
         }
 }
 
+RasterizedSource
+
+def clear_directory(directory):
+    if os.path.exists(directory):
+        shutil.rmtree(directory)
+    os.makedirs(directory)
+
 def geoms_to_raster(df: gpd.GeoDataFrame, window: 'Box',
                     background_class_id: int, all_touched: bool) -> np.ndarray:
     """Rasterize geometries that intersect with the window.
@@ -1289,6 +1296,57 @@ def singlesource_show_windows_for_city(city, split_index, cv, datasets):
     
     # Show the windows
     show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {split_index + 1})')
+
+def show_first_batch_item(batch, device='cpu'):
+    # Unpack the batch
+    sentinel_batch, buildings_batch = batch
+    buildings_data, _ = buildings_batch
+    sentinel_data, sentinel_labels = sentinel_batch
+
+    # Move data to CPU for visualization
+    buildings_data = buildings_data.to('cpu')
+    sentinel_data = sentinel_data.to('cpu')
+    sentinel_labels = sentinel_labels.to('cpu')
+
+    # Get the first item in the batch
+    sentinel_image = sentinel_data[0].squeeze()
+    buildings_image = buildings_data[0].squeeze()
+    label = sentinel_labels[0].squeeze()
+
+    # Set up the plot
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    
+    # Plot Sentinel data as RGB (R, G, B are channels 1, 2, 3)
+    sentinel_rgb = sentinel_image[1:4].permute(1, 2, 0)
+    sentinel_rgb = sentinel_rgb.float()  # Ensure it's float
+    
+    # Normalize to [0, 1] for display
+    sentinel_rgb = (sentinel_rgb - sentinel_rgb.min()) / (sentinel_rgb.max() - sentinel_rgb.min())
+    
+    axes[0].imshow(sentinel_rgb.numpy())
+    axes[0].set_title("Sentinel RGB")
+    axes[0].axis('off')
+    
+    # Plot NIR as a separate grayscale image
+    nir = sentinel_image[0]
+    nir = (nir - nir.min()) / (nir.max() - nir.min())  # Normalize NIR
+    axes[1].imshow(nir.numpy(), cmap='gray')
+    axes[1].set_title("Sentinel NIR")
+    axes[1].axis('off')
+    
+    # Plot Buildings data
+    axes[2].imshow(buildings_image.numpy(), cmap='gray')
+    axes[2].set_title("Building Footprints")
+    axes[2].axis('off')
+    
+    # Plot Label
+    axes[3].imshow(label.numpy(), cmap='gray')
+    axes[3].set_title("GT Labels")
+    axes[3].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
 
 
 # Functions to get data from OMF

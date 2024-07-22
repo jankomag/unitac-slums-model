@@ -37,8 +37,8 @@ from src.features.dataloaders import (
     show_windows, CustomRasterizedSource
 )
 from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params,
-                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, MultiResolutionFPN,
-                                          CustomVectorOutputConfig, FeatureMapVisualization, MultiResolution128DeepLabV3)
+                                          MultiModalDataModule, create_predictions_and_ground_truth_plot,
+                                          CustomVectorOutputConfig, FeatureMapVisualization)
 from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple, MultiInputCrossValidator, create_sentinel_mosaic,
                                   senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn, get_sentinel_items,
                                   MergeDataset, show_single_tile_multi, get_label_source_from_merge_dataset, create_scenes_for_city, PolygonWindowGeoDataset)
@@ -67,103 +67,6 @@ from rastervision.core.box import Box
 from rastervision.pytorch_learner.dataset.transform import TransformType
 from rastervision.core.data import Scene
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
-
-def ensure_tuple(x):
-    if isinstance(x, (list, tuple)):
-        return tuple(x)
-    return (x, x)
-
-def create_strided_dataset(scene, city, size, stride):
-    return CustomSlidingWindowGeoDataset(
-        scene,
-        city=city,
-        size=size,
-        stride=stride,
-        out_size=size,
-        padding=size,
-        transform_type=TransformType.noop,
-        transform=None
-    )
-    
-def make_buildings_raster(image_path, resolution=5):
-    with rasterio.open(image_path) as src:
-        bounds = src.bounds
-        xmin3857, ymin3857, xmax3857, ymax3857 = bounds.left, bounds.bottom, bounds.right, bounds.top
-    
-    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_path)
-    affine_transform_buildings = Affine(resolution, 0, xmin3857, 0, -resolution, ymax3857)
-    crs_transformer_buildings.transform = affine_transform_buildings
-    
-    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    xmin4326, ymin4326 = transformer.transform(xmin3857, ymin3857)
-    xmax4326, ymax4326 = transformer.transform(xmax3857, ymax3857)
-    
-    buildings = query_buildings_data(xmin4326, ymin4326, xmax4326, ymax4326)
-    print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
-    
-    buildings_vector_source = CustomGeoJSONVectorSource(
-        gdf = buildings,
-        crs_transformer = crs_transformer_buildings,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-    
-    rasterized_buildings_source = CustomRasterizedSource(
-        buildings_vector_source,
-        background_class_id=0,
-        bbox=Box(xmin3857, ymin3857, xmax3857, ymax3857))
-    
-    return rasterized_buildings_source, crs_transformer_buildings
-
-def make_sentinel_raster(image_uri):
-    # Define the means and stds in NIR-RGB order
-    nir_rgb_means = [2581.270, 1298.905, 1144.928, 934.346]  # NIR, R, G, B
-    nir_rgb_stds = [586.279, 458.048, 302.029, 244.423]  # NIR, R, G, B
-
-    fixed_stats_transformer = FixedStatsTransformer(
-        means=nir_rgb_means,
-        stds=nir_rgb_stds)
-    
-    # Define a normalized raster source using the calculated transformer
-    sentinel_source_normalized = RasterioSource(
-        image_uri,
-        allow_streaming=True,
-        raster_transformers=[fixed_stats_transformer],
-        channel_order=[3, 2, 1, 0]
-    )
-
-    print(f"Loaded Sentinel data of size {sentinel_source_normalized.shape}, and dtype: {sentinel_source_normalized.dtype}")
-    return sentinel_source_normalized
-
-def create_sentinel_scene(city_data):
-    image_path = city_data['image_path']
-
-    sentinel_source_normalized = make_sentinel_raster(image_path)
-    
-    sentinel_scene = Scene(
-        id='scene_sentinel',
-        raster_source=sentinel_source_normalized
-    )
-    return sentinel_scene
-
-def create_building_scene(city_name, city_data):
-    image_path = city_data['image_path']
-    # labels_path = city_data['labels_path']
-
-    # Create Buildings scene
-    rasterized_buildings_source, crs_transformer_buildings = make_buildings_raster(image_path, resolution=5)
-    
-    # label_vector_source = GeoJSONVectorSource(labels_path,
-    #     crs_transformer_buildings,
-    #     vector_transformers=[ClassInferenceTransformer(default_class_id=class_config.get_class_id('slums'))])
-    
-    # label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
-    # buildings_label_sourceSD = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
-    
-    buildings_scene = Scene(
-        id=f'{city_name}_buildings',
-        raster_source=rasterized_buildings_source)
-        # label_source = buildings_label_sourceSD)
-
-    return buildings_scene
 
 def get_sentinel_items(bbox_geometry, bbox):
     items = catalog.search(
@@ -260,6 +163,98 @@ def display_mosaic(mosaic_source):
     plt.colorbar(im, ax=ax)
     plt.show()
     
+def make_buildings_raster(image_path, resolution=5):
+    with rasterio.open(image_path) as src:
+        bounds = src.bounds
+        xmin3857, ymin3857, xmax3857, ymax3857 = bounds.left, bounds.bottom, bounds.right, bounds.top
+    
+    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_path)
+    affine_transform_buildings = Affine(resolution, 0, xmin3857, 0, -resolution, ymax3857)
+    crs_transformer_buildings.transform = affine_transform_buildings
+    
+    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    xmin4326, ymin4326 = transformer.transform(xmin3857, ymin3857)
+    xmax4326, ymax4326 = transformer.transform(xmax3857, ymax3857)
+    
+    buildings = query_buildings_data(xmin4326, ymin4326, xmax4326, ymax4326)
+    print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
+    
+    buildings_vector_source = CustomGeoJSONVectorSource(
+        gdf = buildings,
+        crs_transformer = crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+    
+    rasterized_buildings_source = CustomRasterizedSource(
+        buildings_vector_source,
+        background_class_id=0,
+        bbox=Box(xmin3857, ymin3857, xmax3857, ymax3857))
+    
+    return rasterized_buildings_source, crs_transformer_buildings
+
+def make_sentinel_raster(image_uri):
+    # Define the means and stds in NIR-RGB order
+    nir_rgb_means = [2581.270, 1298.905, 1144.928, 934.346]  # NIR, R, G, B
+    nir_rgb_stds = [586.279, 458.048, 302.029, 244.423]  # NIR, R, G, B
+
+    fixed_stats_transformer = FixedStatsTransformer(
+        means=nir_rgb_means,
+        stds=nir_rgb_stds)
+    
+    # Define a normalized raster source using the calculated transformer
+    sentinel_source_normalized = RasterioSource(
+        image_uri,
+        allow_streaming=True,
+        raster_transformers=[fixed_stats_transformer],
+        channel_order=[3, 2, 1, 0]
+    )
+
+    print(f"Loaded Sentinel data of size {sentinel_source_normalized.shape}, and dtype: {sentinel_source_normalized.dtype}")
+    return sentinel_source_normalized
+
+def create_sentinel_scene(city_data):
+    image_path = city_data['image_path']
+
+    sentinel_source_normalized = make_sentinel_raster(image_path)
+    
+    sentinel_scene = Scene(
+        id='scene_sentinel',
+        raster_source=sentinel_source_normalized
+    )
+    return sentinel_scene
+
+def calculate_metrics(pred_labels, gt_labels):
+    # Convert predicted labels to discrete format
+    pred_labels_discrete = SemanticSegmentationDiscreteLabels.make_empty(
+        extent=pred_labels.extent,
+        num_classes=len(class_config))
+    scores = pred_labels.get_score_arr(pred_labels.extent)
+    pred_array_discrete = (scores > 0.5).astype(int)
+    pred_labels_discrete[pred_labels.extent] = pred_array_discrete[1]
+
+    # Evaluate predictions
+    evaluator = SemanticSegmentationEvaluator(class_config)
+    evaluation = evaluator.evaluate_predictions(ground_truth=gt_labels, predictions=pred_labels_discrete)
+    inf_eval = evaluation.class_to_eval_item[1]
+
+    return {
+        'f1': inf_eval.f1,
+        'precision': inf_eval.precision,
+        'recall': inf_eval.recall
+    }
+
+def make_predictions(model, dataset, device):
+    predictions_iterator = MultiResPredictionsIterator(model, dataset, device=device)
+    windows, predictions = zip(*predictions_iterator)
+    return windows, predictions
+
+def load_multimodal_model(model_path):
+    model = MultiResolutionDeepLabV3()
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['state_dict'], strict=True)
+    model = model.to(device)
+    model.eval()
+    return model
+
 def make_predictions(model, dataset, device):
     predictions_iterator = MultiResPredictionsIterator(model, dataset, device=device)
     windows, predictions = zip(*predictions_iterator)
@@ -268,91 +263,136 @@ def make_predictions(model, dataset, device):
 def average_predictions(pred1, pred2):
     return [(p1 + p2) / 2 for p1, p2 in zip(pred1, pred2)]
 
-def load_model(model_path, device='mps'):
-    model = MultiResolutionDeepLabV3()
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['state_dict'], strict=True)
-    model = model.to(device)
-    model.eval()
-    return model
+device = torch.device('mps')
+output_dir = '../../vectorised_model_predictions/multi-modal/final_predictions_averaged/'
+os.makedirs(output_dir, exist_ok=True)
 
-def create_strided_dataset(scene, city, size, stride):
-    # Ensure size and stride are integers
-    size = int(size) if isinstance(size, (int, float)) else tuple(map(int, size))
-    stride = int(stride) if isinstance(stride, (int, float)) else tuple(map(int, stride))
-    
-    return CustomSlidingWindowGeoDataset(
-        scene,
-        city=city,
-        size=size,
-        stride=stride,
-        out_size=size,
-        padding=size,
-        transform_type=TransformType.noop,
-        transform=None
-    )
-    
 class_config = ClassConfig(names=['background', 'slums'], 
                            colors=['lightgray', 'darkred'],
                            null_class='background')
     
-# Load both models
 model_paths = [
     os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'),
     os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_epoch=35-val_loss=0.3268.ckpt')
 ]
-models = [load_model(path) for path in model_paths]
+
+models = [load_multimodal_model(path) for path in model_paths]
 
 # Load GeoDataFrame
 sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
 gdf = gpd.read_parquet(sica_cities)
-gdf = gdf[gdf['iso3'] == 'HTI']
+gdf = gdf[gdf['iso3'] == 'HND']
+# gdf = gdf[gdf['city_ascii'] == 'Puerto Cortes']
 gdf = gdf.to_crs('EPSG:3857')
-gdf = gdf.tail(1)
+gdf = gdf.tail(5)
 
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
     country_code = row['iso3']
+    
     print("Doing predictions for: ", city_name, country_code)
     
-    gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = row['geometry'].bounds
+    xmin3857, ymin3857, xmax3857, ymax3857 = row['geometry'].bounds
     
     transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    xmin_4326, ymin_4326 = transformer.transform(gdf_xmin, gdf_ymin)
-    xmax_4326, ymax_4326 = transformer.transform(gdf_xmax, gdf_ymax)
-    # print("Bounds: ", xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+    xmin_4326, ymin_4326 = transformer.transform(xmin3857, ymin3857)
+    xmax_4326, ymax_4326 = transformer.transform(xmax3857, ymax3857)
     
     # Find the image file with a pattern match
-    image_pattern = f"../../data/0/sentinel_Gee/{country_code}_{city_name}*"
+    city_name_for_file = city_name.replace(' ', '_')
+    image_pattern = f"../../data/0/sentinel_Gee/{country_code}_{city_name_for_file}*"
     matching_files = glob.glob(image_pattern)
     
     if not matching_files:
-        print(f"No matching image file found for {country_code}_{city_name}. Skipping.")
+        print(f"No matching image file found for {country_code}_{city_name_for_file}. Skipping.")
         continue
     image_uri = matching_files[0]
 
     city_data = {
         'image_path': image_uri,
     }
+    
+    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
+    affine_transform_buildings = Affine(5, 0, xmin3857, 0, -5, ymax3857)
+    crs_transformer_buildings.transform = affine_transform_buildings
+    
+    buildings = query_buildings_data(xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+    
+    buildings_vector_source = CustomGeoJSONVectorSource(
+        gdf = buildings,
+        crs_transformer = crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+        
+    rasterized_buildings_source = CustomRasterizedSource(
+        buildings_vector_source,
+        background_class_id=0)
+        # bbox=label_source.bbox)
+        
+    crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
+    
+    # Define the means and stds in NIR-RGB order
+    nir_rgb_means = [2581.270, 1298.905, 1144.928, 934.346]  # NIR, R, G, B
+    nir_rgb_stds = [586.279, 458.048, 302.029, 244.423]  # NIR, R, G, B
 
-    # Get Sentinel items    
-    sentinel_scene = create_sentinel_scene(city_data)
+    fixed_stats_transformer = FixedStatsTransformer(
+        means=nir_rgb_means,
+        stds=nir_rgb_stds)
+    
+    sentinel_source_normalized = RasterioSource(
+        image_uri,
+        allow_streaming=True,
+        raster_transformers=[fixed_stats_transformer],
+        channel_order=[3, 2, 1, 0]
+        # bbox=label_source.bbox if clip_to_label_source else None
+    )
+
+    sentinel_scene = Scene(
+        id=f'{city_name}_sentinel',
+        raster_source=sentinel_source_normalized,
+        # label_source=sentinel_label_raster_source
+    )
+    
+    building_scene = Scene(
+        id=f'{city_name}_buildings',
+        raster_source=rasterized_buildings_source,
+        # label_source = buildings_label_sourceSD
+    )
+
+    # sentinel_scene = create_sentinel_scene(city_data)
+    sentinel_extent = sentinel_scene.extent
+    sentinel_bbox = sentinel_scene.bbox
+    print(f"Sentinel scene extent: {sentinel_extent}")
+    print(f"Sentinel scene bbox: {sentinel_bbox}")
 
     # Query buildings data and create buildings scene
-    buildings = query_buildings_data(xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+    # buildings = query_buildings_data(xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+    
+    # crs_transformer = sentinel_scene.raster_source.crs_transformer
+    # affine_transform = Affine(5, 0, xmin3857, 0, -5, ymax3857)
+    # crs_transformer.transform = affine_transform
+    
+    # buildings_vector_source = CustomGeoJSONVectorSource(
+    #     gdf = buildings,
+    #     crs_transformer = crs_transformer,
+    #     vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+    
+    # rasterized_buildings_source = CustomRasterizedSource(
+    #     buildings_vector_source,
+    #     background_class_id=0,
+    #     bbox=sentinel_bbox)
         
-    # Create building scene
-    building_scene = create_building_scene(city_name, city_data)
+    # building_scene = Scene(
+    #     id=f'{city_name}_buildings',
+    #     raster_source=rasterized_buildings_source)
+    
+    print(f"Building scene extent: {building_scene.extent}")
         
-    # Use the extent from the sentinel scene for both datasets
-    sentinel_extent = sentinel_scene.extent
-    building_scene.extent = sentinel_extent
-
-
     # Create datasets
-    sentinel_dataset = create_strided_dataset(sentinel_scene, city_name, size=256, stride=128)
-    buildings_dataset = create_strided_dataset(building_scene, city_name, size=512, stride=256)
-    mergedds = MergeDataset(sentinel_dataset, buildings_dataset)
+    sent_strided_fullds = CustomSlidingWindowGeoDataset(sentinel_scene, size=256, stride=128, padding=0, city=city_name, transform=None, transform_type=TransformType.noop)
+    buil_strided_fullds = CustomSlidingWindowGeoDataset(building_scene, size=512, stride=256, padding=0, city=city_name, transform=None, transform_type=TransformType.noop)
+    print(f"Number of samples in sen: {len(sent_strided_fullds)} and buil: {len(buil_strided_fullds)}")
+    mergedds = MergeDataset(sent_strided_fullds, buil_strided_fullds)
+    print(f"Number of samples in mergedds: {len(mergedds)}")
 
     # Create prediction iterator for both models
     all_predictions = []
@@ -379,12 +419,19 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
         threshold=0.5
     )
 
+    crs_transformer_buil = sentinel_scene.raster_source.crs_transformer
+    buildings3857 = buildings.to_crs('EPSG:3857')
+    xmin3857b, _, _, ymax3857b = buildings3857.total_bounds
+    
+    affine_transform_buildings = Affine(10, 0, xmin3857b, 0, -10, ymax3857b)
+    crs_transformer_buil.transform = affine_transform_buildings
+    
     output_dir = f'../../vectorised_model_predictions/multi-modal/sel_DLV3/{country_code}'
     os.makedirs(output_dir, exist_ok=True)
 
     pred_label_store = SemanticSegmentationLabelStore(
         uri=os.path.join(output_dir, f'{city_name}_{country_code}.geojson'),
-        crs_transformer=crs_transformer,
+        crs_transformer=crs_transformer_buil,
         class_config=class_config,
         vector_outputs=[vector_output_config],
         discrete_output=True
