@@ -4,6 +4,7 @@ import geopandas as gpd
 import pandas as pd
 import momepy as mm
 import osmnx
+from shapely.geometry import box
 import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import MultiPolygon
@@ -13,13 +14,10 @@ from shapely.errors import TopologicalError, GEOSException
 import os
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from pathlib import Path
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
-
-# sys.path.append(parent_dir)
 
 def query_buildings_data(xmin, ymin, xmax, ymax):
     import duckdb
@@ -49,17 +47,17 @@ def query_buildings_data(xmin, ymin, xmax, ymax):
     return buildings
 
 cities = {
-    'SanJoseCRI': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_San_Jose_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
-        'use_augmentation': False
-    },
-    'TegucigalpaHND': {
+    # 'SanJoseCRI': {
+    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/CRI_San_Jose_2023.tif'),
+    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanJose_PS.shp'),
+    #     'use_augmentation': False
+    # },
+    'Tegucigalpa': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
         'use_augmentation': False
     },
-    'SantoDomingoDOM': {
+    'SantoDomingo': {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
         'use_augmentation': True
@@ -78,16 +76,16 @@ cities = {
         'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/PAN_Panama_2024.tif'),
         'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
         'use_augmentation': False
-    },
-    'SanSalvador_PS': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
-        'use_augmentation': False
-    },
-    'BelizeCity': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
-                   'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')},
-    'Belmopan': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
-                 'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')}
+    }
+    # 'SanSalvador_PS': {
+    #     'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
+    #     'labels_path': os.path.join(grandparent_dir, 'data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
+    #     'use_augmentation': False
+    # },
+    # 'BelizeCity': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
+    #                'labels_path': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')},
+    # 'Belmopan': {'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
+    #              'labels_path': os.path.join(grandparent_dir, 'data/SHP/Belmopan_PS.shp')}
 }
 
 # Function to check if a file exists
@@ -229,52 +227,53 @@ for city_name, df in city_dataframes.items():
     print(f"\nSummary statistics for {city_name}:")
     print(df.describe())
 
+
+
+
+
 # Plotting the distribution of morphometrics by city
-file_path = os.path.join(parent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
+file_path = os.path.join(grandparent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
 all_cities_df = pd.read_csv(file_path)
 
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.preprocessing import MinMaxScaler
-import os
-
-# Set the style for a cleaner look
 plt.style.use('ggplot')
-
-# Load data
-file_path = os.path.join(parent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
-all_cities_df = pd.read_csv(file_path)
-
-# Clean up city names
 city_name_map = {
-    'Sansalvador_Ps': 'San Salvador, El Salvador',
-    'Santodomingodom': 'Santo Domingo, Dominican Republic',
-    'Guatemalacity': 'Guatemala City, Guatemala',
-    'Tegucigalpahnd': 'Tegucigalpa, Honduras',
-    'Sanjosecri': 'San Jose, Costa Rica',
+    'Sansalvador_Ps_': 'San Salvador, El Salvador',
+    'SantoDomingoDOM': 'Santo Domingo, Dominican Republic',
+    'GuatemalaCity': 'Guatemala City, Guatemala',
+    'TegucigalpaHND': 'Tegucigalpa, Honduras',
+    'SanJoseCRI_': 'San Jose, Costa Rica',
     'Panama': 'Panama City, Panama',
-    'Belizecity': 'Belize City, Belize',
+    'Belizecity_': 'Belize City, Belize',
     'Managua': 'Managua, Nicaragua',
-    'Belmopan': 'Belmopan, Belize'
+    'Belmopan_': 'Belmopan, Belize'
 }
-
+all_cities_df = all_cities_df[all_cities_df['city'].isin(['SantoDomingoDOM', 'GuatemalaCity', 'TegucigalpaHND','Panama', 'Managua'])]
 all_cities_df['city'] = all_cities_df['city'].map(city_name_map)
 
 # Define numeric columns
 numeric_cols = ['tessellation_car', 'buildings_wall', 'buildings_adjacency', 'buildings_neighbour_distance']
+numeric_cols_names = ['Tesselation CAR', 'Buildings Perimeter Length', 'Buildings Adjecency', 'Distance to Nearest Building']
+col_name_map = dict(zip(numeric_cols, numeric_cols_names))
+
+def remove_outliers(group):
+    for col in numeric_cols:
+        mean = group[col].mean()
+        std = group[col].std()
+        group = group[(group[col] >= mean - 3*std) & (group[col] <= mean + 3*std)]
+    return group
+
+# Remove outliers for each city separately
+all_cities_df = all_cities_df.groupby('city').apply(remove_outliers).reset_index(drop=True)
 
 # Standardize the numeric columns
 scaler = MinMaxScaler()
 all_cities_df[numeric_cols] = scaler.fit_transform(all_cities_df[numeric_cols])
 
-# Melt the dataframe for seaborn
 df_melted = all_cities_df.melt(id_vars=['city'], value_vars=numeric_cols, var_name='Variable', value_name='Value')
+df_melted['Variable'] = df_melted['Variable'].map(col_name_map)
 
 # Create the plot
 plt.figure(figsize=(20, 12))
-
-# Create the boxplot with limited outliers
 ax = sns.boxplot(x='Variable', y='Value', hue='city', data=df_melted, 
                  palette="Set3", whis=(10, 90))
 
@@ -288,9 +287,9 @@ for i, artist in enumerate(ax.artists):
         line.set_mec(col)
 
 # Customize the plot
-plt.title('Standardized Distribution of Building Morphometrics by City', fontsize=20, pad=20)
-plt.xlabel('Morphometric', fontsize=16, labelpad=15)
-plt.ylabel('Standardized Value', fontsize=16, labelpad=15)
+plt.title('Standardized Distribution of Building Morphometrics by City', fontsize=24, pad=20)
+plt.xlabel('Morphometric', fontsize=17, labelpad=15)
+plt.ylabel('Standardized Value', fontsize=17, labelpad=15)
 
 # Improve x-axis labels
 plt.xticks(rotation=45, ha='right', fontsize=14)
@@ -300,10 +299,139 @@ ax.set_xticklabels([label.get_text().replace('_', ' ').title() for label in ax.g
 plt.yticks(fontsize=14)
 
 # Customize legend
-plt.legend(title='City', title_fontsize='16', fontsize='12', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.legend(title='City', title_fontsize='18', fontsize='14', bbox_to_anchor=(1, 1), loc='upper left')
 
 # Adjust layout
 plt.tight_layout()
 
 # Show plot
 plt.show()
+
+
+#### MAPPING ####
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+from shapely.geometry import box, Point
+import os
+import duckdb
+from pyproj import Transformer
+
+def create_square_bbox(lat, lon, size_meters):
+    point = Point(lon, lat)
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    x, y = transformer.transform(lon, lat)
+    half_size = size_meters / 2
+    bbox = box(x - half_size, y - half_size, x + half_size, y + half_size)
+    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    minx, miny = transformer.transform(bbox.bounds[0], bbox.bounds[1])
+    maxx, maxy = transformer.transform(bbox.bounds[2], bbox.bounds[3])
+    return minx, miny, maxx, maxy
+
+def plot_buildings_and_precarious_areas(ax, lat, lon, size_meters, city_name, grandparent_dir):
+    xmin, ymin, xmax, ymax = create_square_bbox(lat, lon, size_meters)
+    
+    con = duckdb.connect(os.path.join(grandparent_dir, 'data/0/data.db'))
+    con.install_extension('httpfs')
+    con.install_extension('spatial')
+    con.load_extension('httpfs')
+    con.load_extension('spatial')
+    con.execute("SET s3_region='us-west-2'")
+    con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
+    
+    query = f"""
+        SELECT *
+        FROM buildings
+        WHERE bbox.xmin > {xmin}
+          AND bbox.xmax < {xmax}
+          AND bbox.ymin > {ymin}
+          AND bbox.ymax < {ymax};
+    """
+    buildings_df = gpd.read_postgis(query, con, geom_col='geometry', crs='EPSG:4326')
+    
+    city_name_map = {
+        'Sansalvador_Ps_': 'San Salvador, El Salvador',
+        'SantoDomingo': 'Santo Domingo, Dominican Republic',
+        'GuatemalaCity': 'Guatemala City, Guatemala',
+        'Tegucigalpa': 'Tegucigalpa, Honduras',
+        'SanJoseCRI_': 'San Jose, Costa Rica',
+        'Panama': 'Panama City, Panama',
+        'BelizeCity': 'Belize City, Belize (excluded from the study)',
+        'Managua': 'Managua, Nicaragua',
+        'Belmopan_': 'Belmopan, Belize'
+    }
+    
+    cities = {
+        'Tegucigalpa': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
+        'SantoDomingo': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
+        'GuatemalaCity': os.path.join(grandparent_dir, 'data/SHP/Guatemala_PS.shp'),
+        'Managua': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
+        'Panama': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
+        'BelizeCity': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')
+    }
+        
+    precarious_areas = gpd.read_file(cities[city_name])
+    
+    buildings_df = buildings_df.to_crs('EPSG:3857')
+    precarious_areas = precarious_areas.to_crs('EPSG:3857')
+    
+    bbox = box(xmin, ymin, xmax, ymax)
+    bbox_gdf = gpd.GeoDataFrame({'geometry': [bbox]}, crs='EPSG:4326').to_crs('EPSG:3857')
+    
+    precarious_areas = gpd.clip(precarious_areas, bbox_gdf)
+    
+    unified_precarious_area = precarious_areas.unary_union
+    unified_precarious_gdf = gpd.GeoDataFrame({'geometry': [unified_precarious_area]}, crs='EPSG:3857')
+    
+    ax.set_facecolor('white')
+    
+    buildings_df.plot(ax=ax, edgecolor='none', facecolor='black', linewidth=0)
+    
+    # Plot precarious areas with faint fill and outline
+    unified_precarious_gdf.plot(ax=ax, facecolor='red', edgecolor='red', alpha=0.05, linewidth=2)
+    unified_precarious_gdf.boundary.plot(ax=ax, color='red', linewidth=2)
+    
+    ax.set_xlim(bbox_gdf.total_bounds[0], bbox_gdf.total_bounds[2])
+    ax.set_ylim(bbox_gdf.total_bounds[1], bbox_gdf.total_bounds[3])
+    
+    ax.set_axis_off()
+    
+    cleaned_city_name = city_name_map.get(city_name, city_name)
+    ax.set_title(f'{cleaned_city_name}', fontsize=14)
+
+def plot_multiple_areas(coordinates_list, size_meters, grandparent_dir):
+    n = len(coordinates_list)
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = int(np.ceil(n / cols))
+    
+    fig, axs = plt.subplots(rows, cols, figsize=(5*cols, 5*rows), squeeze=False)
+    fig.suptitle('Building Footprints and Precarious Areas in Different Cities', fontsize=16)
+    
+    for i, (lat, lon, city_name) in enumerate(coordinates_list):
+        row = i // cols
+        col = i % cols
+        ax = axs[row, col]
+        plot_buildings_and_precarious_areas(ax, lat, lon, size_meters, city_name, grandparent_dir)
+    
+    # Hide any unused subplots
+    for i in range(n, rows*cols):
+        row = i // cols
+        col = i % cols
+        axs[row, col].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+# Example usage
+coordinates_list = [
+    (14.643041208660227, -90.52696617369627, 'GuatemalaCity'),
+    (14.09833557316007, -87.24716065494343, 'Tegucigalpa'),
+    (18.506793321891678, -69.89322847545206, 'SantoDomingo'),
+    (12.153548471297961, -86.25461143585959, 'Managua'),
+    (8.925055642079421, -79.62752568376733, 'Panama'),
+    (17.503577109876268, -88.21419733167714, 'BelizeCity'),
+]
+
+size_meters = 1500
+
+plot_multiple_areas(coordinates_list, size_meters, grandparent_dir)

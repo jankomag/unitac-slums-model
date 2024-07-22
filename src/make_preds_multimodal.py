@@ -10,6 +10,7 @@ from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.core.data.label_store import SemanticSegmentationLabelStore
 from affine import Affine
 from pystac_client import Client
+import glob
 
 import sys
 import torch
@@ -30,14 +31,13 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(parent_dir)
 sys.path.append(grandparent_dir)
 
-from deeplnafrica.deepLNAfrica import init_segm_model
 from src.features.dataloaders import (
     query_buildings_data, CustomGeoJSONVectorSource,MergeDataset,
     FixedStatsTransformer,
     show_windows, CustomRasterizedSource
 )
-from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params, CustomInterpolateMultiResolutionDeepLabV3,
-                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, MultiResolutionFPN, CustomMultiResolutionDeepLabV3,
+from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params,
+                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, MultiResolutionFPN,
                                           CustomVectorOutputConfig, FeatureMapVisualization, MultiResolution128DeepLabV3)
 from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple, MultiInputCrossValidator, create_sentinel_mosaic,
                                   senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn, get_sentinel_items,
@@ -68,114 +68,23 @@ from rastervision.pytorch_learner.dataset.transform import TransformType
 from rastervision.core.data import Scene
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
 
-BANDS = [
-    'blue', # B02
-    'green', # B03
-    'red', # B04
-    'nir', # B08
-]
-URL = 'https://earth-search.aws.element84.com/v1'
-catalog = Client.open(URL)
-
 def ensure_tuple(x):
     if isinstance(x, (list, tuple)):
         return tuple(x)
     return (x, x)
 
-class PolygonWindowGeoDataset:
-    def __init__(self,
-                 scene: Scene,
-                 city: str,
-                 window_size: Union[int, Tuple[int, int]],
-                 out_size: Union[int, Tuple[int, int]],
-                 padding: Union[int, Tuple[int, int]] = 0,
-                 transform: Optional[A.Compose] = None,
-                 transform_type: TransformType = TransformType.noop,
-                 normalize: bool = False,
-                 to_pytorch: bool = True,
-                 return_window: bool = False,
-                 within_aoi: bool = True):
-        self.scene = scene
-        self.city = city
-        self.window_size = ensure_tuple(window_size)
-        self.out_size = ensure_tuple(out_size)
-        self.padding = (self.window_size[0] // 2, self.window_size[1] // 2)
-        self.padding: Tuple[NonNegInt, NonNegInt] = ensure_tuple(self.padding)
-        self.transform = transform
-        self.transform_type = transform_type
-        self.normalize = normalize
-        self.to_pytorch = to_pytorch
-        self.return_window = return_window
-        self.within_aoi = within_aoi
-
-        self.windows = self.get_polygon_windows()
-
-        if self.transform is None:
-            transform_func = TF_TYPE_TO_TF_FUNC[self.transform_type]
-            if callable(transform_func):
-                self.transform = transform_func(self.out_size)
-            else:
-                print(f"Warning: transform_func is not callable: {transform_func}")
-
-    def get_polygon_windows(self):
-        windows = []
-        ymax = int(self.scene.extent.ymax)
-        xmax = int(self.scene.extent.xmax)
-        for y in range(0, ymax, self.window_size[0]):
-            for x in range(0, xmax, self.window_size[1]):
-                window = Box(y, x, min(y + self.window_size[0], ymax), min(x + self.window_size[1], xmax))
-                if self.has_data(window):
-                    windows.append(window)
-        return windows
-
-    def has_data(self, window):
-        """
-        Check if the given window contains any data.
-        """
-        try:
-            data_arr = self.scene.raster_source.get_chip(window)
-            return np.any(data_arr != 0)
-        except Exception as e:
-            print(f"Error in has_data for window {window}: {str(e)}")
-            return False
-
-    def __getitem__(self, index):
-        window = self.windows[index]
-        
-        img = self.scene.raster_source.get_chip(window)
-        
-        if self.transform:
-            augmented = self.transform(image=img)
-            img = augmented['image']
-        
-        if self.normalize:
-            img = img.astype(np.float32) / 255.0
-        
-        if self.to_pytorch:
-            img = torch.from_numpy(img).float()
-            if len(img.shape) == 2:
-                img = img.unsqueeze(0)
-            else:
-                img = img.permute(2, 0, 1)
-        
-        if self.return_window:
-            return img, window
-        else:
-            return img
-
-    def __len__(self):
-        return len(self.windows)
-
-    @property
-    def extent(self):
-        return self.scene.extent
-
-    def get_labels(self):
-        return None  # Since we're not using labels
-
-    def get_image(self, window):
-        return self.scene.raster_source.get_chip(window)
-
+def create_strided_dataset(scene, city, size, stride):
+    return CustomSlidingWindowGeoDataset(
+        scene,
+        city=city,
+        size=size,
+        stride=stride,
+        out_size=size,
+        padding=size,
+        transform_type=TransformType.noop,
+        transform=None
+    )
+    
 def make_buildings_raster(image_path, resolution=5):
     with rasterio.open(image_path) as src:
         bounds = src.bounds
@@ -237,14 +146,22 @@ def create_sentinel_scene(city_data):
 
 def create_building_scene(city_name, city_data):
     image_path = city_data['image_path']
+    # labels_path = city_data['labels_path']
 
     # Create Buildings scene
-    rasterized_buildings_source, _ = make_buildings_raster(image_path, resolution=5)
+    rasterized_buildings_source, crs_transformer_buildings = make_buildings_raster(image_path, resolution=5)
+    
+    # label_vector_source = GeoJSONVectorSource(labels_path,
+    #     crs_transformer_buildings,
+    #     vector_transformers=[ClassInferenceTransformer(default_class_id=class_config.get_class_id('slums'))])
+    
+    # label_raster_source = RasterizedSource(label_vector_source,background_class_id=class_config.null_class_id)
+    # buildings_label_sourceSD = SemanticSegmentationLabelSource(label_raster_source, class_config=class_config)
     
     buildings_scene = Scene(
         id=f'{city_name}_buildings',
-        raster_source=rasterized_buildings_source
-    )
+        raster_source=rasterized_buildings_source)
+        # label_source = buildings_label_sourceSD)
 
     return buildings_scene
 
@@ -343,14 +260,6 @@ def display_mosaic(mosaic_source):
     plt.colorbar(im, ax=ax)
     plt.show()
     
-def load_model(model_path, device):
-    model = CustomInterpolateMultiResolutionDeepLabV3()
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['state_dict'], strict=True)
-    model = model.to(device)
-    model.eval()
-    return model
-
 def make_predictions(model, dataset, device):
     predictions_iterator = MultiResPredictionsIterator(model, dataset, device=device)
     windows, predictions = zip(*predictions_iterator)
@@ -359,94 +268,105 @@ def make_predictions(model, dataset, device):
 def average_predictions(pred1, pred2):
     return [(p1 + p2) / 2 for p1, p2 in zip(pred1, pred2)]
 
+def load_model(model_path, device='mps'):
+    model = MultiResolutionDeepLabV3()
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['state_dict'], strict=True)
+    model = model.to(device)
+    model.eval()
+    return model
+
+def create_strided_dataset(scene, city, size, stride):
+    # Ensure size and stride are integers
+    size = int(size) if isinstance(size, (int, float)) else tuple(map(int, size))
+    stride = int(stride) if isinstance(stride, (int, float)) else tuple(map(int, stride))
+    
+    return CustomSlidingWindowGeoDataset(
+        scene,
+        city=city,
+        size=size,
+        stride=stride,
+        out_size=size,
+        padding=size,
+        transform_type=TransformType.noop,
+        transform=None
+    )
+    
 class_config = ClassConfig(names=['background', 'slums'], 
                            colors=['lightgray', 'darkred'],
                            null_class='background')
-
-# Load models
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    
+# Load both models
 model_paths = [
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_res256_BCH128_BKR5_epoch=08-val_loss=0.5143.ckpt'),
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_res256_BCH128_BKR5_epoch=23-val_loss=0.3972.ckpt')
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'),
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_epoch=35-val_loss=0.3268.ckpt')
 ]
-models = [load_model(path, device) for path in model_paths]
+models = [load_model(path) for path in model_paths]
 
 # Load GeoDataFrame
 sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
 gdf = gpd.read_parquet(sica_cities)
-# filter to counties where iso3 is HTI
 gdf = gdf[gdf['iso3'] == 'HTI']
-gdf = gdf.to_crs('EPSG:4326')
+gdf = gdf.to_crs('EPSG:3857')
 gdf = gdf.tail(1)
 
-# Main loop
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
     country_code = row['iso3']
-    xmin4326, ymin4326, xmax4326, ymax4326 = row.geometry.bounds
+    print("Doing predictions for: ", city_name, country_code)
+    
+    gdf_xmin, gdf_ymin, gdf_xmax, gdf_ymax = row['geometry'].bounds
+    
+    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    xmin_4326, ymin_4326 = transformer.transform(gdf_xmin, gdf_ymin)
+    xmax_4326, ymax_4326 = transformer.transform(gdf_xmax, gdf_ymax)
+    # print("Bounds: ", xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+    
+    # Find the image file with a pattern match
+    image_pattern = f"../../data/0/sentinel_Gee/{country_code}_{city_name}*"
+    matching_files = glob.glob(image_pattern)
+    
+    if not matching_files:
+        print(f"No matching image file found for {country_code}_{city_name}. Skipping.")
+        continue
+    image_uri = matching_files[0]
 
-    # Create bbox and bbox_geometry for PySTAC query
-    bbox = Box(ymin=ymin4326, xmin=xmin4326, ymax=ymax4326, xmax=xmax4326)
-    bbox_geometry = {
-        'type': 'Polygon',
-        'coordinates': [
-            [
-                (xmin4326, ymin4326),
-                (xmin4326, ymax4326),
-                (xmax4326, ymax4326),
-                (xmax4326, ymin4326),
-                (xmin4326, ymin4326)
-            ]
-        ]
+    city_data = {
+        'image_path': image_uri,
     }
 
-    # Get Sentinel data
-    items = get_sentinel_items(bbox_geometry, bbox)
-    if items is None:
-        print(f"No Sentinel data found for {city_name}. Skipping.")
-        continue
+    # Get Sentinel items    
+    sentinel_scene = create_sentinel_scene(city_data)
 
-    # Create Sentinel mosaic
-    sentinel_source, crs_transformer = create_sentinel_mosaic(items, bbox)
-    print(f"Created Sentinel mosaic for {city_name}, {country_code}.")
-    display_mosaic(sentinel_source)
+    # Query buildings data and create buildings scene
+    buildings = query_buildings_data(xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+        
+    # Create building scene
+    building_scene = create_building_scene(city_name, city_data)
+        
+    # Use the extent from the sentinel scene for both datasets
+    sentinel_extent = sentinel_scene.extent
+    building_scene.extent = sentinel_extent
 
-    # Query buildings data
-    buildings = query_buildings_data(xmin4326, ymin4326, xmax4326, ymax4326)
-    print(f"Got buildings for {city_name}, {country_code}, in the amoint of {len(buildings)}.")
-    
-    # Create scenes
-    sentinel_scene = Scene(
-        id=f'{city_name}_sentinel',
-        raster_source=sentinel_source,
-        label_source=None  # No labels for prediction
-    )
-    
-    buildings_scene = create_building_scene(buildings, bbox, crs_transformer)
 
     # Create datasets
-    sentinel_dataset = CustomSlidingWindowGeoDataset(sentinel_scene, city=city_name, size=256, stride=128, out_size=256, padding=256, transform_type=TransformType.noop, transform=None)
-    buildings_dataset = CustomSlidingWindowGeoDataset(buildings_scene, city=city_name, size=512, stride=256, out_size=512, padding=512, transform_type=TransformType.noop, transform=None)
+    sentinel_dataset = create_strided_dataset(sentinel_scene, city_name, size=256, stride=128)
+    buildings_dataset = create_strided_dataset(building_scene, city_name, size=512, stride=256)
+    mergedds = MergeDataset(sentinel_dataset, buildings_dataset)
 
-    # Create merged dataset
-    merged_dataset = MergeDataset(sentinel_dataset, buildings_dataset)
-
-    # Make predictions with both models and average
-    windows = None
-    avg_predictions = None
-
+    # Create prediction iterator for both models
+    all_predictions = []
     for model in models:
-        windows, predictions = make_predictions(model, merged_dataset, device)
-        if avg_predictions is None:
-            avg_predictions = predictions
-        else:
-            avg_predictions = average_predictions(avg_predictions, predictions)
+        windows, predictions = make_predictions(model, mergedds, device)
+        all_predictions.append(predictions)
 
-    # Create SemanticSegmentationLabels from averaged predictions
+    # Aggregate predictions (e.g., by averaging)
+    aggregated_predictions = average_predictions(*all_predictions)
+
+    # Create SemanticSegmentationLabels from aggregated predictions
     pred_labels = SemanticSegmentationLabels.from_predictions(
         windows,
-        avg_predictions,
+        aggregated_predictions,
         extent=sentinel_scene.extent,
         num_classes=len(class_config),
         smooth=True
@@ -459,7 +379,7 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
         threshold=0.5
     )
 
-    output_dir = f'../../vectorised_model_predictions/other_cities/{country_code}'
+    output_dir = f'../../vectorised_model_predictions/multi-modal/sel_DLV3/{country_code}'
     os.makedirs(output_dir, exist_ok=True)
 
     pred_label_store = SemanticSegmentationLabelStore(
@@ -471,6 +391,99 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     )
 
     pred_label_store.save(pred_labels)
-    print(f"Saved predictions data for {city_name}, {country_code}")
+    print(f"Saved aggregated predictions data for {city_name}, {country_code}")
 
-print("Finished processing all cities.")
+# #### STAC Main loop
+# for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
+#     city_name = row['city_ascii']
+#     country_code = row['iso3']
+#     xmin4326, ymin4326, xmax4326, ymax4326 = row.geometry.bounds
+
+#     # Create bbox and bbox_geometry for PySTAC query
+#     bbox = Box(ymin=ymin4326, xmin=xmin4326, ymax=ymax4326, xmax=xmax4326)
+#     bbox_geometry = {
+#         'type': 'Polygon',
+#         'coordinates': [
+#             [
+#                 (xmin4326, ymin4326),
+#                 (xmin4326, ymax4326),
+#                 (xmax4326, ymax4326),
+#                 (xmax4326, ymin4326),
+#                 (xmin4326, ymin4326)
+#             ]
+#         ]
+#     }
+
+#     # Get Sentinel data
+#     items = get_sentinel_items(bbox_geometry, bbox)
+#     if items is None:
+#         print(f"No Sentinel data found for {city_name}. Skipping.")
+#         continue
+
+#     # Create Sentinel mosaic
+#     sentinel_source, crs_transformer = create_sentinel_mosaic(items, bbox)
+#     print(f"Created Sentinel mosaic for {city_name}, {country_code}.")
+#     display_mosaic(sentinel_source)
+
+#     # Query buildings data
+#     buildings = query_buildings_data(xmin4326, ymin4326, xmax4326, ymax4326)
+#     print(f"Got buildings for {city_name}, {country_code}, in the amoint of {len(buildings)}.")
+    
+#     # Create scenes
+#     sentinel_scene = Scene(
+#         id=f'{city_name}_sentinel',
+#         raster_source=sentinel_source,
+#         label_source=None  # No labels for prediction
+#     )
+    
+#     buildings_scene = create_building_scene(buildings, bbox, crs_transformer)
+
+#     # Create datasets
+#     sentinel_dataset = CustomSlidingWindowGeoDataset(sentinel_scene, city=city_name, size=256, stride=128, out_size=256, padding=256, transform_type=TransformType.noop, transform=None)
+#     buildings_dataset = CustomSlidingWindowGeoDataset(buildings_scene, city=city_name, size=512, stride=256, out_size=512, padding=512, transform_type=TransformType.noop, transform=None)
+
+#     # Create merged dataset
+#     merged_dataset = MergeDataset(sentinel_dataset, buildings_dataset)
+
+#     # Make predictions with both models and average
+#     windows = None
+#     avg_predictions = None
+
+#     for model in models:
+#         windows, predictions = make_predictions(model, merged_dataset, device)
+#         if avg_predictions is None:
+#             avg_predictions = predictions
+#         else:
+#             avg_predictions = average_predictions(avg_predictions, predictions)
+
+#     # Create SemanticSegmentationLabels from averaged predictions
+#     pred_labels = SemanticSegmentationLabels.from_predictions(
+#         windows,
+#         avg_predictions,
+#         extent=sentinel_scene.extent,
+#         num_classes=len(class_config),
+#         smooth=True
+#     )
+
+#     # Save predictions
+#     vector_output_config = CustomVectorOutputConfig(
+#         class_id=1,
+#         denoise=8,
+#         threshold=0.5
+#     )
+
+#     output_dir = f'../../vectorised_model_predictions/other_cities/{country_code}'
+#     os.makedirs(output_dir, exist_ok=True)
+
+#     pred_label_store = SemanticSegmentationLabelStore(
+#         uri=os.path.join(output_dir, f'{city_name}_{country_code}.geojson'),
+#         crs_transformer=crs_transformer,
+#         class_config=class_config,
+#         vector_outputs=[vector_output_config],
+#         discrete_output=True
+#     )
+
+#     pred_label_store.save(pred_labels)
+#     print(f"Saved predictions data for {city_name}, {country_code}")
+
+# print("Finished processing all cities.")
