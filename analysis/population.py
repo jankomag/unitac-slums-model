@@ -13,18 +13,21 @@ from shapely.ops import unary_union
 import re
 from shapely.geometry import MultiPolygon, box, Polygon
 
+def split_multipolygons(gdf):
+    rows = []
+    for idx, row in gdf.iterrows():
+        if isinstance(row.geometry, MultiPolygon):
+            for geom in row.geometry.geoms:
+                new_row = row.copy()
+                new_row.geometry = geom
+                rows.append(new_row)
+        else:
+            rows.append(row)
+    return gpd.GeoDataFrame(rows, crs=gdf.crs)
+
 # Initialize Earth Engine
 ee.Authenticate()
 ee.Initialize(project='ee-yankomagn')
-
-cities = {
-    'Sansalvador': 'San Salvador, El Salvador',
-    'SantoDomingo': 'Santo Domingo, Dominican Republic',
-    'GuatemalaCity': 'Guatemala City, Guatemala',
-    'Tegucigalpa': 'Tegucigalpa, Honduras',
-    'Panama': 'Ciudad de Panamá, Pan',
-    'Managua': 'Managua, Nicaragua',
-}
 
 sica_countries = [
     'Costa Rica', 'El Salvador', 'Guatemala',
@@ -64,11 +67,11 @@ def extract_urban_boundaries(country_name):
         geometryType='polygon'
     )
     
-    # Merge overlapping polygons
-    merged_vectors = urban_vectors.union(maxError=100)
+    # Merge overlapping polygons with a non-zero error margin
+    merged_vectors = urban_vectors.union(1)  # 1 meter error margin
     
     # Simplify the merged vectors
-    simplified_vectors = merged_vectors.map(lambda f: f.simplify(500))
+    simplified_vectors = merged_vectors.map(lambda f: ee.Feature(f.simplify(500)))
     
     # Add country name to each feature
     return simplified_vectors.map(lambda f: f.set('country', country_name))
@@ -87,17 +90,18 @@ for country in sica_countries:
     # Ensure the CRS is set (assuming WGS84)
     gdf = gdf.set_crs("EPSG:4326")
 
+    # Split MultiPolygons into single Polygons
+    gdf = split_multipolygons(gdf)
+
     # Save to file
     output_file = f"../data/1/urban_boundaries/{country.replace(' ', '_')}.gpkg"
     gdf.to_file(output_file, driver="GPKG")
     print(f"Urban boundaries for {country} saved to {output_file}")
 
-
 ### GET BBOX FOR URBAN BOUNDARIES ###
 folder_path = "../data/1/urban_boundaries"
 data = []
 
-# Iterate through all .gpkg files in the folder
 for filename in os.listdir(folder_path):
     if filename.endswith('.gpkg'):
         country_name = filename.split('.')[0]
@@ -135,11 +139,7 @@ for filename in os.listdir(folder_path):
                     'maxy': bbox[3]
                 })
 
-# Create a dataframe from the collected data
 result_df = pd.DataFrame(data)
-
-# Display the first few rows of the dataframe
-result_df.head()
 
 # Create a GeoDataFrame with bbox geometries
 gdf_bboxes = gpd.GeoDataFrame(
@@ -156,20 +156,7 @@ gdf_bboxes.explore()
 ### IMAGES DOWNLOADED FROM GEE using download_all_cities.ipynb ###
 
 ### CALCULATE POPULATION FOR PREDICTIONS WITHIN URBAN BOUNDARIES ###
-
 urab_areas_folder_path = "../data/1/urban_boundaries"
-
-def split_multipolygons(gdf):
-    rows = []
-    for idx, row in gdf.iterrows():
-        if isinstance(row.geometry, MultiPolygon):
-            for geom in row.geometry.geoms:
-                new_row = row.copy()
-                new_row.geometry = geom
-                rows.append(new_row)
-        else:
-            rows.append(row)
-    return gpd.GeoDataFrame(rows, crs=gdf.crs)
 
 gdfs = []
 for filename in os.listdir(urab_areas_folder_path):
@@ -186,7 +173,7 @@ urban_areas.explore()
 
 ### Get Model Predictions ###
 predictions_folder_path = "../data/1/SICA_final_predictions/sel_DLV3"
-countries = ["Nicaragua", "Honduras"] #CRI, "GTM", , "SLV"
+countries = ["Dominican Republic", "Honduras"] #CRI, "GTM", , "SLV"
 
 # get all predictions
 predictions = {}
@@ -282,6 +269,7 @@ results_df = results_df.sort_values('proportion_informal', ascending=False)
 
 results_df.head()
 
+# Map to preview the results over urban areas
 # # Create a map
 # m = geemap.Map()
 
@@ -307,8 +295,6 @@ results_df.head()
 
 # # Display the map
 # m
-
-
 
 ### CODE TO CALCULATE RATIO OF POPULATION WITHIN PRECARIOUS AREAS WITHIN BBOXES ###
 # Function to get population raster for a given bounding box

@@ -453,10 +453,12 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
 ##########################################
 #### PREDICTIONS FOR SICA URBAN AREAS ####
 ##########################################
-sica_cities = '../data/1/urban_boundaries/all_SICA_urban_boundaries.geojson'
+sica_cities = '../data/1/urban_boundaries/bboxes_SICA_urban_boundaries.geojson'
 gdf = gpd.read_file(sica_cities)
 gdf = gdf.to_crs('EPSG:3857')
-gdf = gdf[gdf['city_name'] == 'Managua']
+# gdf = gdf.tail(3)
+gdf.head()
+# gdf = gdf[gdf['city_name'] == 'Managua']
 
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_name']
@@ -468,49 +470,20 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
     xmin_4326, ymin_4326 = transformer.transform(xmin3857, ymin3857)
     xmax_4326, ymax_4326 = transformer.transform(xmax3857, ymax3857)
-    
+    bbox_4326 = Box(ymin=ymin_4326, xmin=xmin_4326, ymax=ymax_4326, xmax=xmax_4326)
+
     # Find the image file with a pattern match
-    city_name_for_file = city_name.replace(' ', '_')
-    image_pattern = f"../data/1/urban_boundaries/sentinel/{country}_{city_name_for_file}*"
+    image_pattern = f"../data/1/urban_boundaries/sentinel/{country}_{city_name}*"
     matching_files = glob.glob(image_pattern)
     
     if not matching_files:
-        print(f"No matching image file found for {country}_{city_name_for_file}. Skipping.")
+        print(f"No matching image file found for {country}_{city_name}. Skipping.")
         continue
     image_uri = matching_files[0]
-
-    city_data = {
-        'image_path': image_uri,
-    }
     
-    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
-    affine_transform_buildings = Affine(5, 0, xmin3857, 0, -5, ymax3857)
-    crs_transformer_buildings.transform = affine_transform_buildings
-    
-    buildings = query_buildings_data(xmin_4326, ymin_4326, xmax_4326, ymax_4326)
-    if len(buildings) == 0:
-        print(f"No buildings found for {city_name}, {country}. Skipping.")
-        continue
-    
-    buildings_vector_source = CustomGeoJSONVectorSource(
-        gdf = buildings,
-        crs_transformer = crs_transformer_buildings,
-        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
-        
-    try:
-        rasterized_buildings_source = CustomRasterizedSource(
-            buildings_vector_source,
-            background_class_id=0
-        )
-    except Exception as e:
-        print(f"Error creating rasterized buildings source for {city_name}, {country}: {str(e)}")
-        print(f"Vector source type: {type(buildings_vector_source)}")
-        print(f"Vector source attributes: {dir(buildings_vector_source)}")
-        continue
-        
     crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
-    
-    # Define the means and stds in NIR-RGB order
+
+    # Define the means and stds in NIR-RGB order    
     nir_rgb_means = [2581.270, 1298.905, 1144.928, 934.346]  # NIR, R, G, B
     nir_rgb_stds = [586.279, 458.048, 302.029, 244.423]  # NIR, R, G, B
 
@@ -524,23 +497,57 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
         raster_transformers=[fixed_stats_transformer],
         channel_order=[3, 2, 1, 0]
     )
-
+    
     sentinel_scene = Scene(
         id=f'{city_name}_sentinel',
         raster_source=sentinel_source_normalized,
-    )
-    
-    building_scene = Scene(
-        id=f'{city_name}_buildings',
-        raster_source=rasterized_buildings_source,
+        label_source=None
     )
 
-    # sentinel_scene = create_sentinel_scene(city_data)
     sentinel_extent = sentinel_scene.extent
-    sentinel_bbox = sentinel_scene.bbox
+    sentinel_bbox = sentinel_scene.bbox    
     print(f"Sentinel scene extent: {sentinel_extent}")
-    print(f"Building scene extent: {building_scene.extent}")
+    
+    # chip = sentinel_source_normalized[:, :, :3]
+    # fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+    # ax.imshow(chip)
+    # plt.show()
+    
+    extent_for_buildings = Box(
+        ymin=sentinel_extent.ymin,
+        xmin=sentinel_extent.xmin,
+        ymax=sentinel_extent.ymin + sentinel_extent.height * 2,
+        xmax=sentinel_extent.xmin + sentinel_extent.width * 2
+    )
         
+    # Query buildings data
+    buildings = query_buildings_data(xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+    print(f"Got buildings for {city_name}, {country}, in the amount of {len(buildings)}.")    
+    
+    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
+    affine_transform_buildings = Affine(5, 0, xmin3857, 0, -5, ymax3857)
+    crs_transformer_buildings.transform = affine_transform_buildings
+    
+    buildings_vector_source = CustomGeoJSONVectorSource(
+        gdf = buildings,
+        crs_transformer = crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+    
+    rasterized_buildings_source = RasterizedSource(
+        buildings_vector_source,
+        background_class_id=0)  
+    
+    # chip = rasterized_buildings_source[:, :, :]
+    # fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+    # ax.imshow(chip)
+    # plt.show()
+        
+    building_scene = Scene(
+        id=f'{city_name}_sentinel',
+        raster_source=rasterized_buildings_source,
+        label_source=None
+    )
+    
     # Create datasets
     sent_strided_fullds = CustomSlidingWindowGeoDataset(sentinel_scene, size=256, stride=128, padding=0, city=city_name, transform=None, transform_type=TransformType.noop)
     buil_strided_fullds = CustomSlidingWindowGeoDataset(building_scene, size=512, stride=256, padding=0, city=city_name, transform=None, transform_type=TransformType.noop)
@@ -714,7 +721,7 @@ def merge_geojson_files(country_directory, output_file):
     merged_gdf.to_file(output_file, driver='GeoJSON')
     print(f'Merged GeoJSON file saved to {output_file}')
 
-country_directory = "../data/1/SICA_final_predictions/sel_DLV3/Nicaragua"
+country_directory = "../data/1/SICA_final_predictions/sel_DLV3/Dominican Republic"
 output_file = os.path.join(country_directory, 'averaged_predictions.geojson')
 # Merge the GeoJSON files
 merge_geojson_files(country_directory, output_file)
