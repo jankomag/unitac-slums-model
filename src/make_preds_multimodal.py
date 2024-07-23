@@ -4,6 +4,7 @@ import geopandas as gpd
 from tqdm import tqdm
 from pyproj import Transformer
 import rasterio
+import pandas as pd
 from rastervision.core.box import Box
 from rastervision.core.data import ClassConfig, RasterioCRSTransformer
 from rastervision.core.data.label import SemanticSegmentationLabels
@@ -272,19 +273,21 @@ class_config = ClassConfig(names=['background', 'slums'],
                            null_class='background')
     
 model_paths = [
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'),
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_epoch=35-val_loss=0.3268.ckpt')
+    os.path.join(parent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'),
+    os.path.join(parent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_epoch=35-val_loss=0.3268.ckpt')
 ]
 
 models = [load_multimodal_model(path) for path in model_paths]
 
-# Load GeoDataFrame
+#########################################################################
+#### PREDICTIONS FOR CITIES WITH NO SPRECIFIC URBAN BOUNDARY DEFINED ####
+#########################################################################
+
 sica_cities = "/Users/janmagnuszewski/dev/slums-model-unitac/data/0/SICA_cities.parquet"
 gdf = gpd.read_parquet(sica_cities)
-gdf = gdf[gdf['iso3'] == 'HND']
+# gdf = gdf[gdf['iso3'] == 'HND']
 # gdf = gdf[gdf['city_ascii'] == 'Puerto Cortes']
 gdf = gdf.to_crs('EPSG:3857')
-gdf = gdf.tail(5)
 
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_ascii']
@@ -300,7 +303,7 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     
     # Find the image file with a pattern match
     city_name_for_file = city_name.replace(' ', '_')
-    image_pattern = f"../../data/0/sentinel_Gee/{country_code}_{city_name_for_file}*"
+    image_pattern = f"../data/0/sentinel_Gee/{country_code}_{city_name_for_file}*"
     matching_files = glob.glob(image_pattern)
     
     if not matching_files:
@@ -317,16 +320,25 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     crs_transformer_buildings.transform = affine_transform_buildings
     
     buildings = query_buildings_data(xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+    if len(buildings) == 0:
+        print(f"No buildings found for {city_name}, {country_code}. Skipping.")
+        continue
     
     buildings_vector_source = CustomGeoJSONVectorSource(
         gdf = buildings,
         crs_transformer = crs_transformer_buildings,
         vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
         
-    rasterized_buildings_source = CustomRasterizedSource(
-        buildings_vector_source,
-        background_class_id=0)
-        # bbox=label_source.bbox)
+    try:
+        rasterized_buildings_source = CustomRasterizedSource(
+            buildings_vector_source,
+            background_class_id=0 
+        )
+    except Exception as e:
+        print(f"Error creating rasterized buildings source for {city_name}, {country_code}: {str(e)}")
+        print(f"Vector source type: {type(buildings_vector_source)}")
+        print(f"Vector source attributes: {dir(buildings_vector_source)}")
+        continue
         
     crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
     
@@ -343,19 +355,16 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
         allow_streaming=True,
         raster_transformers=[fixed_stats_transformer],
         channel_order=[3, 2, 1, 0]
-        # bbox=label_source.bbox if clip_to_label_source else None
     )
 
     sentinel_scene = Scene(
         id=f'{city_name}_sentinel',
         raster_source=sentinel_source_normalized,
-        # label_source=sentinel_label_raster_source
     )
     
     building_scene = Scene(
         id=f'{city_name}_buildings',
         raster_source=rasterized_buildings_source,
-        # label_source = buildings_label_sourceSD
     )
 
     # sentinel_scene = create_sentinel_scene(city_data)
@@ -439,6 +448,151 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
 
     pred_label_store.save(pred_labels)
     print(f"Saved aggregated predictions data for {city_name}, {country_code}")
+
+
+##########################################
+#### PREDICTIONS FOR SICA URBAN AREAS ####
+##########################################
+sica_cities = '../data/1/urban_boundaries/all_SICA_urban_boundaries.geojson'
+gdf = gpd.read_file(sica_cities)
+gdf = gdf.to_crs('EPSG:3857')
+gdf = gdf[gdf['city_name'] == 'Managua']
+
+for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
+    city_name = row['city_name']
+    country = row['country']
+    print("Doing predictions for: ", city_name, country)
+    
+    xmin3857, ymin3857, xmax3857, ymax3857 = row['geometry'].bounds
+    
+    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    xmin_4326, ymin_4326 = transformer.transform(xmin3857, ymin3857)
+    xmax_4326, ymax_4326 = transformer.transform(xmax3857, ymax3857)
+    
+    # Find the image file with a pattern match
+    city_name_for_file = city_name.replace(' ', '_')
+    image_pattern = f"../data/1/urban_boundaries/sentinel/{country}_{city_name_for_file}*"
+    matching_files = glob.glob(image_pattern)
+    
+    if not matching_files:
+        print(f"No matching image file found for {country}_{city_name_for_file}. Skipping.")
+        continue
+    image_uri = matching_files[0]
+
+    city_data = {
+        'image_path': image_uri,
+    }
+    
+    crs_transformer_buildings = RasterioCRSTransformer.from_uri(image_uri)
+    affine_transform_buildings = Affine(5, 0, xmin3857, 0, -5, ymax3857)
+    crs_transformer_buildings.transform = affine_transform_buildings
+    
+    buildings = query_buildings_data(xmin_4326, ymin_4326, xmax_4326, ymax_4326)
+    if len(buildings) == 0:
+        print(f"No buildings found for {city_name}, {country}. Skipping.")
+        continue
+    
+    buildings_vector_source = CustomGeoJSONVectorSource(
+        gdf = buildings,
+        crs_transformer = crs_transformer_buildings,
+        vector_transformers=[ClassInferenceTransformer(default_class_id=1)])
+        
+    try:
+        rasterized_buildings_source = CustomRasterizedSource(
+            buildings_vector_source,
+            background_class_id=0
+        )
+    except Exception as e:
+        print(f"Error creating rasterized buildings source for {city_name}, {country}: {str(e)}")
+        print(f"Vector source type: {type(buildings_vector_source)}")
+        print(f"Vector source attributes: {dir(buildings_vector_source)}")
+        continue
+        
+    crs_transformer = RasterioCRSTransformer.from_uri(image_uri)
+    
+    # Define the means and stds in NIR-RGB order
+    nir_rgb_means = [2581.270, 1298.905, 1144.928, 934.346]  # NIR, R, G, B
+    nir_rgb_stds = [586.279, 458.048, 302.029, 244.423]  # NIR, R, G, B
+
+    fixed_stats_transformer = FixedStatsTransformer(
+        means=nir_rgb_means,
+        stds=nir_rgb_stds)
+    
+    sentinel_source_normalized = RasterioSource(
+        image_uri,
+        allow_streaming=True,
+        raster_transformers=[fixed_stats_transformer],
+        channel_order=[3, 2, 1, 0]
+    )
+
+    sentinel_scene = Scene(
+        id=f'{city_name}_sentinel',
+        raster_source=sentinel_source_normalized,
+    )
+    
+    building_scene = Scene(
+        id=f'{city_name}_buildings',
+        raster_source=rasterized_buildings_source,
+    )
+
+    # sentinel_scene = create_sentinel_scene(city_data)
+    sentinel_extent = sentinel_scene.extent
+    sentinel_bbox = sentinel_scene.bbox
+    print(f"Sentinel scene extent: {sentinel_extent}")
+    print(f"Building scene extent: {building_scene.extent}")
+        
+    # Create datasets
+    sent_strided_fullds = CustomSlidingWindowGeoDataset(sentinel_scene, size=256, stride=128, padding=0, city=city_name, transform=None, transform_type=TransformType.noop)
+    buil_strided_fullds = CustomSlidingWindowGeoDataset(building_scene, size=512, stride=256, padding=0, city=city_name, transform=None, transform_type=TransformType.noop)
+    print(f"Number of samples in sen: {len(sent_strided_fullds)} and buil: {len(buil_strided_fullds)}")
+    mergedds = MergeDataset(sent_strided_fullds, buil_strided_fullds)
+    print(f"Number of samples in mergedds: {len(mergedds)}")
+
+    # Create prediction iterator for both models
+    all_predictions = []
+    for model in models:
+        windows, predictions = make_predictions(model, mergedds, device)
+        all_predictions.append(predictions)
+
+    # Aggregate predictions (e.g., by averaging)
+    aggregated_predictions = average_predictions(*all_predictions)
+
+    # Create SemanticSegmentationLabels from aggregated predictions
+    pred_labels = SemanticSegmentationLabels.from_predictions(
+        windows,
+        aggregated_predictions,
+        extent=sentinel_scene.extent,
+        num_classes=len(class_config),
+        smooth=True
+    )
+
+    # Save predictions
+    vector_output_config = CustomVectorOutputConfig(
+        class_id=1,
+        denoise=8,
+        threshold=0.5
+    )
+
+    crs_transformer_buil = sentinel_scene.raster_source.crs_transformer
+    buildings3857 = buildings.to_crs('EPSG:3857')
+    xmin3857b, _, _, ymax3857b = buildings3857.total_bounds
+    
+    affine_transform_buildings = Affine(10, 0, xmin3857b, 0, -10, ymax3857b)
+    crs_transformer_buil.transform = affine_transform_buildings
+    
+    output_dir = f'../data/1/SICA_final_predictions/sel_DLV3/{country}'
+    os.makedirs(output_dir, exist_ok=True)
+
+    pred_label_store = SemanticSegmentationLabelStore(
+        uri=os.path.join(output_dir, f'{city_name}_{country}.geojson'),
+        crs_transformer=crs_transformer_buil,
+        class_config=class_config,
+        vector_outputs=[vector_output_config],
+        discrete_output=True
+    )
+
+    pred_label_store.save(pred_labels)
+    print(f"Saved aggregated predictions data for {city_name}, {country}")
 
 # #### STAC Main loop
 # for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
@@ -534,3 +688,33 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
 #     print(f"Saved predictions data for {city_name}, {country_code}")
 
 # print("Finished processing all cities.")
+
+def merge_geojson_files(country_directory, output_file):
+    # Create an empty GeoDataFrame with an appropriate schema
+    merged_gdf = gpd.GeoDataFrame()
+    
+    # Traverse the directory structure
+    for city in os.listdir(country_directory):
+        city_path = os.path.join(country_directory, city)
+        vector_output_path = os.path.join(city_path, 'vector_output')
+        
+        if os.path.isdir(vector_output_path):
+            # Find the .json file in the vector_output directory
+            for file in os.listdir(vector_output_path):
+                if file.endswith('.json'):
+                    file_path = os.path.join(vector_output_path, file)
+                    # Load the GeoJSON file into a GeoDataFrame
+                    gdf = gpd.read_file(file_path)
+                    # Add the city name as an attribute to each feature
+                    gdf['city'] = city
+                    # Append to the merged GeoDataFrame
+                    merged_gdf = pd.concat([merged_gdf, gdf], ignore_index=True)
+    
+    # Save the merged GeoDataFrame to a GeoJSON file
+    merged_gdf.to_file(output_file, driver='GeoJSON')
+    print(f'Merged GeoJSON file saved to {output_file}')
+
+country_directory = "../data/1/SICA_final_predictions/sel_DLV3/Nicaragua"
+output_file = os.path.join(country_directory, 'averaged_predictions.geojson')
+# Merge the GeoJSON files
+merge_geojson_files(country_directory, output_file)

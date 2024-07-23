@@ -207,8 +207,6 @@ cities = {
         }
 }
 
-RasterizedSource
-
 def clear_directory(directory):
     if os.path.exists(directory):
         shutil.rmtree(directory)
@@ -1374,7 +1372,9 @@ def query_buildings_data(xmin, ymin, xmax, ymax):
         buildings = buildings[['id', 'geometry']]
         buildings = buildings.to_crs("EPSG:3857")
         buildings['class_id'] = 1
-
+    else:
+        print("No buildings found in the specified area.")
+        return None
     return buildings
 
 def query_roads_data(xmin, ymin, xmax, ymax):
@@ -1590,8 +1590,6 @@ def create_scenes_for_city(city_name, city_data, class_config, resolution=5):
         label_source = buildings_label_sourceSD)
 
     return sentinel_scene, buildings_scene
-
-
 
 
 ### Others ###
