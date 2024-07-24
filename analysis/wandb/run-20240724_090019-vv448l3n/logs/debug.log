@@ -1,0 +1,53 @@
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_setup.py:_flush():76] Current SDK version is 0.17.1
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_setup.py:_flush():76] Configure stats pid to 62258
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_setup.py:_flush():76] Loading settings from /Users/janmagnuszewski/.config/wandb/settings
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_setup.py:_flush():76] Loading settings from /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/settings
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_setup.py:_flush():76] Applying setup settings: {'_disable_service': False}
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'analysis/population.py', 'program_abspath': '/Users/janmagnuszewski/dev/slums-model-unitac/analysis/population.py', 'program': '/Users/janmagnuszewski/dev/slums-model-unitac/analysis/population.py'}
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_setup.py:_flush():76] Applying login settings: {}
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_init.py:_log_setup():520] Logging user logs to /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/run-20240724_090019-vv448l3n/logs/debug.log
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_init.py:_log_setup():521] Logging internal logs to /Users/janmagnuszewski/dev/slums-model-unitac/analysis/wandb/run-20240724_090019-vv448l3n/logs/debug-internal.log
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_init.py:init():560] calling init triggers
+2024-07-24 09:00:19,076 INFO    MainThread:62258 [wandb_init.py:init():567] wandb.init called with sweep_config: {}
+config: {'model': 'DLV3', 'train_cities': 'sel', 'split_index': 0, 'batch_size': 24, 'use_deeplnafrica': True, 'atrous_rates': (12, 24, 36), 'learning_rate': 0.001, 'weight_decay': 0, 'gamma': 0.8, 'sched_step_size': 10, 'pos_weight': 2.0, 'buil_out_chan': 4}
+2024-07-24 09:00:19,077 INFO    MainThread:62258 [wandb_init.py:init():585] re-initializing run, found existing run on stack: 6s40c76z
+2024-07-24 09:00:19,078 INFO    MainThread:62258 [wandb_run.py:_finish():2109] finishing run jankomag/UNITAC-multi-modal/6s40c76z
+2024-07-24 09:00:19,078 INFO    MainThread:62258 [jupyter.py:save_history():444] not saving jupyter history
+2024-07-24 09:00:19,078 INFO    MainThread:62258 [jupyter.py:save_ipynb():372] not saving jupyter notebook
+2024-07-24 09:00:19,078 INFO    MainThread:62258 [wandb_init.py:_jupyter_teardown():448] cleaning up jupyter logic
+2024-07-24 09:00:19,078 INFO    MainThread:62258 [wandb_run.py:_atexit_cleanup():2349] got exitcode: 0
+2024-07-24 09:00:19,078 INFO    MainThread:62258 [wandb_run.py:_restore():2332] restore
+2024-07-24 09:00:19,079 INFO    MainThread:62258 [wandb_run.py:_restore():2338] restore done
+2024-07-24 09:05:51,459 INFO    MainThread:62258 [wandb_init.py:init():610] starting backend
+2024-07-24 09:05:51,460 INFO    MainThread:62258 [wandb_init.py:init():614] setting up manager
+2024-07-24 09:05:51,468 INFO    MainThread:62258 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=spawn,fork,forkserver, using: spawn
+2024-07-24 09:05:51,469 INFO    MainThread:62258 [wandb_init.py:init():622] backend started and connected
+2024-07-24 09:05:51,612 INFO    MainThread:62258 [wandb_run.py:_label_probe_notebook():1334] probe notebook
+2024-07-24 09:05:51,612 INFO    MainThread:62258 [wandb_run.py:_label_probe_notebook():1344] Unable to probe notebook: 'NoneType' object has no attribute 'get'
+2024-07-24 09:05:51,612 INFO    MainThread:62258 [wandb_init.py:init():711] updated telemetry
+2024-07-24 09:05:51,787 INFO    MainThread:62258 [wandb_init.py:init():744] communicating run to backend with 90.0 second timeout
+2024-07-24 09:06:19,507 WARNING MainThread:62258 [wandb_init.py:init():1175] interrupted
+Traceback (most recent call last):
+  File "/opt/miniconda3/envs/rv/lib/python3.11/site-packages/wandb/sdk/wandb_init.py", line 1171, in init
+    return wi.init()
+           ^^^^^^^^^
+  File "/opt/miniconda3/envs/rv/lib/python3.11/site-packages/wandb/sdk/wandb_init.py", line 747, in init
+    result = run_init_handle.wait(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/miniconda3/envs/rv/lib/python3.11/site-packages/wandb/sdk/lib/mailbox.py", line 283, in wait
+    found, abandoned = self._slot._get_and_clear(timeout=wait_timeout)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/miniconda3/envs/rv/lib/python3.11/site-packages/wandb/sdk/lib/mailbox.py", line 130, in _get_and_clear
+    if self._wait(timeout=timeout):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/miniconda3/envs/rv/lib/python3.11/site-packages/wandb/sdk/lib/mailbox.py", line 126, in _wait
+    return self._event.wait(timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/miniconda3/envs/rv/lib/python3.11/threading.py", line 629, in wait
+    signaled = self._cond.wait(timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/miniconda3/envs/rv/lib/python3.11/threading.py", line 331, in wait
+    gotit = waiter.acquire(True, timeout)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

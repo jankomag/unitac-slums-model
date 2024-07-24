@@ -2,6 +2,7 @@ import geopandas as gpd
 import rasterio
 from rasterio.mask import mask
 import numpy as np
+import seaborn as sns
 import ee
 import geemap
 from tqdm import tqdm
@@ -10,8 +11,14 @@ import pandas as pd
 from rasterio.features import geometry_mask
 import folium
 from shapely.ops import unary_union
-import re
 from shapely.geometry import MultiPolygon, box, Polygon
+import matplotlib.ticker as ticker
+import matplotlib.patches as mpatches
+import re
+from matplotlib import rcParams
+import contextily as cx
+from matplotlib_scalebar.scalebar import ScaleBar
+from pyproj import CRS
 
 def split_multipolygons(gdf):
     rows = []
@@ -35,119 +42,119 @@ sica_countries = [
 ]
 
 ### DOWNLOADING URBAN BOUNDARY DATA FOR SICA COUNTRIES ###
-ULU = ee.ImageCollection('projects/wri-datalab/cities/urban_land_use/V1')
+# ULU = ee.ImageCollection('projects/wri-datalab/cities/urban_land_use/V1')
 
-def extract_urban_boundaries(country_name):
-    # Get the country boundary
-    country = ee.Feature(ee.FeatureCollection("FAO/GAUL/2015/level0")
-                         .filter(ee.Filter.eq('ADM0_NAME', country_name))
-                         .first())
+# def extract_urban_boundaries(country_name):
+#     # Get the country boundary
+#     country = ee.Feature(ee.FeatureCollection("FAO/GAUL/2015/level0")
+#                          .filter(ee.Filter.eq('ADM0_NAME', country_name))
+#                          .first())
     
-    # Generate image of 6-class land use from the highest probability class at each pixel
-    ULUimage = ULU.select('lulc').reduce(ee.Reducer.firstNonNull()).rename('lulc')
-    ULUimage = ULUimage.mask(ULUimage.mask().gt(0))
+#     # Generate image of 6-class land use from the highest probability class at each pixel
+#     ULUimage = ULU.select('lulc').reduce(ee.Reducer.firstNonNull()).rename('lulc')
+#     ULUimage = ULUimage.mask(ULUimage.mask().gt(0))
     
-    # Generate image of road areas based on pixels with greater than 50% probability of being road
-    roadsImage = ULU.select('road').reduce(ee.Reducer.firstNonNull()).rename('lulc')
-    roadProb = 50
-    roadsMask = roadsImage.updateMask(roadsImage.gt(roadProb)).where(roadsImage, 1)
+#     # Generate image of road areas based on pixels with greater than 50% probability of being road
+#     roadsImage = ULU.select('road').reduce(ee.Reducer.firstNonNull()).rename('lulc')
+#     roadProb = 50
+#     roadsMask = roadsImage.updateMask(roadsImage.gt(roadProb)).where(roadsImage, 1)
     
-    # Composite 6-class land use and roads into a single image
-    ULUandRoads = ULUimage.where(roadsMask, 6).select('lulc')
+#     # Composite 6-class land use and roads into a single image
+#     ULUandRoads = ULUimage.where(roadsMask, 6).select('lulc')
     
-    # Create a mask for all urban areas (excluding open space which has value 0)
-    urbanMask = ULUandRoads.neq(0)
+#     # Create a mask for all urban areas (excluding open space which has value 0)
+#     urbanMask = ULUandRoads.neq(0)
     
-    # Convert urban areas to vectors
-    urban_vectors = urbanMask.reduceToVectors(
-        geometry=country.geometry(),
-        scale=500,  # Increase scale for simplification
-        eightConnected=False,
-        maxPixels=1e13,
-        geometryType='polygon'
-    )
+#     # Convert urban areas to vectors
+#     urban_vectors = urbanMask.reduceToVectors(
+#         geometry=country.geometry(),
+#         scale=500,  # Increase scale for simplification
+#         eightConnected=False,
+#         maxPixels=1e13,
+#         geometryType='polygon'
+#     )
     
-    # Merge overlapping polygons with a non-zero error margin
-    merged_vectors = urban_vectors.union(1)  # 1 meter error margin
+#     # Merge overlapping polygons with a non-zero error margin
+#     merged_vectors = urban_vectors.union(1)  # 1 meter error margin
     
-    # Simplify the merged vectors
-    simplified_vectors = merged_vectors.map(lambda f: ee.Feature(f.simplify(500)))
+#     # Simplify the merged vectors
+#     simplified_vectors = merged_vectors.map(lambda f: ee.Feature(f.simplify(500)))
     
-    # Add country name to each feature
-    return simplified_vectors.map(lambda f: f.set('country', country_name))
+#     # Add country name to each feature
+#     return simplified_vectors.map(lambda f: f.set('country', country_name))
 
-# Extract urban boundaries for all SICA countries and save individually
-for country in sica_countries:
-    print(f"Processing {country}...")
-    country_urban = extract_urban_boundaries(country)
+# # Extract urban boundaries for all SICA countries and save individually
+# for country in sica_countries:
+#     print(f"Processing {country}...")
+#     country_urban = extract_urban_boundaries(country)
     
-    # Get the urban boundaries as a GeoJSON
-    country_urban_geojson = country_urban.getInfo()
+#     # Get the urban boundaries as a GeoJSON
+#     country_urban_geojson = country_urban.getInfo()
 
-    # Convert to GeoDataFrame
-    gdf = gpd.GeoDataFrame.from_features(country_urban_geojson['features'])
+#     # Convert to GeoDataFrame
+#     gdf = gpd.GeoDataFrame.from_features(country_urban_geojson['features'])
 
-    # Ensure the CRS is set (assuming WGS84)
-    gdf = gdf.set_crs("EPSG:4326")
+#     # Ensure the CRS is set (assuming WGS84)
+#     gdf = gdf.set_crs("EPSG:4326")
 
-    # Split MultiPolygons into single Polygons
-    gdf = split_multipolygons(gdf)
+#     # Split MultiPolygons into single Polygons
+#     gdf = split_multipolygons(gdf)
 
-    # Save to file
-    output_file = f"../data/1/urban_boundaries/{country.replace(' ', '_')}.gpkg"
-    gdf.to_file(output_file, driver="GPKG")
-    print(f"Urban boundaries for {country} saved to {output_file}")
+#     # Save to file
+#     output_file = f"../data/1/urban_boundaries/{country.replace(' ', '_')}.gpkg"
+#     gdf.to_file(output_file, driver="GPKG")
+#     print(f"Urban boundaries for {country} saved to {output_file}")
 
-### GET BBOX FOR URBAN BOUNDARIES ###
-folder_path = "../data/1/urban_boundaries"
-data = []
+# ### GET BBOX FOR URBAN BOUNDARIES ###
+# folder_path = "../data/1/urban_boundaries"
+# data = []
 
-for filename in os.listdir(folder_path):
-    if filename.endswith('.gpkg'):
-        country_name = filename.split('.')[0]
-        file_path = os.path.join(folder_path, filename)
+# for filename in os.listdir(folder_path):
+#     if filename.endswith('.gpkg'):
+#         country_name = filename.split('.')[0]
+#         file_path = os.path.join(folder_path, filename)
         
-        # Read the GeoPackage file
-        gdf = gpd.read_file(file_path)
+#         # Read the GeoPackage file
+#         gdf = gpd.read_file(file_path)
         
-        # Iterate through each row in the file
-        for index, row in gdf.iterrows():
-            geometry = row['geometry']
+#         # Iterate through each row in the file
+#         for index, row in gdf.iterrows():
+#             geometry = row['geometry']
             
-            # Check if the geometry is a MultiPolygon
-            if isinstance(geometry, MultiPolygon):
-                # If it's a MultiPolygon, iterate through its components
-                for i, part in enumerate(geometry.geoms):
-                    bbox = part.bounds
-                    data.append({
-                        'country': country_name,
-                        'geometry_index': f"{index}_{i}",
-                        'minx': bbox[0],
-                        'miny': bbox[1],
-                        'maxx': bbox[2],
-                        'maxy': bbox[3]
-                    })
-            else:
-                # If it's a single geometry, process it directly
-                bbox = geometry.bounds
-                data.append({
-                    'country': country_name,
-                    'geometry_index': str(index),
-                    'minx': bbox[0],
-                    'miny': bbox[1],
-                    'maxx': bbox[2],
-                    'maxy': bbox[3]
-                })
+#             # Check if the geometry is a MultiPolygon
+#             if isinstance(geometry, MultiPolygon):
+#                 # If it's a MultiPolygon, iterate through its components
+#                 for i, part in enumerate(geometry.geoms):
+#                     bbox = part.bounds
+#                     data.append({
+#                         'country': country_name,
+#                         'geometry_index': f"{index}_{i}",
+#                         'minx': bbox[0],
+#                         'miny': bbox[1],
+#                         'maxx': bbox[2],
+#                         'maxy': bbox[3]
+#                     })
+#             else:
+#                 # If it's a single geometry, process it directly
+#                 bbox = geometry.bounds
+#                 data.append({
+#                     'country': country_name,
+#                     'geometry_index': str(index),
+#                     'minx': bbox[0],
+#                     'miny': bbox[1],
+#                     'maxx': bbox[2],
+#                     'maxy': bbox[3]
+#                 })
 
-result_df = pd.DataFrame(data)
+# result_df = pd.DataFrame(data)
 
-# Create a GeoDataFrame with bbox geometries
-gdf_bboxes = gpd.GeoDataFrame(
-    result_df,
-    geometry=[box(row.minx, row.miny, row.maxx, row.maxy) for _, row in result_df.iterrows()],
-    crs="EPSG:4326"
-)
-gdf_bboxes.explore()
+# # Create a GeoDataFrame with bbox geometries
+# gdf_bboxes = gpd.GeoDataFrame(
+#     result_df,
+#     geometry=[box(row.minx, row.miny, row.maxx, row.maxy) for _, row in result_df.iterrows()],
+#     crs="EPSG:4326"
+# )
+# gdf_bboxes.explore()
 
 # Saved once
 # output_filename = "../data/1/all_SICA_urban_boundaries.geojson"
@@ -155,9 +162,14 @@ gdf_bboxes.explore()
 
 ### IMAGES DOWNLOADED FROM GEE using download_all_cities.ipynb ###
 
-### CALCULATE POPULATION FOR PREDICTIONS WITHIN URBAN BOUNDARIES ###
-urab_areas_folder_path = "../data/1/urban_boundaries"
+#########################################
+#### CALCULATE POPULATION PROPORTION ####
+#########################################
 
+urab_areas_folder_path = "../data/1/urban_boundaries/final_boundaries"
+predictions_folder_path = "../data/1/SICA_final_predictions/sel_DLV3"
+
+# Combine all the GeoDataFrames into one
 gdfs = []
 for filename in os.listdir(urab_areas_folder_path):
     if filename.endswith('.gpkg'):
@@ -167,13 +179,11 @@ for filename in os.listdir(urab_areas_folder_path):
         gdfs.append(gdf)
         print(f"Loaded and processed: {filename}")
 
-# Combine all the GeoDataFrames into one
 urban_areas = gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True))
 urban_areas.explore()
 
 ### Get Model Predictions ###
-predictions_folder_path = "../data/1/SICA_final_predictions/sel_DLV3"
-countries = ["Dominican Republic", "Honduras"] #CRI, "GTM", , "SLV"
+countries = ["Honduras","Nicaragua","Dominican Republic", "Honduras", "Panama","El Salvador","Guatemala","Costa Rica"]
 
 # get all predictions
 predictions = {}
@@ -187,13 +197,14 @@ for country in countries:
 # Calculating population proportion
 def process_city(city_row, predictions):
     country = city_row['country']
+    city = city_row['city']
     city_geometry = city_row['geometry']
     
     if not isinstance(city_geometry, Polygon):
         print(f"Warning: geometry for {country} is not a Polygon. Skipping.")
         return None
     
-    print(f"\nProcessing city in: {country}")
+    print(f"\nProcessing: {city, country}")
     
     # Create an Earth Engine geometry
     ee_geometry = ee.Geometry.Polygon(list(city_geometry.exterior.coords))
@@ -236,7 +247,7 @@ def process_city(city_row, predictions):
                 
                 print(f"Informal settlement population: {informal_population}")
             else:
-                print(f"No predictions intersect with this urban area in {country}")
+                print(f"No predictions intersect with this urban area in {city}")
                 informal_population = 0
         else:
             print(f"No predictions available for {country}")
@@ -247,6 +258,7 @@ def process_city(city_row, predictions):
         
         return {
             'country': country,
+            'city': city,
             'total_population': total_population,
             'informal_population': informal_population,
             'proportion_informal': proportion_informal
@@ -263,11 +275,166 @@ for index, row in tqdm(urban_areas.iterrows(), total=urban_areas.shape[0]):
         results.append(result)
 
 # Create a DataFrame with the results
-results_df = pd.DataFrame(results)
+df = pd.DataFrame(results)
 # sort by proportion_informal
-results_df = results_df.sort_values('proportion_informal', ascending=False)
-
+results_df = df.sort_values('proportion_informal', ascending=False)
 results_df.head()
+
+##########################
+#### PLOTTING RESULTS ####
+##########################
+
+rcParams['font.family'] = 'serif'
+rcParams['font.serif'] = ['Garamond', 'Times New Roman', 'DejaVu Serif']
+
+def clean_city_name(name):
+    return re.sub(r'(\w)([A-Z])', r'\1 \2', name)
+
+df_sorted = df.sort_values('proportion_informal', ascending=False)
+
+# Get the top N cities overall (e.g., top 20)
+df_top = df_sorted.head(15)
+
+# Calculate the formal population
+df_top['formal_population'] = df_top['total_population'] - df_top['informal_population']
+df_top['clean_city'] = df_top['city'].apply(clean_city_name)
+
+# Create a color palette for countries
+n_colors = len(df_top['country'].unique())
+color_palette = sns.color_palette("Set2", n_colors)
+color_dict = dict(zip(df_top['country'].unique(), color_palette))
+
+# Create the plot
+fig, ax = plt.subplots(figsize=(16, 10))
+
+# Create the stacked bar chart
+formal_bars = ax.bar(range(len(df_top)), df_top['formal_population'], 
+                     color=[color_dict[c] for c in df_top['country']])
+informal_bars = ax.bar(range(len(df_top)), df_top['informal_population'], 
+                       bottom=df_top['formal_population'],
+                       color=[color_dict[c] for c in df_top['country']], 
+                       alpha=0.5)
+
+# Customize the plot
+ax.set_title('SICA Cities by Highest Estimated Population Proportion in Precarious Areas', fontsize=22)
+ax.set_xlabel('City', fontsize=17)
+ax.set_ylabel('Urban Population', fontsize=17)
+ax.set_xticks(range(len(df_top)))
+ax.set_xticklabels(df_top['clean_city'], rotation=45, ha='right', fontsize=14)
+
+def millions_formatter(x, pos):
+    return f'{x/1e6:.1f}M'
+
+ax.yaxis.set_major_formatter(ticker.FuncFormatter(millions_formatter))
+
+# Create a custom legend
+legend_elements = [plt.Rectangle((0,0),1,1, color=color_dict[c], label=c) for c in color_dict]
+percentage_patch = mpatches.Patch(color='none', label='% = Proportion of Population in PAs')
+legend_elements.append(percentage_patch)
+
+# Create legend with larger font size
+ax.legend(handles=legend_elements, title='Legend', bbox_to_anchor=(1, 1), 
+          loc='upper left', fontsize=16, title_fontsize=18)
+
+# Add percentage labels at the top of each bar
+for bar, row in zip(formal_bars, df_top.iterrows()):
+    total = row[1]['total_population']
+    informal = row[1]['informal_population']
+    percentage = (informal / total) * 100
+    ax.text(bar.get_x() + bar.get_width()/2, total, f'{percentage:.1f}%', 
+            ha='center', va='bottom', fontweight='bold')
+
+# Adjust the top of the plot to make room for labels
+ax.set_ylim(0, ax.get_ylim()[1] * 1.1)
+
+plt.tight_layout()
+plt.show()
+
+######################
+#### MAP BARCHART ####
+######################
+
+rcParams['font.family'] = 'serif'
+rcParams['font.serif'] = ['Garamond', 'Times New Roman', 'DejaVu Serif']
+
+# Load the urban areas
+urban_areas_path = "../data/1/urban_boundaries/bboxes_SICA_urban_boundaries.geojson"
+urban_areas = gpd.read_file(urban_areas_path)
+
+# Ensure the CRS is EPSG:4326
+urban_areas = urban_areas.to_crs(epsg=4326)
+
+# Merge urban areas with population data
+merged_df = urban_areas.merge(df, left_on='city_name', right_on='city')
+
+# Calculate formal population and proportion of informal population
+merged_df['formal_population'] = merged_df['total_population'] - merged_df['informal_population']
+merged_df['proportion_informal'] = merged_df['informal_population'] / merged_df['total_population']
+
+# Sort by proportion of informal population and keep top 5
+merged_df = merged_df.sort_values('proportion_informal', ascending=False)
+
+# Create the plot
+fig, ax = plt.subplots(figsize=(20, 20))
+
+# Get the bounds of all urban areas
+minx, miny, maxx, maxy = urban_areas.total_bounds
+
+# Set the plot limits with some padding
+padding = 0.1  # 10% padding
+ax.set_xlim(minx - padding * (maxx - minx), maxx + padding * (maxx - minx))
+ax.set_ylim(miny - padding * (maxy - miny), maxy + padding * (maxy - miny))
+
+# Plot all urban areas
+urban_areas.plot(ax=ax, color='lightgrey', edgecolor='black')
+
+# Add basemap
+ctx.add_basemap(ax, crs=urban_areas.crs.to_string(), source=ctx.providers.CartoDB.Positron)
+
+# Set aspect ratio
+y_coord = np.mean([miny, maxy])
+ax.set_aspect(1 / np.cos(y_coord * np.pi / 180))
+
+# Function to create a stacked bar
+def create_stacked_bar(x, y, formal, informal, city, percentage, ax):
+    bar_width = (maxx - minx) * 0.01  # Adjust based on your data extent
+    bar_height = (maxy - miny) * 0.05  # Adjust based on your data extent
+    
+    # Normalize the values
+    total = formal + informal
+    if total > 0:
+        norm_formal = formal / total * bar_height
+        norm_informal = informal / total * bar_height
+    else:
+        norm_formal = norm_informal = 0
+    
+    # Create bars
+    ax.add_patch(plt.Rectangle((x, y), bar_width, norm_formal, color='blue', alpha=0.7))
+    ax.add_patch(plt.Rectangle((x, y+norm_formal), bar_width, norm_informal, color='red', alpha=0.7))
+    
+    # Add city name and percentage
+    ax.text(x, y+bar_height+0.05, f"{city}\n{percentage:.1f}%", ha='center', va='bottom', fontsize=8)
+
+# Add stacked bars for top 5 cities
+for idx, row in merged_df.iterrows():
+    x, y = row.geometry.centroid.x, row.geometry.centroid.y
+    create_stacked_bar(x, y, row['formal_population'], row['informal_population'], 
+                       row['city_name'], row['proportion_informal']*100, ax)
+
+# Remove axis
+ax.axis('off')
+
+# Add legend
+ax.add_patch(plt.Rectangle((0.05, 0.05), 0.02, 0.02, color='blue', alpha=0.7, transform=ax.transAxes))
+ax.add_patch(plt.Rectangle((0.05, 0.08), 0.02, 0.02, color='red', alpha=0.7, transform=ax.transAxes))
+ax.text(0.08, 0.05, 'Formal Population', va='center', transform=ax.transAxes)
+ax.text(0.08, 0.08, 'Informal Population', va='center', transform=ax.transAxes)
+
+# Set title
+plt.title('SICA Cities by Highest Estimated Population Proportion in Precarious Areas', fontsize=20)
+
+plt.tight_layout()
+plt.show()
 
 # Map to preview the results over urban areas
 # # Create a map
@@ -292,11 +459,85 @@ results_df.head()
 # first_urban_area = urban_areas.iloc[0]['geometry']
 # center = first_urban_area.centroid
 # m.setCenter(center.x, center.y, 8)
-
-# # Display the map
 # m
 
-### CODE TO CALCULATE RATIO OF POPULATION WITHIN PRECARIOUS AREAS WITHIN BBOXES ###
+##########################
+#### City-level Maps #####
+##########################
+
+def create_city_map(city_name, urban_areas, predictions_folder_path, padding=0.1, zoom=15):
+    # Find the city in the urban_areas GeoDataFrame
+    city = urban_areas[urban_areas['city'] == city_name]
+    city = city.to_crs('EPSG:3857')
+
+    if city.empty:
+        print(f"City '{city_name}' not found in urban_areas dataset.")
+        return
+    
+    country = city['country'].iloc[0]
+    city_geometry = city['geometry'].iloc[0]
+    
+    # Load predictions for the country
+    predictions_file = os.path.join(predictions_folder_path, country, "averaged_predictions.geojson")
+    if not os.path.exists(predictions_file):
+        print(f"No predictions file found for {country}")
+        return
+    
+    country_predictions = gpd.read_file(predictions_file)
+    country_predictions = country_predictions.to_crs('EPSG:3857')
+    # Find informal settlements within the city
+    city_informal_settlements = gpd.overlay(country_predictions, city, how='intersection')
+    
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(13, 13))
+    
+    # Plot the city boundary
+    city.plot(ax=ax, edgecolor='blue', facecolor='none', linewidth=2, zorder=3)
+    
+    # Plot the informal settlements with lower alpha and boundary
+    city_informal_settlements.plot(ax=ax, facecolor='red', alpha=0.2, zorder=4)
+    city_informal_settlements.boundary.plot(ax=ax, edgecolor='red', linewidth=1, zorder=5)
+    
+    # Set the extent of the map to the city boundaries with padding
+    minx, miny, maxx, maxy = city_geometry.bounds
+    width = maxx - minx
+    height = maxy - miny
+    ax.set_xlim(minx - width * padding, maxx + width * padding)
+    ax.set_ylim(miny - height * padding, maxy + height * padding)
+    
+    # Add high-resolution satellite imagery as background
+    cx.add_basemap(ax, crs=city.crs.to_string(), source=cx.providers.Esri.WorldImagery, zoom=zoom, zorder=1)
+    
+    # Add title
+    cl_city_name = clean_city_name(city_name)
+    plt.title(f"{cl_city_name}, {country}", fontsize=26)
+    
+    # Add legend with bigger font and white background
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='red', edgecolor='red', alpha=0.5, label='Model Predictions for Precarious Areas '),
+        Patch(facecolor='none', edgecolor='blue', label='Urban Boundary')
+    ]
+    ax.legend(handles=legend_elements, loc='lower right', fontsize=20, 
+              framealpha=1, facecolor='white', edgecolor='black')
+    
+    # Add scale bar
+    scale_bar = ScaleBar(1, units='m', location='lower left', length_fraction=0.25)
+    ax.add_artist(scale_bar)
+    ax.set_axis_off()
+    
+    plt.tight_layout()
+    plt.show()
+
+# Use the function to create a maps
+predictions_folder_path = "../data/1/SICA_final_predictions/sel_DLV3"
+create_city_map("ElProgreso", urban_areas, predictions_folder_path, padding=0.01, zoom=15)
+create_city_map("SanPedroSula", urban_areas, predictions_folder_path, padding=0.01, zoom=15)
+create_city_map("SanPedroDeMacoris", urban_areas, predictions_folder_path, padding=0.1, zoom=15)
+create_city_map("SanFranciscoDeMacoris", urban_areas, predictions_folder_path, padding=0.1, zoom=15)
+
+
+### OLD CODE TO CALCULATE RATIO OF POPULATION WITHIN PRECARIOUS AREAS WITHIN BBOXES ###
 # Function to get population raster for a given bounding box
 def get_population_raster(bbox, scale=30):
     ee_bbox = ee.Geometry.Rectangle(bbox)
@@ -317,7 +558,6 @@ def calculate_population(raster, polygon, bbox):
     population = np.sum(raster[mask])
     print(f"Calculated population: {population}")
     return population
-
 
 precariousAreas_SD = gpd.read_file('../data/0/UNITAC_data/SantoDomingo_PS.geojson')
 precariousAreas_SD = precariousAreas_SD.to_crs('EPSG:4326')

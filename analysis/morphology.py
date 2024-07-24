@@ -2,18 +2,19 @@ import os
 import sys
 import geopandas as gpd
 import pandas as pd
-import momepy as mm
-import osmnx
+# import momepy as mm
+# import osmnx
 from shapely.geometry import box
 import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import MultiPolygon
-import libpysal
+# import libpysal
 from shapely.validation import make_valid
 from shapely.errors import TopologicalError, GEOSException
 import os
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+import matplotlib.font_manager as fm
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -229,13 +230,15 @@ for city_name, df in city_dataframes.items():
 
 
 
+##################
+#### PLOTTING ####
+##################
 
-
-# Plotting the distribution of morphometrics by city
-file_path = os.path.join(grandparent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
+# distribution of morphometrics by city
+file_path = os.path.join(grandparent_dir, 'slums-model-unitac/analysis/metrics/all_cities_slum_morphometrics.csv')
 all_cities_df = pd.read_csv(file_path)
 
-plt.style.use('ggplot')
+# plt.style.use('ggplot')
 city_name_map = {
     'Sansalvador_Ps_': 'San Salvador, El Salvador',
     'SantoDomingoDOM': 'Santo Domingo, Dominican Republic',
@@ -272,10 +275,22 @@ all_cities_df[numeric_cols] = scaler.fit_transform(all_cities_df[numeric_cols])
 df_melted = all_cities_df.melt(id_vars=['city'], value_vars=numeric_cols, var_name='Variable', value_name='Value')
 df_melted['Variable'] = df_melted['Variable'].map(col_name_map)
 
+# Set up the font
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['font.serif'] = ['Garamond'] + plt.rcParams['font.serif']
+
+# Set up the style manually
+plt.rcParams['axes.facecolor'] = 'white'
+plt.rcParams['axes.grid'] = True
+plt.rcParams['grid.color'] = '#E6E6E6'
+plt.rcParams['grid.linestyle'] = '--'
+plt.rcParams['axes.spines.top'] = False
+plt.rcParams['axes.spines.right'] = False
+
 # Create the plot
 plt.figure(figsize=(20, 12))
-ax = sns.boxplot(x='Variable', y='Value', hue='city', data=df_melted, 
-                 palette="Set3", whis=(10, 90))
+ax = sns.boxplot(x='Variable', y='Value', hue='city', data=df_melted,
+                 palette="Set2", whis=(10, 90))
 
 # Color the outliers the same as their respective bars
 for i, artist in enumerate(ax.artists):
@@ -287,25 +302,16 @@ for i, artist in enumerate(ax.artists):
         line.set_mec(col)
 
 # Customize the plot
-plt.title('Standardized Distribution of Building Morphometrics by City', fontsize=24, pad=20)
-plt.xlabel('Morphometric', fontsize=17, labelpad=15)
-plt.ylabel('Standardized Value', fontsize=17, labelpad=15)
-
-# Improve x-axis labels
-plt.xticks(rotation=45, ha='right', fontsize=14)
+plt.title('Standardized Distributions of Building Morphometrics by City', fontsize=28, pad=20)
+plt.xlabel('Morphometric', fontsize=20, labelpad=15)
+plt.ylabel('Standardized Value', fontsize=20, labelpad=15)
+plt.xticks(rotation=45, ha='right', fontsize=18)
 ax.set_xticklabels([label.get_text().replace('_', ' ').title() for label in ax.get_xticklabels()])
-
-# Improve y-axis labels
 plt.yticks(fontsize=14)
-
-# Customize legend
-plt.legend(title='City', title_fontsize='18', fontsize='14', bbox_to_anchor=(1, 1), loc='upper left')
-
-# Adjust layout
+plt.legend(title='City', title_fontsize='24', fontsize='17', bbox_to_anchor=(1, 1), loc='upper left')
 plt.tight_layout()
-
-# Show plot
 plt.show()
+
 
 
 #### MAPPING ####

@@ -215,6 +215,7 @@ trainer.fit(model, train_loader, val_loader)
 ##########################################
 ###### Individual Model Predictions ######
 ##########################################
+
 model_id = 'last-v1.ckpt'
 best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/sentinel_only/{train_cities}_DLV3/', model_id)
 # best_model_path = checkpoint_callback.best_model_path

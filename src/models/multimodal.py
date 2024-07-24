@@ -37,8 +37,8 @@ sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
 from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params, MultiResolutionDeepLabV3,
-                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, MultiResolutionFPN, merge_geojson_files,
-                                          CustomVectorOutputConfig, FeatureMapVisualization, MultiResolution128DeepLabV3)
+                                          MultiModalDataModule, create_predictions_and_ground_truth_plot, merge_geojson_files,
+                                          CustomVectorOutputConfig, FeatureMapVisualization)
 from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple, MultiInputCrossValidator, clear_directory,
                                   senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn,show_first_batch_item,
                                   MergeDataset, show_single_tile_multi, get_label_source_from_merge_dataset, create_scenes_for_city, PolygonWindowGeoDataset)
@@ -143,10 +143,10 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-2,
+    'learning_rate': 1e-3,
     'weight_decay': 0,
-    'gamma': 0.5,
-    'sched_step_size': 5,
+    'gamma': 0.8,
+    'sched_step_size': 10,
     'pos_weight': 2.0,
     'buil_out_chan': 4
 }
@@ -240,7 +240,7 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback, visualization_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=85,
+    min_epochs=65,
     max_epochs=250,
     num_sanity_val_steps=3,
     precision='16-mixed',
@@ -250,17 +250,17 @@ trainer = Trainer(
 # Train the model
 trainer.fit(model, datamodule=data_module)
 
-for batch in train_loader:
-    sentinel, buildings = batch
-    sentinel = sentinel[0]
-    buildings = buildings[0]
-    output = model(batch)
-    break
+# for batch in train_loader:
+#     sentinel, buildings = batch
+#     sentinel = sentinel[0]
+#     buildings = buildings[0]
+#     output = model(batch)
+#     break
 
 # Use best model for evaluation
-model_id = 'multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'
-best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
-# best_model_path = checkpoint_callback.best_model_path
+# model_id = 'multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'
+# best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
+best_model_path = checkpoint_callback.best_model_path
 best_model = MultiResolutionDeepLabV3()#buil_channels=buil_channels, buil_kernel=buil_kernel, buil_out_chan=4)
 checkpoint = torch.load(best_model_path)
 state_dict = checkpoint['state_dict']
@@ -391,7 +391,6 @@ if valid_metrics:
         print(f"\n(Note: {', '.join(excluded_cities)} {'was' if len(excluded_cities) == 1 else 'were'} excluded due to NaN metrics)")
 else:
     print("\nUnable to calculate average metrics. All cities have NaN values.")
-
 
 
 ################################
