@@ -285,9 +285,7 @@ models = [load_multimodal_model(path) for path in model_paths]
 sica_cities = '../data/1/urban_boundaries/bboxes_SICA_urban_boundaries.geojson'
 gdf = gpd.read_file(sica_cities)
 gdf = gdf.to_crs('EPSG:3857')
-gdf = gdf[gdf['country'].isin(['Honduras','Nicaragua'])]
-
-# gdf = gdf[~gdf['city_name'].isin(['SantoDomingo','SanJose', 'SanSalvador', 'Managua', 'Tegucigalpa', 'GuatemalaCity'])]
+gdf = gdf[gdf['city_name'].isin(['SantoDomingo', 'Managua', 'Tegucigalpa', 'GuatemalaCity', 'PanamaCity'])]
 
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_name']
@@ -341,13 +339,6 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
     ax.imshow(chip)
     plt.show()
-    
-    extent_for_buildings = Box(
-        ymin=sentinel_extent.ymin,
-        xmin=sentinel_extent.xmin,
-        ymax=sentinel_extent.ymin + sentinel_extent.height * 2,
-        xmax=sentinel_extent.xmin + sentinel_extent.width * 2
-    )
         
     # Query buildings data
     buildings = query_buildings_data(xmin_4326, ymin_4326, xmax_4326, ymax_4326)

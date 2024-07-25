@@ -5,6 +5,9 @@ import numpy as np
 import seaborn as sns
 import ee
 import geemap
+from shapely.geometry import box, Polygon, MultiPolygon
+from shapely.ops import unary_union
+from shapely import make_valid, simplify, wkt
 from tqdm import tqdm
 from rasterio.transform import from_bounds
 import pandas as pd
@@ -19,6 +22,7 @@ from matplotlib import rcParams
 import contextily as cx
 from matplotlib_scalebar.scalebar import ScaleBar
 from pyproj import CRS
+from shapely.geometry import box, Point
 
 def split_multipolygons(gdf):
     rows = []
@@ -195,7 +199,7 @@ for country in countries:
         print(f"No predictions file found for {country}")
 
 # Calculating population proportion
-def process_city(city_row, predictions):
+def process_city(city_row, predictions, use_hrsl=True):
     country = city_row['country']
     city = city_row['city']
     city_geometry = city_row['geometry']
@@ -209,22 +213,26 @@ def process_city(city_row, predictions):
     # Create an Earth Engine geometry
     ee_geometry = ee.Geometry.Polygon(list(city_geometry.exterior.coords))
     
-    # Use HRSL dataset
-    HRSL_general = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
+    # Choose dataset based on user input
+    if use_hrsl:
+        population_dataset = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
+        dataset_name = "HRSL"
+        population_image = population_dataset.mosaic()
+        
+    else:
+        population_image = ee.Image("projects/sat-io/open-datasets/GHS/GHS_POP/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0")
+        dataset_name = "GHS"
     
     try:
-        # Get the mosaic image from the collection
-        hrsl_image = HRSL_general.mosaic()
-
         # Calculate total population in the city
-        total_population = hrsl_image.reduceRegion(
+        total_population = population_image.reduceRegion(
             reducer=ee.Reducer.sum(),
             geometry=ee_geometry,
             scale=30,
             maxPixels=1e9
         ).get('b1').getInfo()
         
-        print(f"Total population: {total_population}")
+        print(f"Total population ({dataset_name}): {total_population}")
         
         # Find informal settlements within the city
         if country in predictions:
@@ -237,7 +245,7 @@ def process_city(city_row, predictions):
                 informal_population = 0
                 for settlement in city_informal_settlements.geometry:
                     settlement_ee = ee.Geometry.Polygon(list(settlement.exterior.coords))
-                    settlement_pop = hrsl_image.reduceRegion(
+                    settlement_pop = population_image.reduceRegion(
                         reducer=ee.Reducer.sum(),
                         geometry=settlement_ee,
                         scale=30,
@@ -261,7 +269,8 @@ def process_city(city_row, predictions):
             'city': city,
             'total_population': total_population,
             'informal_population': informal_population,
-            'proportion_informal': proportion_informal
+            'proportion_informal': proportion_informal,
+            'dataset_used': dataset_name
         }
     except Exception as e:
         print(f"Error processing city in {country}: {str(e)}")
@@ -270,19 +279,259 @@ def process_city(city_row, predictions):
 results = []
 
 for index, row in tqdm(urban_areas.iterrows(), total=urban_areas.shape[0]):
-    result = process_city(row, predictions)
+    result = process_city(row, predictions, use_hrsl=False)
     if result is not None:
         results.append(result)
 
 # Create a DataFrame with the results
-df = pd.DataFrame(results)
-# sort by proportion_informal
-results_df = df.sort_values('proportion_informal', ascending=False)
+df_ghsl = pd.DataFrame(results)
+
+results_hrls_df = df_hrls.sort_values('proportion_informal', ascending=False)
+results_hrls_df.head()
+
+results_ghsl_df = df_ghsl.sort_values('proportion_informal', ascending=False)
+results_ghsl_df.head()
+
+############################
+#### Unseen predictions ####
+############################
+unseen_predictions_folder_path = "../vectorised_model_predictions/multimodal/unseen_predictions/combined_predictions.geojson"
+unseen_predictions = gpd.read_file(unseen_predictions_folder_path)
+unseen_predictions = unseen_predictions.dissolve(by='city', aggfunc='sum')
+unseen_predictions = unseen_predictions.drop(columns=['split'])
+unseen_predictions = unseen_predictions.reset_index()
+unseen_predictions = unseen_predictions.rename(columns={'index': 'city'})
+unseen_predictions
+
+from shapely.geometry import box
+
+def process_city(city, city_predictions, use_hrsl=True):
+    # Get the bounding box of all predictions for this city
+    city_bbox = city_predictions.total_bounds
+    bbox_geometry = box(*city_bbox)
+    
+    # Create an Earth Engine geometry
+    # ee.Geometry.Rectangle expects [west, south, east, north]
+    ee_geometry = ee.Geometry.Rectangle([
+        bbox_geometry.bounds[0],  # west
+        bbox_geometry.bounds[1],  # south
+        bbox_geometry.bounds[2],  # east
+        bbox_geometry.bounds[3]   # north
+    ])
+    
+    # Choose dataset based on user input
+    if use_hrsl:
+        population_dataset = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
+        dataset_name = "HRSL"
+        population_image = population_dataset.mosaic()
+    else:
+        population_image = ee.Image("projects/sat-io/open-datasets/GHS/GHS_POP/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0")
+        dataset_name = "GHS"
+    
+    try:
+        # Calculate total population in the bounding box
+        total_population = population_image.reduceRegion(
+            reducer=ee.Reducer.sum(),
+            geometry=ee_geometry,
+            scale=30,
+            maxPixels=1e9
+        ).get('b1').getInfo()
+        
+        print(f"Total population in {city} bounding box ({dataset_name}): {total_population}")
+        
+        # Calculate population in predicted areas
+        predicted_population = 0
+        for _, prediction in city_predictions.iterrows():
+            pred_geometry = prediction['geometry']
+            if isinstance(pred_geometry, Polygon):
+                prediction_ee = ee.Geometry.Polygon(list(pred_geometry.exterior.coords))
+            elif isinstance(pred_geometry, MultiPolygon):
+                prediction_ee = ee.Geometry.MultiPolygon([list(poly.exterior.coords) for poly in pred_geometry.geoms])
+            else:
+                print(f"Skipping unknown geometry type for {city}")
+                continue
+            
+            prediction_pop = population_image.reduceRegion(
+                reducer=ee.Reducer.sum(),
+                geometry=prediction_ee,
+                scale=30,
+                maxPixels=1e9
+            ).get('b1').getInfo()
+            predicted_population += prediction_pop
+        
+        print(f"Population in predicted areas: {predicted_population}")
+        
+        # Calculate proportion
+        proportion_predicted = predicted_population / total_population if total_population > 0 else 0
+        
+        return {
+            'city': city,
+            'total_population': total_population,
+            'predicted_population': predicted_population,
+            'proportion_predicted': proportion_predicted,
+            'dataset_used': dataset_name
+        }
+    except Exception as e:
+        print(f"Error processing {city}: {str(e)}")
+        return None
+
+# Group predictions by city
+city_groups = unseen_predictions.groupby('city')
+
+# Process each city
+results = []
+for city, city_predictions in tqdm(city_groups):
+    result = process_city(city, city_predictions, use_hrsl=False)
+    if result is not None:
+        results.append(result)
+
+results_df = pd.DataFrame(results)
+results_df = results_df.sort_values('proportion_predicted', ascending=False)
 results_df.head()
+
+
+###########################
+#### Labels population ####
+###########################
+
+labels_folder_path = "../data/SHP"
+
+def clean_geometry(geom, buffer_distance=0.00002):  # Approximately 1 meter at the equator
+    if geom is None or geom.is_empty:
+        return None
+    try:
+        if not geom.is_valid:
+            geom = make_valid(geom)
+        geom = geom.buffer(buffer_distance).buffer(-buffer_distance)  # Remove small holes and smooth edges
+        geom = simplify(geom, tolerance=0.001)
+        if isinstance(geom, (Polygon, MultiPolygon)):
+            geom = geom.buffer(0)  # Ensure valid polygon
+        return geom
+    except Exception as e:
+        print(f"Error in clean_geometry: {str(e)}")
+        return None
+
+def coord_to_ee(coord):
+    return [np.clip(coord[0], -180, 180), np.clip(coord[1], -90, 90)]
+
+def process_city_shapefile(file_path, use_hrsl=True):
+    city = os.path.basename(file_path).replace('.shp', '')
+    
+    try:
+        gdf = gpd.read_file(file_path)
+        
+        # Clean geometries
+        gdf['geometry'] = gdf['geometry'].apply(clean_geometry)
+        gdf = gdf.dropna(subset=['geometry'])
+        
+        if gdf.empty:
+            print(f"No valid geometries found in {city}")
+            return None
+        
+        # Merge all geometries into a single MultiPolygon
+        try:
+            merged_geometry = unary_union(gdf['geometry'])
+            merged_geometry = clean_geometry(merged_geometry)
+        except Exception as e:
+            print(f"Error merging geometries for {city}: {str(e)}")
+            print(f"Problematic geometries WKT: {[wkt.dumps(geom) for geom in gdf['geometry']]}")
+            return None
+        
+        if merged_geometry is None or merged_geometry.is_empty:
+            print(f"Merged geometry is empty for {city}")
+            return None
+        
+        city_bbox = merged_geometry.bounds
+        bbox_geometry = box(*city_bbox)
+        
+        ee_bbox = ee.Geometry.Rectangle([
+            bbox_geometry.bounds[0],
+            bbox_geometry.bounds[1],
+            bbox_geometry.bounds[2],
+            bbox_geometry.bounds[3]
+        ])
+        
+        if use_hrsl:
+            population_dataset = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
+            dataset_name = "HRSL"
+            population_image = population_dataset.mosaic()
+        else:
+            population_image = ee.Image("projects/sat-io/open-datasets/GHS/GHS_POP/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0")
+            dataset_name = "GHS"
+        
+        total_population = population_image.reduceRegion(
+            reducer=ee.Reducer.sum(),
+            geometry=ee_bbox,
+            scale=30,
+            maxPixels=1e9
+        ).get('b1').getInfo()
+        
+        print(f"Total population in {city} bounding box ({dataset_name}): {total_population}")
+        
+        # Create EE geometry for merged geometry
+        if isinstance(merged_geometry, Polygon):
+            coords = [coord_to_ee(coord) for coord in merged_geometry.exterior.coords]
+            prediction_ee = ee.Geometry.Polygon(coords)
+        elif isinstance(merged_geometry, MultiPolygon):
+            multi_coords = [[coord_to_ee(coord) for coord in poly.exterior.coords] for poly in merged_geometry.geoms]
+            prediction_ee = ee.Geometry.MultiPolygon(multi_coords)
+        else:
+            print(f"Unexpected geometry type for {city}")
+            return None
+        
+        try:
+            predicted_population = population_image.reduceRegion(
+                reducer=ee.Reducer.sum(),
+                geometry=prediction_ee,
+                scale=30,
+                maxPixels=1e9
+            ).get('b1').getInfo()
+            
+            print(f"Population in predicted areas: {predicted_population}")
+            
+            proportion_predicted = predicted_population / total_population if total_population > 0 else 0
+            
+            return {
+                'city': city,
+                'country': city,
+                'total_population': total_population,
+                'formal_population': total_population,
+                'informal_population': predicted_population,
+                'proportion_informal': proportion_predicted,
+                'dataset_used': dataset_name
+            }
+        except ee.EEException as e:
+            print(f"Error processing geometry in {city}: {str(e)}")
+            print(f"Problematic geometry WKT: {wkt.dumps(merged_geometry)}")
+            return None
+        
+    except Exception as e:
+        print(f"Error processing {city}:")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error message: {str(e)}")
+        print(f"File path: {file_path}")
+        return None
+
+# Process each shapefile in the folder
+labels_population = []
+for filename in tqdm(os.listdir(labels_folder_path)):
+    if filename.endswith('.shp'):
+        file_path = os.path.join(labels_folder_path, filename)
+        result = process_city_shapefile(file_path, use_hrsl=True)
+        if result is not None:
+            labels_population.append(result)
+
+# Create a DataFrame with the results
+labels_df = pd.DataFrame(labels_population)
+labels_df = labels_df.sort_values('proportion_informal', ascending=False)
+labels_df.head()
+
 
 ##########################
 #### PLOTTING RESULTS ####
 ##########################
+# decide which population data source to use
+df=labels_df
 
 rcParams['font.family'] = 'serif'
 rcParams['font.serif'] = ['Garamond', 'Times New Roman', 'DejaVu Serif']
@@ -293,7 +542,7 @@ def clean_city_name(name):
 df_sorted = df.sort_values('proportion_informal', ascending=False)
 
 # Get the top N cities overall (e.g., top 20)
-df_top = df_sorted.head(15)
+df_top = df_sorted.head(29)
 
 # Calculate the formal population
 df_top['formal_population'] = df_top['total_population'] - df_top['informal_population']
@@ -305,7 +554,7 @@ color_palette = sns.color_palette("Set2", n_colors)
 color_dict = dict(zip(df_top['country'].unique(), color_palette))
 
 # Create the plot
-fig, ax = plt.subplots(figsize=(16, 10))
+fig, ax = plt.subplots(figsize=(18, 10))
 
 # Create the stacked bar chart
 formal_bars = ax.bar(range(len(df_top)), df_top['formal_population'], 
@@ -316,7 +565,7 @@ informal_bars = ax.bar(range(len(df_top)), df_top['informal_population'],
                        alpha=0.5)
 
 # Customize the plot
-ax.set_title('SICA Cities by Highest Estimated Population Proportion in Precarious Areas', fontsize=22)
+ax.set_title('SICA Cities by Highest Estimated Population (HRSL) Proportion in Precarious Areas', fontsize=22)
 ax.set_xlabel('City', fontsize=17)
 ax.set_ylabel('Urban Population', fontsize=17)
 ax.set_xticks(range(len(df_top)))
@@ -350,91 +599,6 @@ ax.set_ylim(0, ax.get_ylim()[1] * 1.1)
 plt.tight_layout()
 plt.show()
 
-######################
-#### MAP BARCHART ####
-######################
-
-rcParams['font.family'] = 'serif'
-rcParams['font.serif'] = ['Garamond', 'Times New Roman', 'DejaVu Serif']
-
-# Load the urban areas
-urban_areas_path = "../data/1/urban_boundaries/bboxes_SICA_urban_boundaries.geojson"
-urban_areas = gpd.read_file(urban_areas_path)
-
-# Ensure the CRS is EPSG:4326
-urban_areas = urban_areas.to_crs(epsg=4326)
-
-# Merge urban areas with population data
-merged_df = urban_areas.merge(df, left_on='city_name', right_on='city')
-
-# Calculate formal population and proportion of informal population
-merged_df['formal_population'] = merged_df['total_population'] - merged_df['informal_population']
-merged_df['proportion_informal'] = merged_df['informal_population'] / merged_df['total_population']
-
-# Sort by proportion of informal population and keep top 5
-merged_df = merged_df.sort_values('proportion_informal', ascending=False)
-
-# Create the plot
-fig, ax = plt.subplots(figsize=(20, 20))
-
-# Get the bounds of all urban areas
-minx, miny, maxx, maxy = urban_areas.total_bounds
-
-# Set the plot limits with some padding
-padding = 0.1  # 10% padding
-ax.set_xlim(minx - padding * (maxx - minx), maxx + padding * (maxx - minx))
-ax.set_ylim(miny - padding * (maxy - miny), maxy + padding * (maxy - miny))
-
-# Plot all urban areas
-urban_areas.plot(ax=ax, color='lightgrey', edgecolor='black')
-
-# Add basemap
-ctx.add_basemap(ax, crs=urban_areas.crs.to_string(), source=ctx.providers.CartoDB.Positron)
-
-# Set aspect ratio
-y_coord = np.mean([miny, maxy])
-ax.set_aspect(1 / np.cos(y_coord * np.pi / 180))
-
-# Function to create a stacked bar
-def create_stacked_bar(x, y, formal, informal, city, percentage, ax):
-    bar_width = (maxx - minx) * 0.01  # Adjust based on your data extent
-    bar_height = (maxy - miny) * 0.05  # Adjust based on your data extent
-    
-    # Normalize the values
-    total = formal + informal
-    if total > 0:
-        norm_formal = formal / total * bar_height
-        norm_informal = informal / total * bar_height
-    else:
-        norm_formal = norm_informal = 0
-    
-    # Create bars
-    ax.add_patch(plt.Rectangle((x, y), bar_width, norm_formal, color='blue', alpha=0.7))
-    ax.add_patch(plt.Rectangle((x, y+norm_formal), bar_width, norm_informal, color='red', alpha=0.7))
-    
-    # Add city name and percentage
-    ax.text(x, y+bar_height+0.05, f"{city}\n{percentage:.1f}%", ha='center', va='bottom', fontsize=8)
-
-# Add stacked bars for top 5 cities
-for idx, row in merged_df.iterrows():
-    x, y = row.geometry.centroid.x, row.geometry.centroid.y
-    create_stacked_bar(x, y, row['formal_population'], row['informal_population'], 
-                       row['city_name'], row['proportion_informal']*100, ax)
-
-# Remove axis
-ax.axis('off')
-
-# Add legend
-ax.add_patch(plt.Rectangle((0.05, 0.05), 0.02, 0.02, color='blue', alpha=0.7, transform=ax.transAxes))
-ax.add_patch(plt.Rectangle((0.05, 0.08), 0.02, 0.02, color='red', alpha=0.7, transform=ax.transAxes))
-ax.text(0.08, 0.05, 'Formal Population', va='center', transform=ax.transAxes)
-ax.text(0.08, 0.08, 'Informal Population', va='center', transform=ax.transAxes)
-
-# Set title
-plt.title('SICA Cities by Highest Estimated Population Proportion in Precarious Areas', fontsize=20)
-
-plt.tight_layout()
-plt.show()
 
 # Map to preview the results over urban areas
 # # Create a map
@@ -467,7 +631,7 @@ plt.show()
 
 def create_city_map(city_name, urban_areas, predictions_folder_path, padding=0.1, zoom=15):
     # Find the city in the urban_areas GeoDataFrame
-    city = urban_areas[urban_areas['city'] == city_name]
+    city = urban_areas[urban_areas['city_name'] == city_name]
     city = city.to_crs('EPSG:3857')
 
     if city.empty:

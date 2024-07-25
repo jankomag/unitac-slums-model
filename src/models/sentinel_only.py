@@ -56,7 +56,7 @@ sys.path.append(parent_dir)
 from src.models.model_definitions import (SentinelDeepLabV3, PredictionsIterator, create_predictions_and_ground_truth_plot,
                                           check_nan_params, CustomVectorOutputConfig, merge_geojson_files)
 from src.features.dataloaders import (create_sentinel_scene, cities, CustomSlidingWindowGeoDataset, collate_fn,
-                                      senitnel_create_full_image, show_windows, PolygonWindowGeoDataset,
+                                      senitnel_create_full_image, show_windows, PolygonWindowGeoDataset,clear_directory,
                                       SingleInputCrossValidator, singlesource_show_windows_for_city, show_single_tile_sentinel)
 
 from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
@@ -117,8 +117,12 @@ sentinelGeoDataset_MN = PolygonWindowGeoDataset(SentinelScene_MN, city='Managua'
 sentinel_scenePN = create_sentinel_scene(cities['Panama'], class_config)
 sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 
+# San Salvador
+sentinel_sceneSJ = create_sentinel_scene(cities['SanJose'], class_config)
+sentinelGeoDataset_SJ = PolygonWindowGeoDataset(sentinel_sceneSJ, city='SanSalvador', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+
 # Create datasets
-train_cities = 'sel'
+train_cities = 'selSJ'
 split_index = 1 # 0 or 1
 
 def get_sentinel_datasets(train_cities):
@@ -128,8 +132,9 @@ def get_sentinel_datasets(train_cities):
         'Tegucigalpa': sentinelGeoDataset_TG,
         'Managua': sentinelGeoDataset_MN,
         'Panama': sentinelGeoDataset_PN,
+        'SanJose': sentinelGeoDataset_SJ
     }
-    if train_cities == 'sel':
+    if train_cities == 'selSJ':
         return all_datasets
     elif isinstance(train_cities, str):
         return {train_cities: all_datasets[train_cities]}
@@ -143,7 +148,7 @@ sentinel_datasets = get_sentinel_datasets(train_cities)
 cv = SingleInputCrossValidator(sentinel_datasets, n_splits=2, val_ratio=0.5, test_ratio=0)
 
 # Preview a city with sliding windows
-city = 'Managua'
+city = 'SanJose'
 singlesource_show_windows_for_city(city, split_index, cv, sentinel_datasets)
 show_single_tile_sentinel(sentinel_datasets, city, 4)
 
@@ -189,13 +194,13 @@ wandb_logger = WandbLogger(project='UNITAC-finetune-sentinel-only', log_model=Tr
 # Loggers and callbacks
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 checkpoint_callback = ModelCheckpoint(
-    monitor='val_loss',
+    monitor='val_mean_iou',
     dirpath=output_dir,
     filename=f'sentinel_{train_cities}_cv{split_index}-{{epoch:02d}}-{{val_loss:.4f}}',
-    save_top_k=8,
+    save_top_k=5,
     save_last=True,
-    mode='min')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=50)
+    mode='max')
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=15)
 
 # Define trainer
 trainer = Trainer(
@@ -203,7 +208,7 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=85,
+    min_epochs=25,
     max_epochs=250,
     num_sanity_val_steps=3,
     # overfit_batches=0.5
@@ -215,60 +220,13 @@ trainer.fit(model, train_loader, val_loader)
 ##########################################
 ###### Individual Model Predictions ######
 ##########################################
-
-model_id = 'last-v1.ckpt'
+model_id = 'sentinel_selSJ_cv1-epoch=23-val_loss=0.2417.ckpt'
 best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/sentinel_only/{train_cities}_DLV3/', model_id)
 # best_model_path = checkpoint_callback.best_model_path
-scene_eval = SentinelScene_MN  # Assuming this is your sentinel scene for evaluation
+scene_eval = SentinelScene_SD  # Assuming this is your sentinel scene for evaluation
 model = SentinelDeepLabV3.load_from_checkpoint(best_model_path)
 model.eval()
 check_nan_params(model)
-
-class PredictionsIterator:
-    def __init__(self, model, dataset, device):
-        self.model = model
-        self.dataset = dataset
-        self.device = device
-        self.predictions = []
-        
-        with torch.no_grad():
-            for idx in range(len(dataset)):
-                x, _ = self.get_item(dataset, idx)
-                x = x.unsqueeze(0).to(device)
-                
-                output = model(x)
-                probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
-                
-                window = self.get_window(dataset, idx)
-                self.predictions.append((window, probabilities))
-    
-    def get_item(self, dataset, idx):
-        if isinstance(dataset, Subset):
-            return self.get_item(dataset.dataset, dataset.indices[idx])
-        elif isinstance(dataset, ConcatDataset):
-            dataset_idx, sample_idx = self.get_concat_dataset_indices(dataset, idx)
-            return self.get_item(dataset.datasets[dataset_idx], sample_idx)
-        else:
-            return dataset[idx]
-    
-    def get_window(self, dataset, idx):
-        if isinstance(dataset, Subset):
-            return self.get_window(dataset.dataset, dataset.indices[idx])
-        elif isinstance(dataset, ConcatDataset):
-            dataset_idx, sample_idx = self.get_concat_dataset_indices(dataset, idx)
-            return self.get_window(dataset.datasets[dataset_idx], sample_idx)
-        else:
-            return dataset.windows[idx]
-    
-    def get_concat_dataset_indices(self, concat_dataset, idx):
-        for dataset_idx, dataset in enumerate(concat_dataset.datasets):
-            if idx < len(dataset):
-                return dataset_idx, idx
-            idx -= len(dataset)
-        raise IndexError('Index out of range')
-    
-    def __iter__(self):
-        return iter(self.predictions)
 
 strided_fullds = CustomSlidingWindowGeoDataset(scene_eval, size=256, stride=128, padding=0, city='SD', transform=None, transform_type=TransformType.noop)
 predictions_iterator = PredictionsIterator(model, strided_fullds, device=device)
@@ -390,15 +348,21 @@ def load_model(model_path):
     model.eval()
     return model
 
-model_paths = [
+model_paths_selwSJ_original = [
     os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/sel_DLV3/sentinel_sel_cv0-epoch=08-val_loss=0.4576.ckpt'),
     os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/sel_DLV3/last-v1.ckpt')
 ]
+
+model_paths = [
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/selSJ_DLV3/sentinel_selSJ_cv0-epoch=06-val_loss=0.3216.ckpt'),
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/selSJ_DLV3/sentinel_selSJ_cv1-epoch=23-val_loss=0.2417.ckpt')
+]
+
 models = [load_model(path) for path in model_paths]
 
 def save_unseen_predictions(models, cv, all_datasets, cities, class_config, device, output_dir):
     # Clear the output directory only once at the start
-    clear_directory(output_dir)
+    # clear_directory(output_dir)
 
     for split_index, model in enumerate(models):
         model.eval()
@@ -456,39 +420,36 @@ def save_predictions_as_geojson(pred_labels, city, split_index, output_dir, citi
     )
     label_store.save(pred_labels)
 
-selected_cities = ['SantoDomingo', 'GuatemalaCity', 'Tegucigalpa', 'Managua', 'Panama']
+selected_cities = ['SantoDomingo', 'GuatemalaCity', 'Tegucigalpa', 'Managua', 'Panama', 'SanJose']
 all_datasets = {city: sentinel_datasets[city] for city in selected_cities}
 
-output_dir = '../../vectorised_model_predictions/sentinel_only/unseen_predictions/'
-try:
-    save_unseen_predictions(models, cv, all_datasets, cities, class_config, device, output_dir)
+output_dir = '../../vectorised_model_predictions/sentinel_only/unseen_predictions/selSJ/'
+save_unseen_predictions(models, cv, all_datasets, cities, class_config, device, output_dir)
 
-    # Merge predictions
-    merged_output_file = os.path.join(output_dir, 'combined_predictions.geojson')
-    merge_geojson_files(output_dir, merged_output_file)
+# Merge predictions
+merged_output_file = os.path.join(output_dir, 'combined_predictions.geojson')
+merge_geojson_files(output_dir, merged_output_file)
 
-    print("Predictions saved and combined successfully.")
-except Exception as e:
-    print(f"An error occurred during prediction or merging: {str(e)}")
+print("Predictions saved and combined successfully.")
 
 
 
-##############################
-###### Model Complexity ######
-##############################
+# ##############################
+# ###### Model Complexity ######
+# ##############################
 
-def input_constructor(input_res):
-    return torch.randn(1, 4, 256, 256)
+# def input_constructor(input_res):
+#     return torch.randn(1, 4, 256, 256)
 
-model = SentinelDeepLabV3()
-macs, params = get_model_complexity_info(
-    model, 
-    (4, 256, 256),
-    input_constructor=input_constructor,
-    as_strings=True, 
-    print_per_layer_stat=True, 
-    verbose=True
-)
+# model = SentinelDeepLabV3()
+# macs, params = get_model_complexity_info(
+#     model, 
+#     (4, 256, 256),
+#     input_constructor=input_constructor,
+#     as_strings=True, 
+#     print_per_layer_stat=True, 
+#     verbose=True
+# )
 
-print(f'SentinelDeepLabV3 - Computational complexity: {macs}')
-print(f'SentinelDeepLabV3 - Number of parameters: {params}')
+# print(f'SentinelDeepLabV3 - Computational complexity: {macs}')
+# print(f'SentinelDeepLabV3 - Number of parameters: {params}')

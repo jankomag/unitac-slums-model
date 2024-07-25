@@ -103,8 +103,13 @@ sentinel_scenePN, buildings_scenePN = create_scenes_for_city('Panama', cities['P
 sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 buildGeoDataset_PN = PolygonWindowGeoDataset(buildings_scenePN, city='Panama', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
+# Panama
+sentinel_sceneSJ, buildings_sceneSJ = create_scenes_for_city('SanJose', cities['SanJose'], class_config)
+sentinelGeoDataset_SJ = PolygonWindowGeoDataset(sentinel_sceneSJ, city='SanJose', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
+buildGeoDataset_SJ = PolygonWindowGeoDataset(buildings_sceneSJ, city='SanJose', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
+
 # Create datasets
-train_cities = 'sel' # 'sel'
+train_cities = 'selSJ' # 'sel'
 split_index = 0 # 0 or 1
 
 multimodal_datasets = {
@@ -113,16 +118,18 @@ multimodal_datasets = {
     'Tegucigalpa': MergeDataset(sentinelGeoDataset_TG, buildGeoDataset_TG),
     'Managua': MergeDataset(sentinelGeoDataset_MN, buildGeoDataset_MN),
     'Panama': MergeDataset(sentinelGeoDataset_PN, buildGeoDataset_PN),
-} if train_cities == 'sel' else {'SantoDomingo': MergeDataset(sentinelGeoDataset_SD, buildGeoDataset_SD)}
+    'SanJose': MergeDataset(sentinelGeoDataset_SJ, buildGeoDataset_SJ)
+    } if train_cities == 'selSJ' else {'SantoDomingo': MergeDataset(sentinelGeoDataset_SD, buildGeoDataset_SD)}
 
 cv = MultiInputCrossValidator(multimodal_datasets, n_splits=2, val_ratio=0.5, test_ratio=0)
 
 # Preview a city with sliding windows
-city = 'SantoDomingo'
+city = 'SanJose'
 windows, labels = cv.get_windows_and_labels_for_city(city, split_index)
 img_full = senitnel_create_full_image(get_label_source_from_merge_dataset(multimodal_datasets[city]))
 show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {split_index + 1})')
-show_single_tile_multi(multimodal_datasets, city, 1, show_sentinel=True, show_buildings=True)
+
+show_single_tile_multi(multimodal_datasets, city, 7, show_sentinel=True, show_buildings=True)
 
 train_dataset, val_dataset, _, val_city_indices = cv.get_split(split_index)
 print(f"Train dataset size: {len(train_dataset)}") 
@@ -159,12 +166,12 @@ wandb_logger = WandbLogger(project='UNITAC-multi-modal', log_model=True)
 
 # Loggers and callbacks
 checkpoint_callback = ModelCheckpoint(
-    monitor='val_loss',
+    monitor='val_mean_iou',
     save_last=True,
     dirpath=output_dir,
     filename=f'multimodal_{train_cities}_cv{split_index}_{{epoch:02d}}-{{val_loss:.4f}}',
     save_top_k=8,
-    mode='min')
+    mode='max')
 
 def generate_and_display_predictions(model, eval_sent_scene, eval_buil_scene, device, epoch):
         # Set up the prediction dataset
@@ -218,7 +225,7 @@ class PredictionVisualizationCallback(Callback):
             device = pl_module.device  # Get the device from the model
             generate_and_display_predictions(pl_module, sentinel_sceneSD, buildings_sceneSD, device, trainer.current_epoch)
 
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=45)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=15)
 visualization_callback = PredictionVisualizationCallback(every_n_epochs=5)  # Adjust the frequency as needed
 
 model = MultiResolutionDeepLabV3(
@@ -240,7 +247,7 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback, visualization_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=65,
+    min_epochs=30,
     max_epochs=250,
     num_sanity_val_steps=3,
     precision='16-mixed',

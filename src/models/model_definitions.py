@@ -10,7 +10,7 @@ import cv2
 from os.path import join
 from collections import OrderedDict
 from pytorch_lightning import LightningDataModule
-
+import pandas as pd
 from typing import Any, Optional, Tuple, Union, Sequence
 import os
 import pytorch_lightning as pl
@@ -326,28 +326,53 @@ class SentinelDeepLabV3(pl.LightningModule):
             }
         }
 
+
 class PredictionsIterator:
-    def __init__(self, model, dataset, device='cuda'):
+    def __init__(self, model, dataset, device):
         self.model = model
         self.dataset = dataset
         self.device = device
-        
         self.predictions = []
         
         with torch.no_grad():
             for idx in range(len(dataset)):
-                image, _ = dataset[idx]
-                image = image.unsqueeze(0).to(device)
-
-                output = self.model(image)
+                x, _ = self.get_item(dataset, idx)
+                x = x.unsqueeze(0).to(device)
+                
+                output = model(x)
                 probabilities = torch.sigmoid(output).squeeze().cpu().numpy()
                 
-                # Store predictions along with window coordinates
-                window = dataset.windows[idx]
+                window = self.get_window(dataset, idx)
                 self.predictions.append((window, probabilities))
-
+    
+    def get_item(self, dataset, idx):
+        if isinstance(dataset, Subset):
+            return self.get_item(dataset.dataset, dataset.indices[idx])
+        elif isinstance(dataset, ConcatDataset):
+            dataset_idx, sample_idx = self.get_concat_dataset_indices(dataset, idx)
+            return self.get_item(dataset.datasets[dataset_idx], sample_idx)
+        else:
+            return dataset[idx]
+    
+    def get_window(self, dataset, idx):
+        if isinstance(dataset, Subset):
+            return self.get_window(dataset.dataset, dataset.indices[idx])
+        elif isinstance(dataset, ConcatDataset):
+            dataset_idx, sample_idx = self.get_concat_dataset_indices(dataset, idx)
+            return self.get_window(dataset.datasets[dataset_idx], sample_idx)
+        else:
+            return dataset.windows[idx]
+    
+    def get_concat_dataset_indices(self, concat_dataset, idx):
+        for dataset_idx, dataset in enumerate(concat_dataset.datasets):
+            if idx < len(dataset):
+                return dataset_idx, idx
+            idx -= len(dataset)
+        raise IndexError('Index out of range')
+    
     def __iter__(self):
         return iter(self.predictions)
+
     
 # Mulitmodal Model and helpers definitions
 class MultiModalDataModule(LightningDataModule):
@@ -539,21 +564,21 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         x = self.encoder.backbone.maxpool(x)
         
         # Apply ResNet layers and fuse with buildings features
-        x = self.encoder.backbone.layer1(x)
+        x = self.encoder.backbone.layer1(x) # outputs torch.Size([16, 256, 64, 64])
         # print(f"x layer 1: {x.shape}")
-        x = self.fusion_layers[0](torch.cat([x, b_feats[1]], dim=1))
+        x = self.fusion_layers[0](torch.cat([x, b_feats[1]], dim=1)) # outputs torch.Size([16, 256, 64, 64])
         x_fus64 = self.xtra_fusion(x)
         # print(f"x_fus64 shape: {x_fus64.shape}")
 
         x = self.encoder.backbone.layer2(x)
-        x = self.fusion_layers[1](torch.cat([x, b_feats[2]], dim=1))
+        x = self.fusion_layers[1](torch.cat([x, b_feats[2]], dim=1)) # outputs torch.Size([16, 512, 32, 32])
         
         x = self.encoder.backbone.layer3(x)
-        x = self.fusion_layers[2](torch.cat([x, b_feats[3]], dim=1))
+        x = self.fusion_layers[2](torch.cat([x, b_feats[3]], dim=1)) # outputs torch.Size([16, 1024, 16, 16])
 
-        x = self.encoder.backbone.layer4(x)
+        x = self.encoder.backbone.layer4(x) # outputs torch.Size([16, 2048, 16, 16])
 
-        x = self.encoder.classifier(x) # torch.Size([16, 1, 32, 32])
+        x = self.encoder.classifier(x) # outputs torch.Size([16, 1, 32, 32])
         
         # Upsample to 64x64
         x_64 = F.interpolate(x, size=(64, 64), mode='bilinear', align_corners=False) #torch.Size([16, 1, 64, 64])
@@ -769,3 +794,7 @@ class FeatureMapVisualization:
         fig.colorbar(im, cax=cbar_ax)
         
         plt.show()
+        
+        
+encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)
+encoder.backbone
