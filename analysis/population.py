@@ -4,6 +4,8 @@ from rasterio.mask import mask
 import numpy as np
 import seaborn as sns
 import ee
+import os
+import sys
 import geemap
 from shapely.geometry import box, Polygon, MultiPolygon
 from shapely.ops import unary_union
@@ -13,6 +15,7 @@ from rasterio.transform import from_bounds
 import pandas as pd
 from rasterio.features import geometry_mask
 import folium
+import matplotlib.pyplot as plt
 from shapely.ops import unary_union
 from shapely.geometry import MultiPolygon, box, Polygon
 import matplotlib.ticker as ticker
@@ -169,9 +172,14 @@ sica_countries = [
 #########################################
 #### CALCULATE POPULATION PROPORTION ####
 #########################################
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+grandparent_dir = os.path.dirname(parent_dir)
+sys.path.append(grandparent_dir)
+sys.path.append(parent_dir)
 
-urab_areas_folder_path = "../data/1/urban_boundaries/final_boundaries"
-predictions_folder_path = "../data/1/SICA_final_predictions/sel_DLV3"
+urab_areas_folder_path = os.path.join(grandparent_dir, "data/1/urban_boundaries/final_boundaries")
+predictions_folder_path = os.path.join(grandparent_dir, "data/1/SICA_final_predictions/selSJ_DLV3")
 
 # Combine all the GeoDataFrames into one
 gdfs = []
@@ -263,7 +271,7 @@ def process_city(city_row, predictions, use_hrsl=True):
         
         # Calculate proportion
         proportion_informal = informal_population / total_population if total_population > 0 else 0
-        
+        print(f"Proportion informal: {proportion_informal} in {city}")
         return {
             'country': country,
             'city': city,
@@ -279,47 +287,37 @@ def process_city(city_row, predictions, use_hrsl=True):
 results = []
 
 for index, row in tqdm(urban_areas.iterrows(), total=urban_areas.shape[0]):
-    result = process_city(row, predictions, use_hrsl=False)
+    result = process_city(row, predictions, use_hrsl=True)
     if result is not None:
         results.append(result)
 
 # Create a DataFrame with the results
-df_ghsl = pd.DataFrame(results)
+df_hrls = pd.DataFrame(results)
 
 results_hrls_df = df_hrls.sort_values('proportion_informal', ascending=False)
-results_hrls_df.head()
+results_hrls_df.tail(8)
 
 results_ghsl_df = df_ghsl.sort_values('proportion_informal', ascending=False)
 results_ghsl_df.head()
 
-############################
-#### Unseen predictions ####
-############################
-unseen_predictions_folder_path = "../vectorised_model_predictions/multimodal/unseen_predictions/combined_predictions.geojson"
-unseen_predictions = gpd.read_file(unseen_predictions_folder_path)
-unseen_predictions = unseen_predictions.dissolve(by='city', aggfunc='sum')
-unseen_predictions = unseen_predictions.drop(columns=['split'])
-unseen_predictions = unseen_predictions.reset_index()
-unseen_predictions = unseen_predictions.rename(columns={'index': 'city'})
-unseen_predictions
 
-from shapely.geometry import box
+#############################################################
+#### CALCULATE POPULATION PROPORTION AND SAVE TO GEOJSON ####
+#############################################################
 
-def process_city(city, city_predictions, use_hrsl=True):
-    # Get the bounding box of all predictions for this city
-    city_bbox = city_predictions.total_bounds
-    bbox_geometry = box(*city_bbox)
+def process_city(city_row, predictions, use_hrsl=True):
+    country = city_row['country']
+    city = city_row['city']
+    city_geometry = city_row['geometry']
     
-    # Create an Earth Engine geometry
-    # ee.Geometry.Rectangle expects [west, south, east, north]
-    ee_geometry = ee.Geometry.Rectangle([
-        bbox_geometry.bounds[0],  # west
-        bbox_geometry.bounds[1],  # south
-        bbox_geometry.bounds[2],  # east
-        bbox_geometry.bounds[3]   # north
-    ])
+    if not isinstance(city_geometry, Polygon):
+        print(f"Warning: geometry for {country} is not a Polygon. Skipping.")
+        return None
     
-    # Choose dataset based on user input
+    print(f"\nProcessing: {city, country}")
+    
+    ee_geometry = ee.Geometry.Polygon(list(city_geometry.exterior.coords))
+    
     if use_hrsl:
         population_dataset = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
         dataset_name = "HRSL"
@@ -329,7 +327,6 @@ def process_city(city, city_predictions, use_hrsl=True):
         dataset_name = "GHS"
     
     try:
-        # Calculate total population in the bounding box
         total_population = population_image.reduceRegion(
             reducer=ee.Reducer.sum(),
             geometry=ee_geometry,
@@ -337,58 +334,58 @@ def process_city(city, city_predictions, use_hrsl=True):
             maxPixels=1e9
         ).get('b1').getInfo()
         
-        print(f"Total population in {city} bounding box ({dataset_name}): {total_population}")
+        print(f"Total population ({dataset_name}): {total_population}")
         
-        # Calculate population in predicted areas
-        predicted_population = 0
-        for _, prediction in city_predictions.iterrows():
-            pred_geometry = prediction['geometry']
-            if isinstance(pred_geometry, Polygon):
-                prediction_ee = ee.Geometry.Polygon(list(pred_geometry.exterior.coords))
-            elif isinstance(pred_geometry, MultiPolygon):
-                prediction_ee = ee.Geometry.MultiPolygon([list(poly.exterior.coords) for poly in pred_geometry.geoms])
-            else:
-                print(f"Skipping unknown geometry type for {city}")
-                continue
+        informal_settlements = []
+        
+        if country in predictions:
+            country_predictions = predictions[country]
+            city_informal_settlements = country_predictions[country_predictions.geometry.intersects(city_geometry)]
+            print(f"Number of intersecting informal settlements: {len(city_informal_settlements)}")
             
-            prediction_pop = population_image.reduceRegion(
-                reducer=ee.Reducer.sum(),
-                geometry=prediction_ee,
-                scale=30,
-                maxPixels=1e9
-            ).get('b1').getInfo()
-            predicted_population += prediction_pop
+            if not city_informal_settlements.empty:
+                for idx, settlement in city_informal_settlements.iterrows():
+                    settlement_ee = ee.Geometry.Polygon(list(settlement.geometry.exterior.coords))
+                    settlement_pop = population_image.reduceRegion(
+                        reducer=ee.Reducer.sum(),
+                        geometry=settlement_ee,
+                        scale=30,
+                        maxPixels=1e9
+                    ).get('b1').getInfo()
+                    
+                    informal_settlements.append({
+                        'geometry': settlement.geometry,
+                        'properties': {
+                            'country': country,
+                            'city': city,
+                            'estimated_population': settlement_pop
+                        }
+                    })
+            else:
+                print(f"No predictions intersect with this urban area in {city}")
+        else:
+            print(f"No predictions available for {country}")
         
-        print(f"Population in predicted areas: {predicted_population}")
-        
-        # Calculate proportion
-        proportion_predicted = predicted_population / total_population if total_population > 0 else 0
-        
-        return {
-            'city': city,
-            'total_population': total_population,
-            'predicted_population': predicted_population,
-            'proportion_predicted': proportion_predicted,
-            'dataset_used': dataset_name
-        }
+        return informal_settlements
     except Exception as e:
-        print(f"Error processing {city}: {str(e)}")
+        print(f"Error processing city in {country}: {str(e)}")
         return None
 
-# Group predictions by city
-city_groups = unseen_predictions.groupby('city')
+all_informal_settlements = []
 
-# Process each city
-results = []
-for city, city_predictions in tqdm(city_groups):
-    result = process_city(city, city_predictions, use_hrsl=False)
-    if result is not None:
-        results.append(result)
+for index, row in tqdm(urban_areas.iterrows(), total=urban_areas.shape[0]):
+    settlements = process_city(row, predictions, use_hrsl=True)
+    if settlements:
+        all_informal_settlements.extend(settlements)
 
-results_df = pd.DataFrame(results)
-results_df = results_df.sort_values('proportion_predicted', ascending=False)
-results_df.head()
+# Create a GeoDataFrame with all informal settlements
+gdf_informal_settlements = gpd.GeoDataFrame(all_informal_settlements)
 
+# Save the GeoDataFrame as a GeoJSON file
+output_path = os.path.join(grandparent_dir, "data/1/SICA_final_predictions/final_preds.geojson")
+gdf_informal_settlements.to_file(output_path, driver="GeoJSON")
+
+print(f"Saved informal settlements to: {output_path}")
 
 ###########################
 #### Labels population ####
@@ -531,7 +528,9 @@ labels_df.head()
 #### PLOTTING RESULTS ####
 ##########################
 # decide which population data source to use
-df=labels_df
+df=results_hrls_df
+# filter out cities with no informal population
+df = df[df['informal_population'] > 0]
 
 rcParams['font.family'] = 'serif'
 rcParams['font.serif'] = ['Garamond', 'Times New Roman', 'DejaVu Serif']
@@ -631,7 +630,7 @@ plt.show()
 
 def create_city_map(city_name, urban_areas, predictions_folder_path, padding=0.1, zoom=15):
     # Find the city in the urban_areas GeoDataFrame
-    city = urban_areas[urban_areas['city_name'] == city_name]
+    city = urban_areas[urban_areas['city'] == city_name]
     city = city.to_crs('EPSG:3857')
 
     if city.empty:
@@ -644,7 +643,7 @@ def create_city_map(city_name, urban_areas, predictions_folder_path, padding=0.1
     # Load predictions for the country
     predictions_file = os.path.join(predictions_folder_path, country, "averaged_predictions.geojson")
     if not os.path.exists(predictions_file):
-        print(f"No predictions file found for {country}")
+        print(f"No predictions file found for {city}")
         return
     
     country_predictions = gpd.read_file(predictions_file)
@@ -694,11 +693,11 @@ def create_city_map(city_name, urban_areas, predictions_folder_path, padding=0.1
     plt.show()
 
 # Use the function to create a maps
-predictions_folder_path = "../data/1/SICA_final_predictions/sel_DLV3"
+predictions_folder_path = os.path.join(grandparent_dir, "data/1/SICA_final_predictions/selSJ_DLV3")
 create_city_map("ElProgreso", urban_areas, predictions_folder_path, padding=0.01, zoom=15)
-create_city_map("SanPedroSula", urban_areas, predictions_folder_path, padding=0.01, zoom=15)
 create_city_map("SanPedroDeMacoris", urban_areas, predictions_folder_path, padding=0.1, zoom=15)
 create_city_map("SanFranciscoDeMacoris", urban_areas, predictions_folder_path, padding=0.1, zoom=15)
+create_city_map("SanPedroSula", urban_areas, predictions_folder_path, padding=0.01, zoom=15)
 
 
 ### OLD CODE TO CALCULATE RATIO OF POPULATION WITHIN PRECARIOUS AREAS WITHIN BBOXES ###

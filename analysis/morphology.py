@@ -235,7 +235,7 @@ for city_name, df in city_dataframes.items():
 ##################
 
 # distribution of morphometrics by city
-file_path = os.path.join(grandparent_dir, 'slums-model-unitac/analysis/metrics/all_cities_slum_morphometrics.csv')
+file_path = os.path.join(grandparent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
 all_cities_df = pd.read_csv(file_path)
 
 # plt.style.use('ggplot')
@@ -244,13 +244,13 @@ city_name_map = {
     'SantoDomingoDOM': 'Santo Domingo, Dominican Republic',
     'GuatemalaCity': 'Guatemala City, Guatemala',
     'TegucigalpaHND': 'Tegucigalpa, Honduras',
-    'SanJoseCRI_': 'San Jose, Costa Rica',
+    'SanJoseCRI': 'San Jose, Costa Rica',
     'Panama': 'Panama City, Panama',
     'Belizecity_': 'Belize City, Belize',
     'Managua': 'Managua, Nicaragua',
     'Belmopan_': 'Belmopan, Belize'
 }
-all_cities_df = all_cities_df[all_cities_df['city'].isin(['SantoDomingoDOM', 'GuatemalaCity', 'TegucigalpaHND','Panama', 'Managua'])]
+all_cities_df = all_cities_df[all_cities_df['city'].isin(['SantoDomingoDOM', 'GuatemalaCity', 'TegucigalpaHND','Panama', 'SanJoseCRI','Managua'])]
 all_cities_df['city'] = all_cities_df['city'].map(city_name_map)
 
 # Define numeric columns

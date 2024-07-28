@@ -265,16 +265,14 @@ def average_predictions(pred1, pred2):
     return [(p1 + p2) / 2 for p1, p2 in zip(pred1, pred2)]
 
 device = torch.device('mps')
-output_dir = '../../vectorised_model_predictions/multi-modal/final_predictions_averaged/'
-os.makedirs(output_dir, exist_ok=True)
 
 class_config = ClassConfig(names=['background', 'slums'], 
                            colors=['lightgray', 'darkred'],
                            null_class='background')
     
 model_paths = [
-    os.path.join(parent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'),
-    os.path.join(parent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_epoch=35-val_loss=0.3268.ckpt')
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/selSJ_CustomDLV3/multimodal_selSJ_cv0_epoch=19-val_loss=0.2787.ckpt'),
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/selSJ_CustomDLV3/multimodal_selSJ_cv1_epoch=27-val_loss=0.2128.ckpt')
 ]
 
 models = [load_multimodal_model(path) for path in model_paths]
@@ -282,10 +280,12 @@ models = [load_multimodal_model(path) for path in model_paths]
 ##########################################
 #### PREDICTIONS FOR SICA URBAN AREAS ####
 ##########################################
-sica_cities = '../data/1/urban_boundaries/bboxes_SICA_urban_boundaries.geojson'
+sica_cities = os.path.join(grandparent_dir, 'data/1/urban_boundaries/bboxes_SICA_urban_boundaries.geojson')
 gdf = gpd.read_file(sica_cities)
 gdf = gdf.to_crs('EPSG:3857')
-gdf = gdf[gdf['city_name'].isin(['SantoDomingo', 'Managua', 'Tegucigalpa', 'GuatemalaCity', 'PanamaCity'])]
+# gdf = gdf[gdf['city_name'].isin(['Leon'])] #'Managua', 'SantoDomingo', 'Tegucigalpa', 'GuatemalaCity', 'PanamaCity'])]
+model_name_directory = 'selSJ_DLV3'
+gdf.explore()
 
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_name']
@@ -300,7 +300,7 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     bbox_4326 = Box(ymin=ymin_4326, xmin=xmin_4326, ymax=ymax_4326, xmax=xmax_4326)
 
     # Find the image file with a pattern match
-    image_pattern = f"../data/1/urban_boundaries/sentinel/{country}_{city_name}*"
+    image_pattern = os.path.join(grandparent_dir, f"data/1/urban_boundaries/sentinel/{country}_{city_name}*")
     matching_files = glob.glob(image_pattern)
     
     if not matching_files:
@@ -412,7 +412,7 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     affine_transform_buildings = Affine(10, 0, xmin3857b, 0, -10, ymax3857b)
     crs_transformer_buil.transform = affine_transform_buildings
     
-    output_dir = f'../data/1/SICA_final_predictions/sel_DLV3/{country}'
+    output_dir = os.path.join(grandparent_dir, f"data/1/SICA_final_predictions/{model_name_directory}/{country}")
     os.makedirs(output_dir, exist_ok=True)
 
     pred_label_store = SemanticSegmentationLabelStore(
@@ -547,8 +547,8 @@ def merge_geojson_files(country_directory, output_file):
     print(f'Merged GeoJSON file saved to {output_file}')
 
 countries = [
-    "Costa Rica",
     "Nicaragua",
+    "Costa Rica",
     "El Salvador",
     "Dominican Republic",
     "Guatemala",
@@ -557,7 +557,7 @@ countries = [
 ]
 
 # Base directory
-base_directory = "../data/1/SICA_final_predictions/sel_DLV3"
+base_directory = os.path.join(grandparent_dir, f'data/1/SICA_final_predictions/{model_name_directory}')
 
 # Aggregate predictions for each country
 for country in countries:

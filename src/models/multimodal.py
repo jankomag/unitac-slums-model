@@ -25,9 +25,7 @@ import math
 from ptflops import get_model_complexity_info
 import torch
 from typing import Dict
-
-from torchvision.models.segmentation import deeplabv3_resnet50
-from torchvision.models.segmentation.deeplabv3 import DeepLabHead
+import shutil
 
 # Project-specific imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -124,7 +122,7 @@ multimodal_datasets = {
 cv = MultiInputCrossValidator(multimodal_datasets, n_splits=2, val_ratio=0.5, test_ratio=0)
 
 # Preview a city with sliding windows
-city = 'SanJose'
+city = 'Managua'
 windows, labels = cv.get_windows_and_labels_for_city(city, split_index)
 img_full = senitnel_create_full_image(get_label_source_from_merge_dataset(multimodal_datasets[city]))
 show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {split_index + 1})')
@@ -150,10 +148,10 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-3,
+    'learning_rate': 1e-4,
     'weight_decay': 0,
-    'gamma': 0.8,
-    'sched_step_size': 10,
+    'gamma': 0.7,
+    'sched_step_size': 6,
     'pos_weight': 2.0,
     'buil_out_chan': 4
 }
@@ -170,7 +168,7 @@ checkpoint_callback = ModelCheckpoint(
     save_last=True,
     dirpath=output_dir,
     filename=f'multimodal_{train_cities}_cv{split_index}_{{epoch:02d}}-{{val_loss:.4f}}',
-    save_top_k=8,
+    save_top_k=5,
     mode='max')
 
 def generate_and_display_predictions(model, eval_sent_scene, eval_buil_scene, device, epoch):
@@ -265,10 +263,19 @@ trainer.fit(model, datamodule=data_module)
 #     break
 
 # Use best model for evaluation
-# model_id = 'multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'
-# best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
-best_model_path = checkpoint_callback.best_model_path
-best_model = MultiResolutionDeepLabV3()#buil_channels=buil_channels, buil_kernel=buil_kernel, buil_out_chan=4)
+tiles_per_city = {
+    'San Jose': 41,
+    'Guatemala City': 20,
+    'Santo Domingo': 13,
+    'Tegucigalpa': 12,
+    'Panama City': 10,
+    'Managua': 3
+}
+
+model_id = 'last.ckpt'
+best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
+# best_model_path = checkpoint_callback.best_model_path
+best_model = MultiResolutionDeepLabV3()
 checkpoint = torch.load(best_model_path)
 state_dict = checkpoint['state_dict']
 best_model.load_state_dict(state_dict, strict=True)
@@ -340,37 +347,33 @@ def calculate_multimodal_metrics(model, merged_dataset, device, scene):
     return {
         'f1': inf_eval.f1,
         'precision': inf_eval.precision,
-        'recall': inf_eval.recall
+        'recall': inf_eval.recall,
+        'num_tiles': len(windows)
     }
 
 city_metrics = {}
 excluded_cities = []
+total_tiles = 0
 
 for city, (dataset_index, num_samples) in val_city_indices.items():
-    # Skip cities with no validation samples
     if num_samples == 0:
         print(f"Skipping {city} as it has no validation samples.")
         continue
 
-    # Get the subset of the validation dataset for this city
     city_val_dataset = Subset(val_dataset, range(dataset_index, dataset_index + num_samples))
-    
-    # Get the scene for this city
-    city_scene = multimodal_datasets[city].datasets[0].scene  # Assuming the first dataset is sentinel
-    
+    city_scene = multimodal_datasets[city].datasets[0].scene
+
     try:
-        # Calculate metrics for this city
         metrics = calculate_multimodal_metrics(best_model, city_val_dataset, device, city_scene)
-        
         city_metrics[city] = metrics
+        total_tiles += metrics['num_tiles']
     except Exception as e:
         print(f"Error calculating metrics for {city}: {str(e)}")
 
 # Print metrics for each city
 print(f"\nMetrics for split {split_index}:")
-# print(f"Model id: {model_id}")
 for city, metrics in city_metrics.items():
-    print(f"\nMetrics for {city}:")
+    print(f"\nMetrics for {city} ({metrics['num_tiles']} tiles):")
     if any(math.isnan(value) for value in metrics.values()):
         print("No correct predictions made. Metrics are NaN.")
         excluded_cities.append(city)
@@ -379,35 +382,63 @@ for city, metrics in city_metrics.items():
         print(f"Precision: {metrics['precision']:.4f}")
         print(f"Recall: {metrics['recall']:.4f}")
 
-# Calculate and print average metrics across all cities
+# Calculate and print weighted average metrics
 valid_metrics = {k: v for k, v in city_metrics.items() if not any(math.isnan(value) for value in v.values())}
 
 if valid_metrics:
-    avg_metrics = {
-        'f1': sum(m['f1'] for m in valid_metrics.values()) / len(valid_metrics),
-        'precision': sum(m['precision'] for m in valid_metrics.values()) / len(valid_metrics),
-        'recall': sum(m['recall'] for m in valid_metrics.values()) / len(valid_metrics)
+    weighted_metrics = {
+        'f1': sum(metrics['f1'] * metrics['num_tiles'] for metrics in valid_metrics.values()) / total_tiles,
+        'precision': sum(metrics['precision'] * metrics['num_tiles'] for metrics in valid_metrics.values()) / total_tiles,
+        'recall': sum(metrics['recall'] * metrics['num_tiles'] for metrics in valid_metrics.values()) / total_tiles
     }
 
-    print("\nAverage metrics across cities:")
-    print(f"F1 Score: {avg_metrics['f1']:.4f}")
-    print(f"Precision: {avg_metrics['precision']:.4f}")
-    print(f"Recall: {avg_metrics['recall']:.4f}")
+    print("\nWeighted average metrics across cities:")
+    print(f"F1 Score: {weighted_metrics['f1']:.4f}")
+    print(f"Precision: {weighted_metrics['precision']:.4f}")
+    print(f"Recall: {weighted_metrics['recall']:.4f}")
     
     if excluded_cities:
         print(f"\n(Note: {', '.join(excluded_cities)} {'was' if len(excluded_cities) == 1 else 'were'} excluded due to NaN metrics)")
 else:
-    print("\nUnable to calculate average metrics. All cities have NaN values.")
+    print("\nUnable to calculate weighted average metrics. All cities have NaN values.")
 
 
-################################
-###### Unseen Predictions ######
-################################
+# ################################
+# ###### Unseen Predictions ######
+# ################################
 
+# model_paths_original_noSJ = [
+#     os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'),
+#     os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_epoch=35-val_loss=0.3268.ckpt')
+# ]
 model_paths = [
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv0_epoch=18-val_loss=0.4542.ckpt'),
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/sel_CustomDLV3/multimodal_sel_cv1_epoch=35-val_loss=0.3268.ckpt')
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/selSJ_CustomDLV3/multimodal_selSJ_cv0_epoch=19-val_loss=0.2787.ckpt'),
+    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/selSJ_CustomDLV3/multimodal_selSJ_cv1_epoch=27-val_loss=0.2128.ckpt')
 ]
+
+def save_predictions_as_geojson(pred_labels, city, split_index, output_dir, cities, class_config):
+    vector_output_config = CustomVectorOutputConfig(
+        class_id=1,
+        denoise=8,
+        threshold=0.5
+    )
+
+    crs_transformer = RasterioCRSTransformer.from_uri(cities[city]['image_path'])
+    gdf = gpd.read_file(cities[city]['labels_path']).to_crs('epsg:3857')
+    xmin3857, ymin, xmax, ymax3857 = gdf.total_bounds
+    affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
+    crs_transformer.transform = affine_transform_buildings
+
+    city_output_dir = os.path.join(output_dir, city)
+    os.makedirs(city_output_dir, exist_ok=True)  # Create directory if it doesn't exist, but don't clear it
+    label_store = SemanticSegmentationLabelStore(
+        uri=os.path.join(city_output_dir, f'split{split_index}_predictions'),
+        crs_transformer=crs_transformer,
+        class_config=class_config,
+        vector_outputs=[vector_output_config],
+        discrete_output=True
+    )
+    label_store.save(pred_labels)
 
 def load_multimodal_model(model_path, device):
     model = MultiResolutionDeepLabV3()
@@ -418,7 +449,7 @@ def load_multimodal_model(model_path, device):
     return model
 
 def save_unseen_predictions_multimodal(models, cv, multimodal_datasets, cities, class_config, device, output_dir):
-    clear_directory(output_dir)
+    # clear_directory(output_dir)
 
     for split_index, model in enumerate(models):
         model.eval()
@@ -462,7 +493,7 @@ def get_sentinel_scene_from_merge_dataset(merged_dataset):
 
 models = [load_multimodal_model(path, device) for path in model_paths]
 
-output_dir = '../../vectorised_model_predictions/multimodal/unseen_predictions/'
+output_dir = '../../vectorised_model_predictions/multimodal/unseen_predictions_selSJ/'
 
 try:
     save_unseen_predictions_multimodal(models, cv, multimodal_datasets, cities, class_config, device, output_dir)
@@ -474,160 +505,159 @@ try:
 except Exception as e:
     print(f"An error occurred during prediction or merging: {str(e)}")
 
-
 ##############################
 ###### Model Complexity ######
 ##############################
 
-def input_constructor(input_res):
-    # Create sample inputs matching your data structure
-    sentinel = torch.randn(1, 4, 256, 256)  # 4 channels, 256x256 image size
-    buildings = torch.randn(1, 1, 512, 512)  # 1 channel, 512x512 image size
-    return ((sentinel, None), (buildings, None))
+# def input_constructor(input_res):
+#     # Create sample inputs matching your data structure
+#     sentinel = torch.randn(1, 4, 256, 256)  # 4 channels, 256x256 image size
+#     buildings = torch.randn(1, 1, 512, 512)  # 1 channel, 512x512 image size
+#     return ((sentinel, None), (buildings, None))
 
-model = MultiResolutionDeepLabV3()
-macs, params = get_model_complexity_info(
-    model, 
-    (4, 256, 256),  # This is ignored, but needed for the function
-    input_constructor=input_constructor,
-    as_strings=True, 
-    print_per_layer_stat=True, 
-    verbose=True
-)
+# model = MultiResolutionDeepLabV3()
+# macs, params = get_model_complexity_info(
+#     model, 
+#     (4, 256, 256),  # This is ignored, but needed for the function
+#     input_constructor=input_constructor,
+#     as_strings=True, 
+#     print_per_layer_stat=True, 
+#     verbose=True
+# )
 
-print(f'MultiResolutionDeepLabV3 - Computational complexity: {macs}')
-print(f'MultiResolutionDeepLabV3 - Number of parameters: {params}')
+# print(f'MultiResolutionDeepLabV3 - Computational complexity: {macs}')
+# print(f'MultiResolutionDeepLabV3 - Number of parameters: {params}')
 
 
-##############################
-### Visualise feature maps ###
-##############################
+# ##############################
+# ### Visualise feature maps ###
+# ##############################
 
-model_id = 'multimodal_sel_cv1_epoch=35-val_loss=0.3268.ckpt'
-best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
-best_model = MultiResolutionDeepLabV3()#buil_channels=buil_channels, buil_kernel=buil_kernel, buil_out_chan=4)
-checkpoint = torch.load(best_model_path)
-state_dict = checkpoint['state_dict']
-best_model.load_state_dict(state_dict, strict=True)
-best_model = best_model.to(device)
-best_model.eval()
-check_nan_params(best_model)
+# model_id = 'multimodal_sel_cv1_epoch=35-val_loss=0.3268.ckpt'
+# best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
+# best_model = MultiResolutionDeepLabV3()#buil_channels=buil_channels, buil_kernel=buil_kernel, buil_out_chan=4)
+# checkpoint = torch.load(best_model_path)
+# state_dict = checkpoint['state_dict']
+# best_model.load_state_dict(state_dict, strict=True)
+# best_model = best_model.to(device)
+# best_model.eval()
+# check_nan_params(best_model)
 
-import math
-import numpy as np
-class FeatureMapVisualization:
-    def __init__(self, model, device):
-        self.model = model
-        self.feature_maps = {}
-        self.hooks = []
-        self.device = device
+# import math
+# import numpy as np
+# class FeatureMapVisualization:
+#     def __init__(self, model, device):
+#         self.model = model
+#         self.feature_maps = {}
+#         self.hooks = []
+#         self.device = device
 
-    def add_hooks(self, layer_names):
-        for name, module in self.model.named_modules():
-            if name in layer_names:
-                self.hooks.append(module.register_forward_hook(self.save_feature_map(name)))
+#     def add_hooks(self, layer_names):
+#         for name, module in self.model.named_modules():
+#             if name in layer_names:
+#                 self.hooks.append(module.register_forward_hook(self.save_feature_map(name)))
 
-    def save_feature_map(self, name):
-        def hook(module, input, output):
-            self.feature_maps[name] = output
-        return hook
+#     def save_feature_map(self, name):
+#         def hook(module, input, output):
+#             self.feature_maps[name] = output
+#         return hook
 
-    def remove_hooks(self):
-        for hook in self.hooks:
-            hook.remove()
+#     def remove_hooks(self):
+#         for hook in self.hooks:
+#             hook.remove()
 
-    def visualize_feature_maps(self, layer_name, input_data, num_feature_maps='all', figsize=(20, 20)):
-        self.model.eval()
-        with torch.no_grad():
-            # Force model to device again
-            self.model = self.model.to(self.device)
+#     def visualize_feature_maps(self, layer_name, input_data, num_feature_maps='all', figsize=(20, 20)):
+#         self.model.eval()
+#         with torch.no_grad():
+#             # Force model to device again
+#             self.model = self.model.to(self.device)
             
-            # Ensure input_data is on the correct device
-            if isinstance(input_data, list):
-                input_data = [x.to(self.device) if isinstance(x, torch.Tensor) else x for x in input_data]
-            elif isinstance(input_data, dict):
-                input_data = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in input_data.items()}
-            elif isinstance(input_data, torch.Tensor):
-                input_data = input_data.to(self.device)
+#             # Ensure input_data is on the correct device
+#             if isinstance(input_data, list):
+#                 input_data = [x.to(self.device) if isinstance(x, torch.Tensor) else x for x in input_data]
+#             elif isinstance(input_data, dict):
+#                 input_data = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in input_data.items()}
+#             elif isinstance(input_data, torch.Tensor):
+#                 input_data = input_data.to(self.device)
             
-            # Double-check that all model parameters are on the correct device
-            for param in self.model.parameters():
-                param.data = param.data.to(self.device)
+#             # Double-check that all model parameters are on the correct device
+#             for param in self.model.parameters():
+#                 param.data = param.data.to(self.device)
             
-            self.model(input_data)
+#             self.model(input_data)
 
-        if layer_name not in self.feature_maps:
-            print(f"Layer {layer_name} not found in feature maps.")
-            return
+#         if layer_name not in self.feature_maps:
+#             print(f"Layer {layer_name} not found in feature maps.")
+#             return
 
-        feature_maps = self.feature_maps[layer_name].cpu().detach().numpy()
+#         feature_maps = self.feature_maps[layer_name].cpu().detach().numpy()
 
-        # Handle different dimensions
-        if feature_maps.ndim == 4:  # (batch_size, channels, height, width)
-            feature_maps = feature_maps[0]  # Take the first item in the batch
-        elif feature_maps.ndim == 3:  # (channels, height, width)
-            pass
-        else:
-            print(f"Unexpected feature map shape: {feature_maps.shape}")
-            return
+#         # Handle different dimensions
+#         if feature_maps.ndim == 4:  # (batch_size, channels, height, width)
+#             feature_maps = feature_maps[0]  # Take the first item in the batch
+#         elif feature_maps.ndim == 3:  # (channels, height, width)
+#             pass
+#         else:
+#             print(f"Unexpected feature map shape: {feature_maps.shape}")
+#             return
 
-        total_maps = feature_maps.shape[0]
+#         total_maps = feature_maps.shape[0]
         
-        if num_feature_maps == 'all':
-            num_feature_maps = total_maps
-        else:
-            num_feature_maps = min(num_feature_maps, total_maps)
+#         if num_feature_maps == 'all':
+#             num_feature_maps = total_maps
+#         else:
+#             num_feature_maps = min(num_feature_maps, total_maps)
 
-        # Calculate grid size
-        grid_size = math.ceil(math.sqrt(num_feature_maps))
+#         # Calculate grid size
+#         grid_size = math.ceil(math.sqrt(num_feature_maps))
         
-        fig, axes = plt.subplots(grid_size, grid_size, figsize=figsize)
+#         fig, axes = plt.subplots(grid_size, grid_size, figsize=figsize)
         
-        if grid_size == 1:
-            axes = np.array([[axes]])
-        elif grid_size > 1 and axes.ndim == 1:
-            axes = axes.reshape(1, -1)
+#         if grid_size == 1:
+#             axes = np.array([[axes]])
+#         elif grid_size > 1 and axes.ndim == 1:
+#             axes = axes.reshape(1, -1)
 
-        for i in range(grid_size):
-            for j in range(grid_size):
-                index = i * grid_size + j
-                if index < num_feature_maps:
-                    feature_map_img = feature_maps[index]
-                    im = axes[i, j].imshow(feature_map_img, cmap='viridis')
-                    axes[i, j].axis('off')
-                    axes[i, j].set_title(f'Channel {index+1}')
-                else:
-                    axes[i, j].axis('off')
+#         for i in range(grid_size):
+#             for j in range(grid_size):
+#                 index = i * grid_size + j
+#                 if index < num_feature_maps:
+#                     feature_map_img = feature_maps[index]
+#                     im = axes[i, j].imshow(feature_map_img, cmap='viridis')
+#                     axes[i, j].axis('off')
+#                     axes[i, j].set_title(f'Channel {index+1}')
+#                 else:
+#                     axes[i, j].axis('off')
 
-        fig.suptitle(f'Feature Maps for Layer: {layer_name}\n({num_feature_maps} out of {total_maps} channels)')
-        fig.tight_layout()
+#         fig.suptitle(f'Feature Maps for Layer: {layer_name}\n({num_feature_maps} out of {total_maps} channels)')
+#         fig.tight_layout()
         
-        # Add colorbar
-        fig.subplots_adjust(right=0.9)
-        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-        fig.colorbar(im, cax=cbar_ax)
+#         # Add colorbar
+#         fig.subplots_adjust(right=0.9)
+#         cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+#         fig.colorbar(im, cax=cbar_ax)
         
-        plt.show()
+#         plt.show()
         
-# # Use it like this:
-visualizer = FeatureMapVisualization(best_model, device=device)
-visualizer.add_hooks([
-    'buildings_encoder.0.0', # conv2d
-    'buildings_encoder.1.0', # conv2d
-    'xtra_fusion',
-    'decoder_fusion'
-])
+# # # Use it like this:
+# visualizer = FeatureMapVisualization(best_model, device=device)
+# visualizer.add_hooks([
+#     'buildings_encoder.0.0', # conv2d
+#     'buildings_encoder.1.0', # conv2d
+#     'xtra_fusion',
+#     'decoder_fusion'
+# ])
 
-# Get the iterator for the DataLoader
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True, collate_fn=collate_multi_fn)
-data_iter = iter(val_loader)
-first_batch = next(data_iter)
+# # Get the iterator for the DataLoader
+# val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True, collate_fn=collate_multi_fn)
+# data_iter = iter(val_loader)
+# first_batch = next(data_iter)
 
-show_first_batch_item(first_batch)
+# show_first_batch_item(first_batch)
 
-visualizer.visualize_feature_maps('buildings_encoder.0.0', first_batch, num_feature_maps='all')
-visualizer.visualize_feature_maps('buildings_encoder.1.0', first_batch, num_feature_maps='all')
-visualizer.visualize_feature_maps('xtra_fusion', first_batch, num_feature_maps='all')
-visualizer.visualize_feature_maps('decoder_fusion', first_batch, num_feature_maps='all')
+# visualizer.visualize_feature_maps('buildings_encoder.0.0', first_batch, num_feature_maps='all')
+# visualizer.visualize_feature_maps('buildings_encoder.1.0', first_batch, num_feature_maps='all')
+# visualizer.visualize_feature_maps('xtra_fusion', first_batch, num_feature_maps='all')
+# visualizer.visualize_feature_maps('decoder_fusion', first_batch, num_feature_maps='all')
 
-visualizer.remove_hooks()
+# visualizer.remove_hooks()

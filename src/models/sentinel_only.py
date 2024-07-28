@@ -123,7 +123,7 @@ sentinelGeoDataset_SJ = PolygonWindowGeoDataset(sentinel_sceneSJ, city='SanSalva
 
 # Create datasets
 train_cities = 'selSJ'
-split_index = 1 # 0 or 1
+split_index = 0 # 0 or 1
 
 def get_sentinel_datasets(train_cities):
     all_datasets = {
@@ -220,7 +220,7 @@ trainer.fit(model, train_loader, val_loader)
 ##########################################
 ###### Individual Model Predictions ######
 ##########################################
-model_id = 'sentinel_selSJ_cv1-epoch=23-val_loss=0.2417.ckpt'
+model_id = 'sentinel_selSJ_cv0-epoch=06-val_loss=0.3216.ckpt'
 best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/sentinel_only/{train_cities}_DLV3/', model_id)
 # best_model_path = checkpoint_callback.best_model_path
 scene_eval = SentinelScene_SD  # Assuming this is your sentinel scene for evaluation
@@ -247,9 +247,19 @@ fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
 plt.show()
 
 from rastervision.core.box import Box
+import math
+
+# Define the weights (number of tiles) for each city
+tiles_per_city = {
+    'SanJose': 82,
+    'GuatemalaCity': 41,
+    'SantoDomingo': 26,
+    'Tegucigalpa': 26,
+    'Panama': 20,
+    'Managua': 6
+}
 
 def calculate_sentinel_metrics(dataset, device, scene, custom_predictions=None):
-
     predictions_iterator = PredictionsIterator(model, dataset, device=device)
     windows, predictions = zip(*predictions_iterator)
 
@@ -277,11 +287,13 @@ def calculate_sentinel_metrics(dataset, device, scene, custom_predictions=None):
     return {
         'f1': inf_eval.f1,
         'precision': inf_eval.precision,
-        'recall': inf_eval.recall
+        'recall': inf_eval.recall,
+        'num_tiles': len(windows)  # Add this line to return the number of tiles
     }
 
 city_metrics = {}
 excluded_cities = []
+total_tiles = 0
 
 for city, (dataset_index, num_samples) in val_city_indices.items():
     # Skip cities with no validation samples
@@ -295,18 +307,15 @@ for city, (dataset_index, num_samples) in val_city_indices.items():
     # Get the scene for this city
     city_scene = sentinel_datasets[city].scene
     
-    try:
-        # Calculate metrics for this city
-        metrics = calculate_sentinel_metrics(city_val_dataset, device, city_scene, custom_predictions=None)
-        
-        city_metrics[city] = metrics
-    except Exception as e:
-        print(f"Error calculating metrics for {city}: {str(e)}")
+    # Calculate metrics for this city
+    metrics = calculate_sentinel_metrics(city_val_dataset, device, city_scene, custom_predictions=None)
+    city_metrics[city] = metrics
+    total_tiles += tiles_per_city[city]  # Use the predefined number of tiles
 
 # Print metrics for each city
 print(f"\nMetrics for split {split_index}:")
 for city, metrics in city_metrics.items():
-    print(f"\nMetrics for {city}:")
+    print(f"\nMetrics for {city} ({tiles_per_city[city]} tiles):")
     if any(math.isnan(value) for value in metrics.values()):
         print("No correct predictions made. Metrics are NaN.")
         excluded_cities.append(city)
@@ -315,25 +324,25 @@ for city, metrics in city_metrics.items():
         print(f"Precision: {metrics['precision']:.4f}")
         print(f"Recall: {metrics['recall']:.4f}")
 
-# Calculate and print average metrics across all cities
+# Calculate and print weighted average metrics across all cities
 valid_metrics = {k: v for k, v in city_metrics.items() if not any(math.isnan(value) for value in v.values())}
 
 if valid_metrics:
-    avg_metrics = {
-        'f1': sum(m['f1'] for m in valid_metrics.values()) / len(valid_metrics),
-        'precision': sum(m['precision'] for m in valid_metrics.values()) / len(valid_metrics),
-        'recall': sum(m['recall'] for m in valid_metrics.values()) / len(valid_metrics)
+    weighted_metrics = {
+        'f1': sum(metrics['f1'] * tiles_per_city[city] for city, metrics in valid_metrics.items()) / total_tiles,
+        'precision': sum(metrics['precision'] * tiles_per_city[city] for city, metrics in valid_metrics.items()) / total_tiles,
+        'recall': sum(metrics['recall'] * tiles_per_city[city] for city, metrics in valid_metrics.items()) / total_tiles
     }
 
-    print("\nAverage metrics across cities:")
-    print(f"F1 Score: {avg_metrics['f1']:.4f}")
-    print(f"Precision: {avg_metrics['precision']:.4f}")
-    print(f"Recall: {avg_metrics['recall']:.4f}")
+    print("\nWeighted average metrics across cities:")
+    print(f"F1 Score: {weighted_metrics['f1']:.4f}")
+    print(f"Precision: {weighted_metrics['precision']:.4f}")
+    print(f"Recall: {weighted_metrics['recall']:.4f}")
     
     if excluded_cities:
         print(f"\n(Note: {', '.join(excluded_cities)} {'was' if len(excluded_cities) == 1 else 'were'} excluded due to NaN metrics)")
 else:
-    print("\nUnable to calculate average metrics. All cities have NaN values.")
+    print("\nUnable to calculate weighted average metrics. All cities have NaN values.")
 
 
 ################################
