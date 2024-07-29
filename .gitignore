@@ -17,7 +17,6 @@ src/wandb/
 src/models/3res_model.py
 ananlysis/wandb/*
 ananlysis/metrics/
-Dockerfile
 docker/
 src/Interactive-1.ipynb
 src/make_pred_pixelbased.py
@@ -26,3 +25,19 @@ rastervision/
 src/features/make_data.py
 src/models/poi.py
 src/clay/*
+configs/*
+deeplnafrica/*
+notebooks/1.0-jm-initial-data-exploration.ipynb
+notebooks/2.0-jm-custom-rasterisation.ipynb
+notebooks/rastervision.ipynb
+src/cache/*
+src/evaluate_models.py
+src/make_predictions_buildings_only_model.py
+src/models/lightning_logs/*
+src/models/model_predictions
+src/models/Interactive-1.ipynb
+src/models/buildings_only.py
+src/models/geemap_pixel_based.ipynb
+analysis/metrics/*
+analysis/wandb/*
+analysis/building_source.py

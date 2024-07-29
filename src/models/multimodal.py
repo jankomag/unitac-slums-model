@@ -3,6 +3,7 @@ import sys
 import argparse
 import yaml
 from datetime import datetime
+import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import wandb
@@ -37,8 +38,8 @@ sys.path.append(parent_dir)
 from src.models.model_definitions import (MultiResolutionDeepLabV3, MultiResPredictionsIterator,check_nan_params, MultiResolutionDeepLabV3,
                                           MultiModalDataModule, create_predictions_and_ground_truth_plot, merge_geojson_files,
                                           CustomVectorOutputConfig, FeatureMapVisualization)
-from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple, MultiInputCrossValidator, clear_directory,
-                                  senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn,show_first_batch_item,
+from src.features.dataloaders import (cities, show_windows, buil_create_full_image,ensure_tuple, MultiInputCrossValidator, clear_directory, BaseCrossValidator,
+                                  senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn,show_first_batch_item, AugMultiInputCrossValidator,
                                   MergeDataset, show_single_tile_multi, get_label_source_from_merge_dataset, create_scenes_for_city, PolygonWindowGeoDataset)
 from rastervision.core.box import Box
 from rastervision.core.data.label import SemanticSegmentationLabels
@@ -76,6 +77,134 @@ class_config = ClassConfig(names=['background', 'slums'],
                                 colors=['lightgray', 'darkred'],
                                 null_class='background')
 
+class AugmentedSubset(torch.utils.data.Subset):
+    def __init__(self, dataset, indices, augmentation):
+        super().__init__(dataset, indices)
+        self.augmentation = augmentation
+
+    def __len__(self):
+        return len(self.indices) * 2  # Double the length
+
+    def __getitem__(self, idx):
+        original_idx = idx // 2
+        item = super().__getitem__(original_idx)
+        
+        sentinel_data, buildings_data = item
+        sentinel_image, sentinel_label = sentinel_data
+        buildings_image, buildings_label = buildings_data
+
+        if idx % 2 == 0:  # Return original data
+            return ((sentinel_image, sentinel_label), (buildings_image, buildings_label))
+        else:  # Return augmented data
+            # Create a single random state for both augmentations
+            random_state = np.random.randint(2147483647)
+
+            # Augment sentinel data
+            aug_sentinel = self.augmentation(image=sentinel_image.numpy(), mask=sentinel_label.numpy(), 
+                                             force_apply=True, random_state=random_state)
+            aug_sentinel_image = torch.from_numpy(aug_sentinel['image'])
+            aug_sentinel_label = torch.from_numpy(aug_sentinel['mask'])
+
+            # Augment buildings data
+            aug_buildings = self.augmentation(image=buildings_image.numpy(), mask=buildings_label.numpy(), 
+                                              force_apply=True, random_state=random_state)
+            aug_buildings_image = torch.from_numpy(aug_buildings['image'])
+            aug_buildings_label = torch.from_numpy(aug_buildings['mask'])
+
+            return ((aug_sentinel_image, aug_sentinel_label), (aug_buildings_image, aug_buildings_label))
+
+def collate_multi_fn(batch):
+    sentinel_data = []
+    buildings_data = []
+    labels = []
+
+    for item in batch:
+        sentinel_batch, buildings_batch = item
+        
+        sentinel_item, sentinel_label = sentinel_batch
+        buildings_item, buildings_label = buildings_batch
+
+        # Replace NaN values with 0 in the image data
+        sentinel_item = torch.nan_to_num(sentinel_item, nan=0.0)
+        buildings_item = torch.nan_to_num(buildings_item, nan=0.0)
+
+        # Check if there are any NaN values in the labels
+        if torch.isnan(sentinel_label).any() or torch.isnan(buildings_label).any():
+            print(f"NaN found in label")
+            continue
+        
+        sentinel_data.append(sentinel_item)
+        buildings_data.append(buildings_item)
+        labels.append(sentinel_label)  # Use sentinel_label as they should be the same
+
+    # If all items were skipped due to NaN values, return None
+    if len(sentinel_data) == 0:
+        return None
+
+    # Stack the data and labels
+    sentinel_data = torch.stack(sentinel_data)
+    buildings_data = torch.stack(buildings_data)
+    labels = torch.stack(labels)
+
+    return ((sentinel_data, labels), (buildings_data, labels))
+
+class MultiInputCrossValidator(BaseCrossValidator):
+    def __init__(self, datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1, use_augmentation=False):
+        super().__init__(datasets, n_splits, val_ratio, test_ratio)
+        self.use_augmentation = use_augmentation
+        if use_augmentation:
+            self.augmentation = A.Compose([
+                A.VerticalFlip(p=1.0),
+                A.HorizontalFlip(p=1.0),
+            ], is_check_shapes=False)
+        else:
+            self.augmentation = None
+
+    def get_split(self, split_index):
+        train_datasets = []
+        val_datasets = []
+        test_datasets = []
+        val_city_indices = {}
+        current_val_index = 0
+
+        for city, dataset in self.datasets.items():
+            train_idx, val_idx, test_idx = self.city_splits[city][split_index]
+            
+            if self.use_augmentation:
+                train_subset = AugmentedSubset(dataset, train_idx, self.augmentation)
+            else:
+                train_subset = Subset(dataset, train_idx)
+            
+            val_subset = Subset(dataset, val_idx)
+            
+            train_datasets.append(train_subset)
+            val_datasets.append(val_subset)
+            
+            val_city_indices[city] = (current_val_index, len(val_idx))
+            current_val_index += len(val_idx)
+
+            if test_idx:
+                test_subset = Subset(dataset, test_idx)
+                test_datasets.append(test_subset)
+
+        return (ConcatDataset(train_datasets), 
+                ConcatDataset(val_datasets), 
+                ConcatDataset(test_datasets) if test_datasets else None, 
+                val_city_indices)
+
+    def get_windows_and_labels_for_city(self, city, split_index):
+        if city not in self.datasets:
+            raise ValueError(f"City '{city}' not found in datasets.")
+
+        dataset = self.datasets[city]
+        train_idx, val_idx, test_idx = self.city_splits[city][split_index]
+
+        # Assuming the first dataset in MergeDataset is the sentinel dataset
+        windows = dataset.datasets[0].windows
+        labels = ['train' if i in train_idx else 'val' if i in val_idx else 'test' for i in range(len(windows))]
+
+        return windows, labels
+
 # SantoDomingo
 sentinel_sceneSD, buildings_sceneSD = create_scenes_for_city('SantoDomingo', cities['SantoDomingo'], class_config)
 sentinelGeoDataset_SD = PolygonWindowGeoDataset(sentinel_sceneSD, city= 'SantoDomingo', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
@@ -101,7 +230,7 @@ sentinel_scenePN, buildings_scenePN = create_scenes_for_city('Panama', cities['P
 sentinelGeoDataset_PN = PolygonWindowGeoDataset(sentinel_scenePN, city='Panama', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 buildGeoDataset_PN = PolygonWindowGeoDataset(buildings_scenePN, city='Panama', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
 
-# Panama
+# SanJose
 sentinel_sceneSJ, buildings_sceneSJ = create_scenes_for_city('SanJose', cities['SanJose'], class_config)
 sentinelGeoDataset_SJ = PolygonWindowGeoDataset(sentinel_sceneSJ, city='SanJose', window_size=256,out_size=256,padding=0,transform_type=TransformType.noop,transform=None)
 buildGeoDataset_SJ = PolygonWindowGeoDataset(buildings_sceneSJ, city='SanJose', window_size=512,out_size=512,padding=0,transform_type=TransformType.noop,transform=None)
@@ -109,6 +238,7 @@ buildGeoDataset_SJ = PolygonWindowGeoDataset(buildings_sceneSJ, city='SanJose', 
 # Create datasets
 train_cities = 'selSJ' # 'sel'
 split_index = 0 # 0 or 1
+use_augmentation = True  # Set this to False if you don't want augmentation
 
 multimodal_datasets = {
     'SantoDomingo': MergeDataset(sentinelGeoDataset_SD, buildGeoDataset_SD),
@@ -117,9 +247,10 @@ multimodal_datasets = {
     'Managua': MergeDataset(sentinelGeoDataset_MN, buildGeoDataset_MN),
     'Panama': MergeDataset(sentinelGeoDataset_PN, buildGeoDataset_PN),
     'SanJose': MergeDataset(sentinelGeoDataset_SJ, buildGeoDataset_SJ)
-    } if train_cities == 'selSJ' else {'SantoDomingo': MergeDataset(sentinelGeoDataset_SD, buildGeoDataset_SD)}
+    } if train_cities == 'selSJ' else {'Managua': MergeDataset(sentinelGeoDataset_MN, buildGeoDataset_MN)}
 
-cv = MultiInputCrossValidator(multimodal_datasets, n_splits=2, val_ratio=0.5, test_ratio=0)
+# cv = MultiInputCrossValidator(multimodal_datasets, n_splits=2, val_ratio=0.5, test_ratio=0)
+cv = MultiInputCrossValidator(multimodal_datasets, n_splits=2, val_ratio=0.5, test_ratio=0, use_augmentation=use_augmentation)
 
 # Preview a city with sliding windows
 city = 'Managua'
@@ -127,7 +258,7 @@ windows, labels = cv.get_windows_and_labels_for_city(city, split_index)
 img_full = senitnel_create_full_image(get_label_source_from_merge_dataset(multimodal_datasets[city]))
 show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {split_index + 1})')
 
-show_single_tile_multi(multimodal_datasets, city, 7, show_sentinel=True, show_buildings=True)
+show_single_tile_multi(multimodal_datasets, city, 4, show_sentinel=True, show_buildings=True)
 
 train_dataset, val_dataset, _, val_city_indices = cv.get_split(split_index)
 print(f"Train dataset size: {len(train_dataset)}") 
@@ -148,7 +279,7 @@ hyperparameters = {
     'batch_size': batch_size,
     'use_deeplnafrica': True,
     'atrous_rates': (12, 24, 36),
-    'learning_rate': 1e-4,
+    'learning_rate': 1e-2,
     'weight_decay': 0,
     'gamma': 0.7,
     'sched_step_size': 6,
@@ -272,9 +403,9 @@ tiles_per_city = {
     'Managua': 3
 }
 
-model_id = 'last.ckpt'
-best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
-# best_model_path = checkpoint_callback.best_model_path
+# model_id = 'last.ckpt'
+# best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/multi_modal/{train_cities}_CustomDLV3/', model_id)
+best_model_path = checkpoint_callback.best_model_path
 best_model = MultiResolutionDeepLabV3()
 checkpoint = torch.load(best_model_path)
 state_dict = checkpoint['state_dict']
@@ -401,7 +532,6 @@ if valid_metrics:
         print(f"\n(Note: {', '.join(excluded_cities)} {'was' if len(excluded_cities) == 1 else 'were'} excluded due to NaN metrics)")
 else:
     print("\nUnable to calculate weighted average metrics. All cities have NaN values.")
-
 
 # ################################
 # ###### Unseen Predictions ######

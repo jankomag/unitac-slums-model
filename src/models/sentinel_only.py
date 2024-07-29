@@ -150,6 +150,7 @@ cv = SingleInputCrossValidator(sentinel_datasets, n_splits=2, val_ratio=0.5, tes
 # Preview a city with sliding windows
 city = 'SanJose'
 singlesource_show_windows_for_city(city, split_index, cv, sentinel_datasets)
+
 show_single_tile_sentinel(sentinel_datasets, city, 4)
 
 train_dataset, val_dataset, _, val_city_indices = cv.get_split(split_index)

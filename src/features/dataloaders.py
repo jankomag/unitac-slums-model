@@ -1004,6 +1004,36 @@ def collate_multi_fn(batch):
 
     return ((sentinel_data, labels), (buildings_data, labels))
 
+class AugmentedSubset(Subset):
+    def __init__(self, dataset, indices, augmentation):
+        super().__init__(dataset, indices)
+        self.augmentation = augmentation
+
+    def __getitem__(self, idx):
+        item = super().__getitem__(idx)
+        
+        if isinstance(item, tuple):
+            # For multi-input datasets
+            sentinel_data, buildings_data = item
+            sentinel_image, sentinel_label = sentinel_data
+            buildings_image, buildings_label = buildings_data
+            
+            # Augment sentinel data
+            augmented = self.augmentation(image=sentinel_image.numpy(), mask=sentinel_label.numpy())
+            aug_sentinel_image, aug_sentinel_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
+            
+            # Augment buildings data
+            augmented = self.augmentation(image=buildings_image.numpy(), mask=buildings_label.numpy())
+            aug_buildings_image, aug_buildings_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
+            
+            return ((aug_sentinel_image, aug_sentinel_label), (aug_buildings_image, aug_buildings_label))
+        else:
+            # For single-input datasets
+            image, label = item
+            augmented = self.augmentation(image=image.numpy(), mask=label.numpy())
+            aug_image, aug_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
+            return (aug_image, aug_label)
+
 class BaseCrossValidator:
     def __init__(self, datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1):
         self.datasets = datasets
@@ -1011,6 +1041,10 @@ class BaseCrossValidator:
         self.val_ratio = val_ratio
         self.test_ratio = test_ratio
         self.city_splits = self._create_splits()
+        self.augmentation = A.Compose([
+                    A.VerticalFlip(p=1.0),
+                    A.HorizontalFlip(p=1.0),
+                ])
 
     def _create_splits(self):
         city_splits = {}
@@ -1098,6 +1132,97 @@ class SingleInputCrossValidator(BaseCrossValidator):
 
         return windows, labels
 
+class AugmentedSubset(Subset):
+    def __init__(self, dataset, indices, augmentation):
+        super().__init__(dataset, indices)
+        self.augmentation = augmentation
+
+    def __getitem__(self, idx):
+        item = super().__getitem__(idx)
+        
+        if isinstance(item, tuple):
+            # For multi-input datasets
+            sentinel_data, buildings_data = item
+            sentinel_image, sentinel_label = sentinel_data
+            buildings_image, buildings_label = buildings_data
+            
+            # Augment sentinel data
+            augmented = self.augmentation(image=sentinel_image.numpy(), mask=sentinel_label.numpy())
+            aug_sentinel_image, aug_sentinel_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
+            
+            # Augment buildings data
+            augmented = self.augmentation(image=buildings_image.numpy(), mask=buildings_label.numpy())
+            aug_buildings_image, aug_buildings_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
+            
+            return ((aug_sentinel_image, aug_sentinel_label), (aug_buildings_image, aug_buildings_label))
+        else:
+            # For single-input datasets
+            image, label = item
+            augmented = self.augmentation(image=image.numpy(), mask=label.numpy())
+            aug_image, aug_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
+            return (aug_image, aug_label)
+
+class AugMultiInputCrossValidator(BaseCrossValidator):
+    def __init__(self, datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1, use_augmentation=False):
+        super().__init__(datasets, n_splits, val_ratio, test_ratio)
+        self.use_augmentation = use_augmentation
+        if use_augmentation:
+            self.augmentation = A.Compose([
+                A.VerticalFlip(p=1.0),
+                A.HorizontalFlip(p=1.0),
+            ])
+        else:
+            self.augmentation = None
+
+    def get_split(self, split_index):
+        train_datasets = []
+        val_datasets = []
+        test_datasets = []
+        val_city_indices = {}
+        current_val_index = 0
+
+        for city, dataset in self.datasets.items():
+            train_idx, val_idx, test_idx = self.city_splits[city][split_index]
+            
+            if self.use_augmentation:
+                train_subset = self._create_augmented_subset(dataset, train_idx)
+            else:
+                train_subset = Subset(dataset, train_idx)
+            
+            val_subset = Subset(dataset, val_idx)
+            
+            train_datasets.append(train_subset)
+            val_datasets.append(val_subset)
+            
+            val_city_indices[city] = (current_val_index, len(val_idx))
+            current_val_index += len(val_idx)
+
+            if test_idx:
+                test_subset = Subset(dataset, test_idx)
+                test_datasets.append(test_subset)
+
+        return (ConcatDataset(train_datasets), 
+                ConcatDataset(val_datasets), 
+                ConcatDataset(test_datasets) if test_datasets else None, 
+                val_city_indices)
+
+    def _create_augmented_subset(self, dataset, indices):
+        original_subset = Subset(dataset, indices)
+        augmented_subset = AugmentedSubset(dataset, indices, self.augmentation)
+        return ConcatDataset([original_subset, augmented_subset])
+
+    def get_windows_and_labels_for_city(self, city, split_index):
+        if city not in self.datasets:
+            raise ValueError(f"City '{city}' not found in datasets.")
+
+        dataset = self.datasets[city]
+        train_idx, val_idx, test_idx = self.city_splits[city][split_index]
+
+        windows = dataset.datasets[0].windows
+        labels = ['train' if i in train_idx else 'val' if i in val_idx else 'test' for i in range(len(windows))]
+
+        return windows, labels
+
 class MultiInputCrossValidator(BaseCrossValidator):
     def get_windows_and_labels_for_city(self, city, split_index):
         if city not in self.datasets:
@@ -1115,6 +1240,17 @@ class CustomSemanticSegmentationLabelStore(SemanticSegmentationLabelStore):
     @property
     def vector_output_uri(self) -> str:
         return self.root_uri
+    
+class CustomAugmentation:
+    def __init__(self):
+        self.augmentations = A.Compose([
+            A.VerticalFlip(p=1.0),
+            A.HorizontalFlip(p=1.0),
+        ])
+
+    def __call__(self, image, mask):
+        augmented = self.augmentations(image=image, mask=mask)
+        return augmented['image'], augmented['mask']
     
 # Visulaization helper functions
 def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, show_buildings=True):
@@ -1269,7 +1405,7 @@ def show_windows(img, windows, window_labels, title=''):
                 color='white', fontsize=8, fontweight='bold',
                 bbox=dict(facecolor=color, edgecolor='none', alpha=0.7, pad=0.2))
 
-    ax.set_title(title)
+    ax.set_title(title, fontsize=18)
     plt.show()
 
 def senitnel_create_full_image(source) -> np.ndarray:
