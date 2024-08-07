@@ -178,8 +178,8 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-urab_areas_folder_path = os.path.join(grandparent_dir, "data/1/urban_boundaries/final_boundaries")
-predictions_folder_path = os.path.join(grandparent_dir, "data/1/SICA_final_predictions/selSJ_DLV3")
+urab_areas_folder_path = os.path.join(parent_dir, "data/1/urban_boundaries/final_boundaries")
+predictions_folder_path = os.path.join(parent_dir, "data/1/SICA_final_predictions/selSJ_DLV3")
 
 # Combine all the GeoDataFrames into one
 gdfs = []
@@ -193,6 +193,10 @@ for filename in os.listdir(urab_areas_folder_path):
 
 urban_areas = gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True))
 urban_areas.explore()
+
+# add a column with concatenated city and country Name
+urban_areas['city_country'] = urban_areas['city'] + ", " + urban_areas['country']
+urban_areas.value_counts('city_country')
 
 ### Get Model Predictions ###
 countries = ["Honduras","Nicaragua","Dominican Republic", "Honduras", "Panama","El Salvador","Guatemala","Costa Rica"]

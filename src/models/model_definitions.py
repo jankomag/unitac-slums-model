@@ -34,7 +34,7 @@ parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 
-from src.features.dataloaders import (show_windows, buil_create_full_image, ensure_tuple, MultiInputCrossValidator,
+from src.features.dataloaders import (ensure_tuple, MultiInputCrossValidator,
                                   senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn,
                                   MergeDataset, show_single_tile_multi, get_label_source_from_merge_dataset, create_scenes_for_city, PolygonWindowGeoDataset)
 
@@ -130,6 +130,48 @@ def create_predictions_and_ground_truth_plot(pred_labels, gt_labels, threshold=0
     
     return fig, (ax1, ax2, ax3)
 
+def generate_and_display_predictions(model, eval_sent_scene, eval_buil_scene, device, epoch, class_config):
+        # Set up the prediction dataset
+        sent_strided_fullds = CustomSlidingWindowGeoDataset(eval_sent_scene, size=256, stride=256, padding=128, city='SD', transform=None, transform_type=TransformType.noop)
+        buil_strided_fullds = CustomSlidingWindowGeoDataset(eval_buil_scene, size=512, stride=512, padding=256, city='SD', transform=None, transform_type=TransformType.noop)
+        mergedds = MergeDataset(sent_strided_fullds, buil_strided_fullds)
+
+        # Generate predictions
+        predictions_iterator = MultiResPredictionsIterator(model, mergedds, device=device)
+        windows, predictions = zip(*predictions_iterator)
+
+        # Create SemanticSegmentationLabels from predictions
+        pred_labels = SemanticSegmentationLabels.from_predictions(
+            windows,
+            predictions,
+            extent=eval_sent_scene.extent,
+            num_classes=len(class_config),
+            smooth=True
+        )
+
+        gt_labels = eval_sent_scene.label_source.get_labels()
+
+        # Show predictions
+        # fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels, threshold=0.5)
+        scores = pred_labels.get_score_arr(pred_labels.extent)
+
+        # Create a figure with three subplots side by side
+        fig, ax = plt.subplots(1, 1, figsize=(15, 15))
+
+        # Plot smooth predictions
+        scores_class = scores[1]
+        im1 = ax.imshow(scores_class, cmap='viridis', vmin=0, vmax=1)
+        ax.axis('off')
+        ax.set_title(f'Smooth Predictions (Class {1} Scores)')
+        cbar1 = fig.colorbar(im1, ax=ax, fraction=0.046, pad=0.04)
+
+        plt.tight_layout()
+        fig, ax
+        # Log the figure to WandB
+        wandb.log({f"Predictions_Epoch_{epoch}": wandb.Image(fig)})
+        
+        plt.close(fig)  # Close the figure to free up memory
+        
 class CustomVectorOutputConfig(Config):
     """Config for vectorized semantic segmentation predictions."""
     class_id: int = Field(
@@ -325,7 +367,6 @@ class SentinelDeepLabV3(pl.LightningModule):
                 'frequency': 1
             }
         }
-
 
 class PredictionsIterator:
     def __init__(self, model, dataset, device):
@@ -794,7 +835,56 @@ class FeatureMapVisualization:
         fig.colorbar(im, cax=cbar_ax)
         
         plt.show()
-        
-        
-encoder = deeplabv3_resnet50(pretrained=False, progress=False, num_classes=1)
-encoder.backbone
+                
+    def visualize_maximized_activation(self, layer_name, num_iterations=100, learning_rate=0.1, num_feature_maps='all', figsize=(20, 20)):
+        self.model.eval()
+
+        # Create optimizable inputs
+        sentinel_data = torch.randn(1, 4, 256, 256, requires_grad=True, device=self.device)
+        buildings_data = torch.randn(1, 1, 256, 256, requires_grad=True, device=self.device)
+
+        # Create synthetic labels (these won't be used in forward pass, but are needed for unpacking)
+        sentinel_labels = torch.zeros(1, 1, 256, 256, device=self.device)
+        buildings_labels = torch.zeros(1, 1, 256, 256, device=self.device)
+
+        # Normalization parameters (adjust these based on your data)
+        sentinel_mean = [0.485, 0.456, 0.406, 0.5]
+        sentinel_std = [0.229, 0.224, 0.225, 0.25]
+        buildings_mean = [0.5]
+        buildings_std = [0.5]
+
+        optimizer = optim.Adam([sentinel_data, buildings_data], lr=learning_rate)
+
+        for _ in range(num_iterations):
+            optimizer.zero_grad()
+
+            # Normalize inputs
+            norm_sentinel = Normalize(mean=sentinel_mean, std=sentinel_std)(sentinel_data)
+            norm_buildings = Normalize(mean=buildings_mean, std=buildings_std)(buildings_data)
+
+            # Create batch structure expected by the model
+            sentinel_batch = (norm_sentinel, sentinel_labels)
+            buildings_batch = (norm_buildings, buildings_labels)
+            batch = (sentinel_batch, buildings_batch)
+
+            # Forward pass
+            self.model(batch)
+
+            # Get activation of target layer
+            if layer_name not in self.feature_maps:
+                print(f"Layer {layer_name} not found in feature maps.")
+                return
+
+            activation = self.feature_maps[layer_name]
+
+            # Define objective (e.g., mean activation)
+            objective = activation.mean()
+
+            # Backward pass
+            objective.backward()
+            optimizer.step()
+
+        # Visualize the maximized activation
+        self.visualize_feature_maps(layer_name, batch, num_feature_maps, figsize)
+
+        return sentinel_data.detach(), buildings_data.detach()

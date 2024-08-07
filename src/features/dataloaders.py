@@ -1,15 +1,11 @@
 import os
-import sys
 import torch
 from affine import Affine
 import numpy as np
-from shapely.geometry import Polygon
 import geopandas as gpd
-from shapely.geometry import box
 from rastervision.core.box import Box
 from typing import Any, Optional, Tuple, Union, Sequence, List
-from pyproj import Transformer
-from rasterio.transform import rowcol, xy
+
 from torch.utils.data import DataLoader, Dataset
 from typing import List
 from rasterio.features import rasterize
@@ -20,23 +16,19 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple, Union
 import logging
 import duckdb
 import geopandas as gpd
-from shapely import wkb
 import numpy as np
 import albumentations as A
 import torch
 from torch.utils.data import Dataset
-from shapely.ops import unary_union
 from sklearn.model_selection import train_test_split
 # from pystac_client import Client
 
 from rastervision.core.box import Box
 from rastervision.core.data import Scene, BufferTransformer
-from rastervision.core.data.utils import AoiSampler
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
 from rastervision.pytorch_learner.dataset.transform import (TransformType,
                                                             TF_TYPE_TO_TF_FUNC)
 from typing import TYPE_CHECKING, Optional, Sequence, Union
-from torch.utils.data import SubsetRandomSampler
 import torch
 import numpy as np
 import matplotlib.colors as mcolors
@@ -52,25 +44,11 @@ if TYPE_CHECKING:
 
 from typing import (TYPE_CHECKING, Sequence, Optional, List, Dict, Union,
                     Tuple, Any)
-from abc import ABC, abstractmethod
-
-from torch import Tensor
 import albumentations as A
 import matplotlib.pyplot as plt
 
 from rastervision.pipeline.file_system import make_dir
 from rastervision.core.data import ClassConfig
-from rastervision.pytorch_learner.utils import (
-    deserialize_albumentation_transform, validate_albumentation_transform,
-    MinMaxNormalize)
-from rastervision.pytorch_learner.learner_config import (
-    RGBTuple,
-    ChannelInds,
-    validate_channel_display_groups,
-    get_default_channel_display_groups,
-)
-if TYPE_CHECKING:
-    from shapely.geometry import MultiPolygon, Polygon
 
 log = logging.getLogger(__name__)
 import albumentations as A
@@ -103,12 +81,9 @@ from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.core.data.utils import pad_to_window_size
 
 from rastervision.pytorch_learner.dataset import SlidingWindowGeoDataset, TransformType
-# from rastervision.pytorch_learner import (SemanticSegmentationSlidingWindowGeoDataset,
-#                                           SemanticSegmentationVisualizer, SlidingWindowGeoDataset)
 from rastervision.pipeline.utils import repr_with_args
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 import logging
-from xarray import DataArray
 from sklearn.model_selection import KFold
 from torch.utils.data import ConcatDataset, Subset
 from affine import Affine
@@ -116,8 +91,6 @@ import numpy as np
 import geopandas as gpd
 from rastervision.core.box import Box
 from typing import Any, Optional, Tuple, Union, Sequence
-from pyproj import Transformer
-from rasterio.transform import rowcol, xy
 from typing import List
 from rasterio.features import rasterize
     
@@ -127,20 +100,14 @@ from rastervision.core.data import (VectorSource, XarraySource,
                                     IdentityCRSTransformer, RasterioCRSTransformer,
                                     RasterioCRSTransformer)
 
-# from rastervision.pytorch_learner import (SemanticSegmentationSlidingWindowGeoDataset,
-#                                           SemanticSegmentationVisualizer, SlidingWindowGeoDataset)
-# from rastervision.pipeline.utils import repr_with_args
-
 from rastervision.core.box import Box
 from rastervision.core.data.crs_transformer import RasterioCRSTransformer
-from rastervision.core.data.utils import parse_array_slices_Nd, fill_overflow
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 
 if TYPE_CHECKING:
-    from pystac import Item, ItemCollection
     from rastervision.core.data import RasterTransformer, CRSTransformer
 
 log = logging.getLogger(__name__)
@@ -152,8 +119,6 @@ from rastervision.core.box import Box
 from rastervision.core.data import Scene
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
 from rastervision.pytorch_learner.dataset.dataset import GeoDataset
-from rastervision.pytorch_learner import SemanticSegmentationVisualizer
-import numpy as np
 import albumentations as A
 from sklearn.model_selection import KFold
 
@@ -1004,36 +969,6 @@ def collate_multi_fn(batch):
 
     return ((sentinel_data, labels), (buildings_data, labels))
 
-class AugmentedSubset(Subset):
-    def __init__(self, dataset, indices, augmentation):
-        super().__init__(dataset, indices)
-        self.augmentation = augmentation
-
-    def __getitem__(self, idx):
-        item = super().__getitem__(idx)
-        
-        if isinstance(item, tuple):
-            # For multi-input datasets
-            sentinel_data, buildings_data = item
-            sentinel_image, sentinel_label = sentinel_data
-            buildings_image, buildings_label = buildings_data
-            
-            # Augment sentinel data
-            augmented = self.augmentation(image=sentinel_image.numpy(), mask=sentinel_label.numpy())
-            aug_sentinel_image, aug_sentinel_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
-            
-            # Augment buildings data
-            augmented = self.augmentation(image=buildings_image.numpy(), mask=buildings_label.numpy())
-            aug_buildings_image, aug_buildings_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
-            
-            return ((aug_sentinel_image, aug_sentinel_label), (aug_buildings_image, aug_buildings_label))
-        else:
-            # For single-input datasets
-            image, label = item
-            augmented = self.augmentation(image=image.numpy(), mask=label.numpy())
-            aug_image, aug_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
-            return (aug_image, aug_label)
-
 class BaseCrossValidator:
     def __init__(self, datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1):
         self.datasets = datasets
@@ -1132,97 +1067,6 @@ class SingleInputCrossValidator(BaseCrossValidator):
 
         return windows, labels
 
-class AugmentedSubset(Subset):
-    def __init__(self, dataset, indices, augmentation):
-        super().__init__(dataset, indices)
-        self.augmentation = augmentation
-
-    def __getitem__(self, idx):
-        item = super().__getitem__(idx)
-        
-        if isinstance(item, tuple):
-            # For multi-input datasets
-            sentinel_data, buildings_data = item
-            sentinel_image, sentinel_label = sentinel_data
-            buildings_image, buildings_label = buildings_data
-            
-            # Augment sentinel data
-            augmented = self.augmentation(image=sentinel_image.numpy(), mask=sentinel_label.numpy())
-            aug_sentinel_image, aug_sentinel_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
-            
-            # Augment buildings data
-            augmented = self.augmentation(image=buildings_image.numpy(), mask=buildings_label.numpy())
-            aug_buildings_image, aug_buildings_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
-            
-            return ((aug_sentinel_image, aug_sentinel_label), (aug_buildings_image, aug_buildings_label))
-        else:
-            # For single-input datasets
-            image, label = item
-            augmented = self.augmentation(image=image.numpy(), mask=label.numpy())
-            aug_image, aug_label = torch.from_numpy(augmented['image']), torch.from_numpy(augmented['mask'])
-            return (aug_image, aug_label)
-
-class AugMultiInputCrossValidator(BaseCrossValidator):
-    def __init__(self, datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1, use_augmentation=False):
-        super().__init__(datasets, n_splits, val_ratio, test_ratio)
-        self.use_augmentation = use_augmentation
-        if use_augmentation:
-            self.augmentation = A.Compose([
-                A.VerticalFlip(p=1.0),
-                A.HorizontalFlip(p=1.0),
-            ])
-        else:
-            self.augmentation = None
-
-    def get_split(self, split_index):
-        train_datasets = []
-        val_datasets = []
-        test_datasets = []
-        val_city_indices = {}
-        current_val_index = 0
-
-        for city, dataset in self.datasets.items():
-            train_idx, val_idx, test_idx = self.city_splits[city][split_index]
-            
-            if self.use_augmentation:
-                train_subset = self._create_augmented_subset(dataset, train_idx)
-            else:
-                train_subset = Subset(dataset, train_idx)
-            
-            val_subset = Subset(dataset, val_idx)
-            
-            train_datasets.append(train_subset)
-            val_datasets.append(val_subset)
-            
-            val_city_indices[city] = (current_val_index, len(val_idx))
-            current_val_index += len(val_idx)
-
-            if test_idx:
-                test_subset = Subset(dataset, test_idx)
-                test_datasets.append(test_subset)
-
-        return (ConcatDataset(train_datasets), 
-                ConcatDataset(val_datasets), 
-                ConcatDataset(test_datasets) if test_datasets else None, 
-                val_city_indices)
-
-    def _create_augmented_subset(self, dataset, indices):
-        original_subset = Subset(dataset, indices)
-        augmented_subset = AugmentedSubset(dataset, indices, self.augmentation)
-        return ConcatDataset([original_subset, augmented_subset])
-
-    def get_windows_and_labels_for_city(self, city, split_index):
-        if city not in self.datasets:
-            raise ValueError(f"City '{city}' not found in datasets.")
-
-        dataset = self.datasets[city]
-        train_idx, val_idx, test_idx = self.city_splits[city][split_index]
-
-        windows = dataset.datasets[0].windows
-        labels = ['train' if i in train_idx else 'val' if i in val_idx else 'test' for i in range(len(windows))]
-
-        return windows, labels
-
 class MultiInputCrossValidator(BaseCrossValidator):
     def get_windows_and_labels_for_city(self, city, split_index):
         if city not in self.datasets:
@@ -1240,80 +1084,61 @@ class CustomSemanticSegmentationLabelStore(SemanticSegmentationLabelStore):
     @property
     def vector_output_uri(self) -> str:
         return self.root_uri
-    
-class CustomAugmentation:
-    def __init__(self):
-        self.augmentations = A.Compose([
-            A.VerticalFlip(p=1.0),
-            A.HorizontalFlip(p=1.0),
-        ])
-
-    def __call__(self, image, mask):
-        augmented = self.augmentations(image=image, mask=mask)
-        return augmented['image'], augmented['mask']
-    
+        
 # Visulaization helper functions
-def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, show_buildings=True):
+def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, show_buildings=True, save_path=None):
     if city not in datasets:
         raise ValueError(f"City '{city}' not found in datasets.")
     
     dataset = datasets[city]
-    
-    # Get the data for the specified window index
     data = dataset[window_index]
-    
-    # Assuming data is a tuple (sentinel_data, buildings_data)
     sentinel_data, sentinel_labels = data[0]
-    buildings_data, _ = data[1]  # We only use sentinel_label
+    buildings_data, _ = data[1]
     
-    # Set up the plot
-    n_cols = 3 if show_sentinel else 1
+    fig = plt.figure(figsize=(20, 10))
+    grid = plt.GridSpec(2, 4, figure=fig)
+    
     if show_buildings:
-        n_cols += 1
-    
-    fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 5))
-    if n_cols == 1:
-        axes = [axes]
-    
-    plot_index = 0
+        # Building Footprints (larger size)
+        ax1 = fig.add_subplot(grid[:, :2])
+        buildings_data_squeezed = buildings_data.squeeze()
+        ax1.imshow(buildings_data_squeezed.cpu().numpy(), cmap='gray')
+        ax1.set_title(f"{city} - Building Footprints", fontsize=16)
+        ax1.axis('off')
     
     if show_sentinel:
-        # Plot Sentinel data as RGB (R, G, B are channels 1, 2, 3)
-        sentinel_rgb = sentinel_data[1:4].permute(1, 2, 0)
-        sentinel_rgb = sentinel_rgb.float()  # Ensure it's float
-        
-        # Normalize to [0, 1] for display
+        # Sentinel RGB
+        ax2 = fig.add_subplot(grid[0, 2])
+        sentinel_rgb = sentinel_data[1:4].permute(1, 2, 0).float()
         sentinel_rgb = (sentinel_rgb - sentinel_rgb.min()) / (sentinel_rgb.max() - sentinel_rgb.min())
+        ax2.imshow(sentinel_rgb.cpu().numpy())
+        ax2.set_title(f"{city} - Sentinel RGB", fontsize=16)
+        ax2.axis('off')
         
-        axes[plot_index].imshow(sentinel_rgb.cpu().numpy())
-        axes[plot_index].set_title(f"{city} - Sentinel RGB")
-        axes[plot_index].axis('off')
-        plot_index += 1
-        
-        # Plot NIR as a separate grayscale image
+        # Sentinel NIR
+        ax3 = fig.add_subplot(grid[0, 3])
         nir = sentinel_data[0]
-        nir = (nir - nir.min()) / (nir.max() - nir.min())  # Normalize NIR
-        axes[plot_index].imshow(nir.cpu().numpy(), cmap='gray')
-        axes[plot_index].set_title(f"{city} - Sentinel NIR")
-        axes[plot_index].axis('off')
-        plot_index += 1
+        nir = (nir - nir.min()) / (nir.max() - nir.min())
+        ax3.imshow(nir.cpu().numpy(), cmap='gray')
+        ax3.set_title(f"{city} - Sentinel NIR", fontsize=16)
+        ax3.axis('off')
         
-        # Plot Sentinel label
-        buildings_data_squeezed = buildings_data.squeeze()
-        axes[plot_index].imshow(buildings_data_squeezed.cpu().numpy(), cmap='gray')
-        axes[plot_index].set_title(f"{city} - Building Footprints")
-        axes[plot_index].axis('off')
-        plot_index += 1
-    
-    if show_buildings:
-        # Plot Buildings data
+        # GT Labels
+        ax4 = fig.add_subplot(grid[1, 2:])
         sentinel_labels_squeezed = sentinel_labels.squeeze()
-        axes[plot_index].imshow(sentinel_labels_squeezed.cpu().numpy(), cmap='gray')
-        axes[plot_index].set_title(f"{city} - GT Labels")
-        axes[plot_index].axis('off')
+        ax4.imshow(sentinel_labels_squeezed.cpu().numpy(), cmap='gray')
+        ax4.set_title(f"{city} - Ground Truth Labels", fontsize=16)
+        ax4.axis('off')
     
     plt.tight_layout()
-    plt.show()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Figure saved to {save_path}")
+    else:
+        plt.show()
+    
+    plt.close(fig)
 
 def show_single_tile_sentinel(datasets, city, window_index):
     dataset = datasets[city]
@@ -1350,28 +1175,6 @@ def show_single_tile_sentinel(datasets, city, window_index):
     axes[2].imshow(sentinel_label_squeezed.cpu().numpy(), cmap='viridis')
     axes[2].set_title(f"{city} - Sentinel Label")
     axes[2].axis('off')
-    
-    plt.tight_layout()
-    plt.show()
-
-def show_single_tile_buildings(datasets, city, window_index):
-    dataset = datasets[city]
-    data = dataset[window_index]
-    buildings_data, buildings_label = data
-    
-    # Set up the plot
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-    
-    # Plot Buildings data
-    buildings_data_squeezed = buildings_data.squeeze()
-    axes[0].imshow(buildings_data_squeezed, cmap='gray')
-    axes[0].set_title(f"{city} - Buildings Data")
-    axes[0].axis('off')
-    
-    # Plot Buildings label
-    axes[1].imshow(buildings_label, cmap='grey')
-    axes[1].set_title(f"{city} - Buildings Label")
-    axes[1].axis('off')
     
     plt.tight_layout()
     plt.show()
@@ -1413,11 +1216,6 @@ def senitnel_create_full_image(source) -> np.ndarray:
     chip = source.get_label_arr(extent)    
     return chip
 
-def buil_create_full_image(source) -> np.ndarray:
-    extent = source.extent
-    chip = source._get_chip(extent)    
-    return chip
-
 def get_label_source_from_merge_dataset(merge_dataset):
     sentinel_dataset = merge_dataset.datasets[0]
     return sentinel_dataset.scene.label_source
@@ -1431,7 +1229,7 @@ def singlesource_show_windows_for_city(city, split_index, cv, datasets):
     # Show the windows
     show_windows(img_full, windows, labels, title=f'{city} Sliding windows (Split {split_index + 1})')
 
-def show_first_batch_item(batch, device='cpu'):
+def show_first_batch_item(batch):
     # Unpack the batch
     sentinel_batch, buildings_batch = batch
     buildings_data, _ = buildings_batch
@@ -1480,7 +1278,6 @@ def show_first_batch_item(batch, device='cpu'):
     
     plt.tight_layout()
     plt.show()
-
 
 
 # Functions to get data from OMF
@@ -1766,256 +1563,3 @@ def make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_
     )
 
     return rasterized_source, crs_transformer
-
-
-# belize_data = cities['SantoDomingoDOM']
-# image_path = belize_data['image_path']
-# labels_path = belize_data['labels_path']
-
-# gdf = gpd.read_file(labels_path)
-# gdf = gdf.to_crs('EPSG:4326')
-# xmin, ymin, xmax, ymax = gdf.total_bounds
-# roads = query_roads_data(xmin, ymin, xmax, ymax)
-# # buildings = query_buildings_data(xmin, ymin, xmax, ymax)
-# pois = query_poi_data(xmin, ymin, xmax, ymax)
-# from lonboard import viz
-# viz(roads)
-
-# class_config = ClassConfig(names=['background', 'slums'], 
-#                                 colors=['lightgray', 'darkred'],
-#                                 null_class='background')
-
-# sentinel_source_normalized, sentinel_label_raster_source = make_sentinel_raster(
-#     image_path, labels_path, class_config, clip_to_label_source=True
-# )
-
-# ovfmratser, _ = make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_buffer=2)
-
-# chip = ovfmratser[:, :]
-# fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-# ax.imshow(chip)
-# plt.show()
-
-# urbmscene = Scene(
-#         id='_sentinel',
-#         raster_source=ovfmratser,
-#         label_source=sentinel_label_raster_source    )
-# buildGeoDataset_PN = PolygonWindowGeoDataset(urbmscene,window_size=512,out_size=512,padding=200,transform_type=TransformType.noop,transform=None)
-
-# # x, y = vis_sent.get_batch(buildingsGeoDataset_TG, 5)
-# # vis_sent.plot_batch(x, y, show=True)
-
-# x, y = vis_build.get_batch(buildingsGeoDataset_TG, 5)
-# vis_build.plot_batch(x, y, show=True)
-
-
-# From STAC
-# BANDS = [
-#     'blue', # B02
-#     'green', # B03
-#     'red', # B04
-#     'nir', # B08
-# ]
-# URL = 'https://earth-search.aws.element84.com/v1'
-# # catalog = pystac_client.Client.open(URL)
-
-# bbox = Box(ymin=ymin4326, xmin=xmin4326, ymax=ymax4326, xmax=xmax4326)
-# bbox_geometry = {
-#         'type': 'Polygon',
-#         'coordinates': [
-#             [
-#                 (xmin4326, ymin4326),
-#                 (xmin4326, ymax4326),
-#                 (xmax4326, ymax4326),
-#                 (xmax4326, ymin4326),
-#                 (xmin4326, ymin4326)
-#             ]
-#         ]
-#     }
-
-def save_sentinel_mosaic_as_geotiff(sentinel_source, bbox, crs):
-    # Create a temporary file
-    temp_dir = tempfile.gettempdir()
-    temp_file = os.path.join(temp_dir, 'sentinel_mosaic.tif')
-    
-    # Get the data and metadata
-    data = sentinel_source.data_array.values
-    height, width, num_bands = data.shape
-    
-    # Create the transform
-    transform = from_bounds(bbox[0], bbox[1], bbox[2], bbox[3], width, height)
-    
-    # Save as GeoTIFF
-    with rasterio.open(temp_file, 'w', driver='GTiff', height=height, width=width, 
-                       count=num_bands, dtype=data.dtype, crs=crs, transform=transform) as dst:
-        for i in range(num_bands):
-            dst.write(data[:,:,i], i+1)
-    
-    return temp_file
-
-def get_sentinel_items(bbox_geometry, bbox):
-    items = catalog.search(
-        intersects=bbox_geometry,
-        collections=['sentinel-2-c1-l2a'],
-        datetime='2023-01-01/2024-06-27',
-        query={'eo:cloud_cover': {'lt': 10}},
-        # Remove max_items=1 to get multiple items
-    ).item_collection()
-    
-    if not items:
-        print("No items found for this area.")
-        return None
-    # items = get_sentinel_items(bbox_geometry, bbox)
-
-    return items
-
-def create_sentinel_mosaic(items, bbox):
-    # Create the initial XarraySource with temporal=True
-    sentinel_source = XarraySource.from_stac(
-        items,
-        bbox_map_coords=tuple(bbox),
-        stackstac_args=dict(rescale=False, fill_value=0, assets=BANDS),
-        allow_streaming=True,
-        temporal=True
-    )
-    
-    print(f"Initial data shape: {sentinel_source.data_array.shape}")
-    print(f"Initial bbox: {sentinel_source.bbox}")
-    print(f"Data coordinates: {sentinel_source.data_array.coords}")
-    
-    crs_transformer = sentinel_source.crs_transformer
-    
-    # Get the CRS of the data
-    data_crs = sentinel_source.crs_transformer.image_crs
-    
-    # Use the original bbox of the data
-    data_bbox = sentinel_source.bbox
-    
-    print(f"Data bbox: {data_bbox}")
-    
-    # Apply mosaic function to combine the temporal dimension
-    mosaic_data = sentinel_source.data_array.median(dim='time')
-    
-    print(f"Mosaic data shape: {mosaic_data.shape}")
-    print(f"Mosaic data coordinates: {mosaic_data.coords}")
-    
-    # Create a temporary XarraySource from the mosaicked data
-    temp_mosaic_source = XarraySource(
-        mosaic_data,
-        crs_transformer=sentinel_source.crs_transformer,
-        bbox=data_bbox,
-        channel_order=[2, 1, 0, 3],  # Assuming you want RGB-NIR order
-        temporal=False
-    )
-    
-    # Calculate stats transformer
-    calc_stats_transformer = CustomStatsTransformer.from_raster_sources(
-        raster_sources=[temp_mosaic_source],
-        max_stds=3
-    )
-    
-    # Create the final normalized XarraySource
-    normalized_mosaic_source = XarraySource(
-        mosaic_data,
-        crs_transformer=sentinel_source.crs_transformer,
-        bbox=data_bbox,
-        channel_order=[2, 1, 0, 3],  # Assuming you want RGB-NIR order
-        temporal=False,
-        raster_transformers=[calc_stats_transformer]
-    )
-    
-    print(f"Created normalized mosaic of size {normalized_mosaic_source.shape}, and dtype: {normalized_mosaic_source.dtype}")
-    print(f"Normalized mosaic bbox: {normalized_mosaic_source.bbox}")
-    print(f"Data CRS: {data_crs}")
-    # sentinel_source_SD, crs_transformer = create_sentinel_mosaic(items, bbox)
-
-    return normalized_mosaic_source, crs_transformer
-
-def display_mosaic(mosaic_source):
-    print(f"Mosaic source shape: {mosaic_source.shape}")
-    
-    if mosaic_source.shape[0] == 0 or mosaic_source.shape[1] == 0:
-        print("The mosaic has zero width or height. There might be no data for the specified region.")
-        return
-    
-    chip = mosaic_source[:, :, [0, 1, 2]]  # RGB channels
-    
-    print(f"Chip shape: {chip.shape}")
-    print(f"Chip min: {np.min(chip)}, max: {np.max(chip)}")
-    
-    # For normalized data, we might want to clip to a reasonable range
-    vmin, vmax = -3, 3
-    normalized_chip = np.clip(chip, vmin, vmax)
-    
-    # Scale to [0, 1] for display
-    normalized_chip = (normalized_chip - vmin) / (vmax - vmin)
-    
-    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-    im = ax.imshow(normalized_chip, interpolation='nearest', aspect='equal')
-    ax.set_title("Normalized Mosaic RGB")
-    plt.colorbar(im, ax=ax)
-    plt.show()
-
-# if __name__ == "__main__":
-    label_uri = "../../data/0/SantoDomingo3857.geojson"
-    image_uri = '../../data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'
-    class_config = ClassConfig(names=['background', 'slums'], 
-                                colors=['lightgray', 'darkred'],
-                                null_class='background')
-
-    ### SENTINEL source ###
-    sentinel_source_normalized, sentinel_source_label = create_sentinel_raster_source(image_uri, label_uri, class_config)
-    
-    # show label source
-    chip = sentinel_source_label[:, :]
-    chip.shape
-    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-    ax.imshow(chip)
-    plt.show()
-
-    # show raster source
-    chip = sentinel_source_normalized[:, :, :3]
-    chip_scaled = (chip - np.min(chip)) / (np.max(chip) - np.min(chip))
-    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-    ax.imshow(chip_scaled)
-    plt.show()
-
-    print(f"Minimum pixel value after normalization: {chip.min()}")
-    print(f"Maximum pixel value after normalization: {chip.max()}")
-
-    # Density plot of sentinel image
-    num_bands = chip.shape[-1]
-    plt.figure(figsize=(8, 6))
-    for band in range(num_bands):
-        band_data = chip[..., band].flatten()
-        sns.kdeplot(band_data, shade=True, label=f'Band {band}', color=plt.cm.viridis(band / num_bands))
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-    ### Scenes ###
-    gdf = gpd.read_file(label_uri)
-    gdf = gdf.to_crs('EPSG:3857')
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-
-    pixel_polygon = Polygon([
-        (xmin, ymin),
-        (xmin, ymax),
-        (xmax, ymax),
-        (xmax, ymin),
-        (xmin, ymin)
-    ])
-
-    SentinelScene = Scene(
-        id='santodomingo_sentinel',
-        raster_source = sentinel_source_normalized,
-        label_source = label_raster_source,
-        aoi_polygons=[pixel_polygon])
-
-    BuildingsScence = Scene(
-        id='santodomingo_buildings',
-        raster_source = rasterized_buildings_source,
-        label_source = label_source,
-        aoi_polygons=[pixel_polygon])
-    
-    pass

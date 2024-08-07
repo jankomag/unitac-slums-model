@@ -69,20 +69,22 @@ from rastervision.pytorch_learner.dataset.transform import TransformType
 from rastervision.core.data import Scene
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
 
+
+URL = 'https://earth-search.aws.element84.com/v1'
+catalog = Client.open(URL)
+
 def get_sentinel_items(bbox_geometry, bbox):
     items = catalog.search(
         intersects=bbox_geometry,
         collections=['sentinel-2-c1-l2a'],
         datetime='2024-01-01/2024-07-16',
-        query={'eo:cloud_cover': {'lt': 20}},
-        # Remove max_items=1 to get multiple items
+        query={'eo:cloud_cover': {'lt': 15}},
+        # max_items=1 to get multiple items
     ).item_collection()
     
     if not items:
         print("No items found for this area.")
         return None
-    # items = get_sentinel_items(bbox_geometry, bbox)
-
     return items
 
 def create_sentinel_mosaic(items, bbox):
@@ -271,8 +273,8 @@ class_config = ClassConfig(names=['background', 'slums'],
                            null_class='background')
     
 model_paths = [
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/selSJ_CustomDLV3/multimodal_selSJ_cv0_epoch=19-val_loss=0.2787.ckpt'),
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/multi_modal/selSJ_CustomDLV3/multimodal_selSJ_cv1_epoch=27-val_loss=0.2128.ckpt')
+    os.path.join(parent_dir, 'UNITAC-trained-models/multi_modal/selSJ_CustomDLV3/multimodal_selSJ_cv0_epoch=19-val_loss=0.2787.ckpt'),
+    os.path.join(parent_dir, 'UNITAC-trained-models/multi_modal/selSJ_CustomDLV3/multimodal_selSJ_cv1_epoch=27-val_loss=0.2128.ckpt')
 ]
 
 models = [load_multimodal_model(path) for path in model_paths]
@@ -280,12 +282,13 @@ models = [load_multimodal_model(path) for path in model_paths]
 ##########################################
 #### PREDICTIONS FOR SICA URBAN AREAS ####
 ##########################################
-sica_cities = os.path.join(grandparent_dir, 'data/1/urban_boundaries/bboxes_SICA_urban_boundaries.geojson')
+sica_cities = os.path.join(parent_dir, 'data/1/urban_boundaries/bboxes_SICA_urban_boundaries.geojson')
 gdf = gpd.read_file(sica_cities)
 gdf = gdf.to_crs('EPSG:3857')
 # gdf = gdf[gdf['city_name'].isin(['Leon'])] #'Managua', 'SantoDomingo', 'Tegucigalpa', 'GuatemalaCity', 'PanamaCity'])]
 model_name_directory = 'selSJ_DLV3'
 gdf.explore()
+
 
 for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     city_name = row['city_name']
@@ -426,100 +429,101 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
     pred_label_store.save(pred_labels)
     print(f"Saved aggregated predictions data for {city_name}, {country}")
 
-# #### STAC Main loop
-# for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
-#     city_name = row['city_ascii']
-#     country_code = row['iso3']
-#     xmin4326, ymin4326, xmax4326, ymax4326 = row.geometry.bounds
+#### STAC Main loop
+# gdf=gdf.head(2)
+for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
+    city_name = row['city_name']
+    country_code = row['country']
+    xmin4326, ymin4326, xmax4326, ymax4326 = row.geometry.bounds
 
-#     # Create bbox and bbox_geometry for PySTAC query
-#     bbox = Box(ymin=ymin4326, xmin=xmin4326, ymax=ymax4326, xmax=xmax4326)
-#     bbox_geometry = {
-#         'type': 'Polygon',
-#         'coordinates': [
-#             [
-#                 (xmin4326, ymin4326),
-#                 (xmin4326, ymax4326),
-#                 (xmax4326, ymax4326),
-#                 (xmax4326, ymin4326),
-#                 (xmin4326, ymin4326)
-#             ]
-#         ]
-#     }
+    # Create bbox and bbox_geometry for PySTAC query
+    bbox = Box(ymin=ymin4326, xmin=xmin4326, ymax=ymax4326, xmax=xmax4326)
+    bbox_geometry = {
+        'type': 'Polygon',
+        'coordinates': [
+            [
+                (xmin4326, ymin4326),
+                (xmin4326, ymax4326),
+                (xmax4326, ymax4326),
+                (xmax4326, ymin4326),
+                (xmin4326, ymin4326)
+            ]
+        ]
+    }
 
-#     # Get Sentinel data
-#     items = get_sentinel_items(bbox_geometry, bbox)
-#     if items is None:
-#         print(f"No Sentinel data found for {city_name}. Skipping.")
-#         continue
+    # Get Sentinel data
+    items = get_sentinel_items(bbox_geometry, bbox)
+    if items is None:
+        print(f"No Sentinel data found for {city_name}. Skipping.")
+        continue
 
-#     # Create Sentinel mosaic
-#     sentinel_source, crs_transformer = create_sentinel_mosaic(items, bbox)
-#     print(f"Created Sentinel mosaic for {city_name}, {country_code}.")
-#     display_mosaic(sentinel_source)
+    # Create Sentinel mosaic
+    sentinel_source, crs_transformer = create_sentinel_mosaic(items, bbox)
+    print(f"Created Sentinel mosaic for {city_name}, {country_code}.")
+    display_mosaic(sentinel_source)
 
-#     # Query buildings data
-#     buildings = query_buildings_data(xmin4326, ymin4326, xmax4326, ymax4326)
-#     print(f"Got buildings for {city_name}, {country_code}, in the amoint of {len(buildings)}.")
+    # Query buildings data
+    buildings = query_buildings_data(xmin4326, ymin4326, xmax4326, ymax4326)
+    print(f"Got buildings for {city_name}, {country_code}, in the amoint of {len(buildings)}.")
     
-#     # Create scenes
-#     sentinel_scene = Scene(
-#         id=f'{city_name}_sentinel',
-#         raster_source=sentinel_source,
-#         label_source=None  # No labels for prediction
-#     )
+    # Create scenes
+    sentinel_scene = Scene(
+        id=f'{city_name}_sentinel',
+        raster_source=sentinel_source,
+        label_source=None  # No labels for prediction
+    )
     
-#     buildings_scene = create_building_scene(buildings, bbox, crs_transformer)
+    buildings_scene = create_building_scene(buildings, bbox, crs_transformer)
 
-#     # Create datasets
-#     sentinel_dataset = CustomSlidingWindowGeoDataset(sentinel_scene, city=city_name, size=256, stride=128, out_size=256, padding=256, transform_type=TransformType.noop, transform=None)
-#     buildings_dataset = CustomSlidingWindowGeoDataset(buildings_scene, city=city_name, size=512, stride=256, out_size=512, padding=512, transform_type=TransformType.noop, transform=None)
+    # Create datasets
+    sentinel_dataset = CustomSlidingWindowGeoDataset(sentinel_scene, city=city_name, size=256, stride=128, out_size=256, padding=256, transform_type=TransformType.noop, transform=None)
+    buildings_dataset = CustomSlidingWindowGeoDataset(buildings_scene, city=city_name, size=512, stride=256, out_size=512, padding=512, transform_type=TransformType.noop, transform=None)
 
-#     # Create merged dataset
-#     merged_dataset = MergeDataset(sentinel_dataset, buildings_dataset)
+    # Create merged dataset
+    merged_dataset = MergeDataset(sentinel_dataset, buildings_dataset)
 
-#     # Make predictions with both models and average
-#     windows = None
-#     avg_predictions = None
+    # Make predictions with both models and average
+    windows = None
+    avg_predictions = None
 
-#     for model in models:
-#         windows, predictions = make_predictions(model, merged_dataset, device)
-#         if avg_predictions is None:
-#             avg_predictions = predictions
-#         else:
-#             avg_predictions = average_predictions(avg_predictions, predictions)
+    for model in models:
+        windows, predictions = make_predictions(model, merged_dataset, device)
+        if avg_predictions is None:
+            avg_predictions = predictions
+        else:
+            avg_predictions = average_predictions(avg_predictions, predictions)
 
-#     # Create SemanticSegmentationLabels from averaged predictions
-#     pred_labels = SemanticSegmentationLabels.from_predictions(
-#         windows,
-#         avg_predictions,
-#         extent=sentinel_scene.extent,
-#         num_classes=len(class_config),
-#         smooth=True
-#     )
+    # Create SemanticSegmentationLabels from averaged predictions
+    pred_labels = SemanticSegmentationLabels.from_predictions(
+        windows,
+        avg_predictions,
+        extent=sentinel_scene.extent,
+        num_classes=len(class_config),
+        smooth=True
+    )
 
-#     # Save predictions
-#     vector_output_config = CustomVectorOutputConfig(
-#         class_id=1,
-#         denoise=8,
-#         threshold=0.5
-#     )
+    # Save predictions
+    vector_output_config = CustomVectorOutputConfig(
+        class_id=1,
+        denoise=8,
+        threshold=0.5
+    )
 
-#     output_dir = f'../../vectorised_model_predictions/other_cities/{country_code}'
-#     os.makedirs(output_dir, exist_ok=True)
+    output_dir = f'../../vectorised_model_predictions/other_cities/{country_code}'
+    os.makedirs(output_dir, exist_ok=True)
 
-#     pred_label_store = SemanticSegmentationLabelStore(
-#         uri=os.path.join(output_dir, f'{city_name}_{country_code}.geojson'),
-#         crs_transformer=crs_transformer,
-#         class_config=class_config,
-#         vector_outputs=[vector_output_config],
-#         discrete_output=True
-#     )
+    pred_label_store = SemanticSegmentationLabelStore(
+        uri=os.path.join(output_dir, f'{city_name}_{country_code}.geojson'),
+        crs_transformer=crs_transformer,
+        class_config=class_config,
+        vector_outputs=[vector_output_config],
+        discrete_output=True
+    )
 
-#     pred_label_store.save(pred_labels)
-#     print(f"Saved predictions data for {city_name}, {country_code}")
+    pred_label_store.save(pred_labels)
+    print(f"Saved predictions data for {city_name}, {country_code}")
 
-# print("Finished processing all cities.")
+print("Finished processing all cities.")
 
 def merge_geojson_files(country_directory, output_file):
     # Create an empty GeoDataFrame with an appropriate schema
