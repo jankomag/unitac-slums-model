@@ -6,7 +6,7 @@ import geopandas as gpd
 from rastervision.core.box import Box
 from typing import Any, Optional, Tuple, Union, Sequence, List
 
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 from typing import List
 from rasterio.features import rasterize
 import matplotlib.pyplot as plt
@@ -16,38 +16,18 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple, Union
 import logging
 import duckdb
 import geopandas as gpd
-import numpy as np
 import albumentations as A
-import torch
 from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
-# from pystac_client import Client
-
 from rastervision.core.box import Box
-from rastervision.core.data import Scene, BufferTransformer
+from rastervision.core.data import Scene
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
-from rastervision.pytorch_learner.dataset.transform import (TransformType,
-                                                            TF_TYPE_TO_TF_FUNC)
+from rastervision.pytorch_learner.dataset.transform import TransformType
 from typing import TYPE_CHECKING, Optional, Sequence, Union
-import torch
-import numpy as np
-import matplotlib.colors as mcolors
-import matplotlib.patches as mpatches
-
-from rastervision.pytorch_learner.dataset.visualizer import Visualizer  # NOQA
-from rastervision.pytorch_learner.utils import (
-    color_to_triple, plot_channel_groups, channel_groups_to_imgs)
-
-if TYPE_CHECKING:
-    from matplotlib.pyplot import Axes
-    from matplotlib.colors import Colormap
 
 from typing import (TYPE_CHECKING, Sequence, Optional, List, Dict, Union,
                     Tuple, Any)
-import albumentations as A
-import matplotlib.pyplot as plt
 
-from rastervision.pipeline.file_system import make_dir
 from rastervision.core.data import ClassConfig
 
 log = logging.getLogger(__name__)
@@ -59,47 +39,31 @@ T = TypeVar('T')
 import pandas as pd
 from rastervision.core.data.utils import listify_uris, merge_geojsons
 from sklearn.model_selection import KFold
-from typing import Literal, TypeVar
-import math
 
 from pydantic.types import NonNegativeInt as NonNegInt, PositiveInt as PosInt
 
 T = TypeVar('T')
 
-from rastervision.core.raster_stats import RasterStats
 from rastervision.core.data.raster_transformer import RasterTransformer
 from rastervision.core.data.raster_source import RasterSource
-from rastervision.core.data import (ClassConfig, GeoJSONVectorSourceConfig, GeoJSONVectorSource,
-                                    MinMaxTransformer, MultiRasterSource,
-                                    RasterioSource, RasterizedSourceConfig,
-                                    RasterizedSource, Scene, StatsTransformer, ClassInferenceTransformer,
-                                    VectorSourceConfig, VectorSource, XarraySource, CRSTransformer,
-                                    IdentityCRSTransformer, RasterioCRSTransformer,
+from rastervision.core.data import (ClassConfig, GeoJSONVectorSource, RasterizedSource, Scene, ClassInferenceTransformer,
+                                    VectorSource, CRSTransformer, RasterioCRSTransformer, RasterioSource,
                                     SemanticSegmentationLabelSource, RasterizerConfig)
 from rastervision.core.data.label_source.label_source import LabelSource
 from rastervision.core.data.label import SemanticSegmentationLabels
 from rastervision.core.data.utils import pad_to_window_size
 
-from rastervision.pytorch_learner.dataset import SlidingWindowGeoDataset, TransformType
-from rastervision.pipeline.utils import repr_with_args
+from rastervision.pytorch_learner.dataset import TransformType
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 import logging
 from sklearn.model_selection import KFold
 from torch.utils.data import ConcatDataset, Subset
-from affine import Affine
-import numpy as np
-import geopandas as gpd
-from rastervision.core.box import Box
 from typing import Any, Optional, Tuple, Union, Sequence
 from typing import List
-from rasterio.features import rasterize
     
 from rastervision.core.data.raster_transformer import RasterTransformer
 from rastervision.core.data.raster_source import RasterSource
-from rastervision.core.data import (VectorSource, XarraySource,
-                                    IdentityCRSTransformer, RasterioCRSTransformer,
-                                    RasterioCRSTransformer)
-
+from rastervision.core.data import VectorSource, RasterioCRSTransformer, RasterioCRSTransformer
 from rastervision.core.box import Box
 from rastervision.core.data.crs_transformer import RasterioCRSTransformer
 
@@ -112,14 +76,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 from rastervision.core.data.label_store import SemanticSegmentationLabelStore
-from os.path import join
 import random
 from typing import Tuple, List, Union, Optional
-from rastervision.core.box import Box
-from rastervision.core.data import Scene
 from rastervision.pytorch_learner.learner_config import PosInt, NonNegInt
 from rastervision.pytorch_learner.dataset.dataset import GeoDataset
-import albumentations as A
 from sklearn.model_selection import KFold
 
 class_config = ClassConfig(names=['background', 'slums'], 
@@ -235,6 +195,62 @@ def ensure_tuple(x: T, n: int = 2) -> tuple[T, ...]:
         return x
     return tuple([x] * n)
 
+def collate_fn(batch):
+    processed_batch = []
+    for item in batch:
+        image, label = item
+        
+        # Replace NaN values with 0 in the image
+        image = torch.nan_to_num(image, nan=0.0)
+        
+        # Check if there are still any NaN values in the label
+        if torch.isnan(label).any():
+            print(f"NaN found in label")
+            continue        
+        processed_batch.append((image, label))
+    
+    return torch.utils.data.dataloader.default_collate(processed_batch)
+
+def collate_multi_fn(batch):
+    sentinel_data = []
+    buildings_data = []
+    labels = []
+
+    for item in batch:
+        sentinel_batch, buildings_batch = item
+        
+        sentinel_item, sentinel_label = sentinel_batch
+        buildings_item, buildings_label = buildings_batch
+
+        # Replace NaN values with 0 in the image data
+        sentinel_item = torch.nan_to_num(sentinel_item, nan=0.0)
+        buildings_item = torch.nan_to_num(buildings_item, nan=0.0)
+
+        # Check if there are any NaN values in the labels
+        if torch.isnan(sentinel_label).any() or torch.isnan(buildings_label).any():
+            print(f"NaN found in label")
+            continue
+        
+        sentinel_data.append(sentinel_item)
+        buildings_data.append(buildings_item)
+        labels.append(sentinel_label)  # Use sentinel_label as they should be the same
+
+    # If all items were skipped due to NaN values, return None
+    if len(sentinel_data) == 0:
+        return None
+
+    # Stack the data and labels
+    sentinel_data = torch.stack(sentinel_data)
+    buildings_data = torch.stack(buildings_data)
+    labels = torch.stack(labels)
+
+    return ((sentinel_data, labels), (buildings_data, labels))
+
+class CustomSemanticSegmentationLabelStore(SemanticSegmentationLabelStore):
+    @property
+    def vector_output_uri(self) -> str:
+        return self.root_uri
+        
 class MergeDataset(Dataset):
     def __init__(self, *datasets):
         self.datasets = datasets
@@ -394,76 +410,6 @@ class CustomRasterizedSource(RasterSource):
         if len(df) > 0 and 'class_id' not in df.columns:
             raise ValueError('All label polygons must have a class_id.')
 
-class CustomStatsTransformer(RasterTransformer):
-    # custom class to normalise pixel values as z-scores
-    def __init__(self,
-                 means: Sequence[float],
-                 stds: Sequence[float],
-                 max_stds: float = 3.):
-        # shape = (1, 1, num_channels)
-        self.means = np.array(means, dtype=float)
-        self.stds = np.array(stds, dtype=float)
-        self.max_stds = max_stds
-
-    def transform(self,
-                  chip: np.ndarray,
-                  channel_order: Optional[Sequence[int]] = None) -> np.ndarray:
-        if chip.dtype == np.uint8:
-            return chip
-
-        means = self.means
-        stds = self.stds
-        max_stds = self.max_stds
-        if channel_order is not None:
-            means = means[channel_order]
-            stds = stds[channel_order]
-
-        # Don't transform NODATA zero values.
-        nodata_mask = chip == 0
-
-        # Convert chip to float (if not already)
-        chip = chip.astype(float)
-
-        # Subtract mean and divide by std to get z-scores.
-        for i in range(chip.shape[-1]):  # Loop over channels
-            chip[..., i] -= means[i]
-            chip[..., i] /= stds[i]
-
-        # Apply max_stds clipping
-        chip = np.clip(chip, -max_stds, max_stds)
-        
-        # Normalise to [0, 1]
-        # chip = (chip - chip.min()) / (chip.max() - chip.min())
-    
-        # Normalize to have standard deviation of 1
-        for i in range(chip.shape[-1]):
-            chip[..., i] /= np.std(chip[..., i])
-
-        chip[nodata_mask] = 0
-        
-        return chip
-
-    @classmethod
-    def from_raster_sources(cls,
-                            raster_sources: List['RasterSource'],
-                            sample_prob: Optional[float] = 0.1,
-                            max_stds: float = 3.,
-                            chip_sz: int = 300) -> 'CustomStatsTransformer':
-        stats = RasterStats()
-        stats.compute(
-            raster_sources=raster_sources,
-            sample_prob=sample_prob,
-            chip_sz=chip_sz)
-        stats_transformer = cls.from_raster_stats(
-            stats, max_stds=max_stds)
-        return stats_transformer
-    
-    @classmethod
-    def from_raster_stats(cls, stats: RasterStats,
-                          max_stds: float = 3.) -> 'CustomStatsTransformer':
-        stats_transformer = cls(stats.means, stats.stds, max_stds=max_stds)
-        return stats_transformer
-
 class FixedStatsTransformer(RasterTransformer):
     def __init__(self, means, stds, max_stds: float = 3.):
         
@@ -566,6 +512,8 @@ class CustomSemanticSegmentationLabelSource(LabelSource):
         else:
             return super().__getitem__(key)
 
+
+# Classes implementing two tiling strategies
 class CustomSlidingWindowGeoDataset(GeoDataset):
     """Read the scene left-to-right, top-to-bottom, using a sliding window.
     """
@@ -774,201 +722,8 @@ class PolygonWindowGeoDataset(GeoDataset):
     def __len__(self):
         return len(self.windows)
 
-class CustomSemanticSegmentationVisualizer(Visualizer):
-    def plot_batch(self,
-                   x: List[Tuple[torch.Tensor, torch.Tensor]],
-                   y: List[Tuple[torch.Tensor, torch.Tensor]],
-                   output_path: Optional[str] = None,
-                   z: Optional[Sequence] = None,
-                   batch_limit: Optional[int] = None,
-                   show: bool = False):
 
-        sentinel_data = [item[0] for item in x]
-        buildings_data = [item[1] for item in x]
-        sentinel_labels = [item[0] for item in y]
-        buildings_labels = [item[1] for item in y]
-        
-        # Plot Sentinel data
-        self._plot_single_source(sentinel_data, sentinel_labels, output_path, z, batch_limit, show, "Sentinel")
-        
-        # Plot Buildings data
-        self._plot_single_source(buildings_data, buildings_labels, output_path, z, batch_limit, show, "Buildings")
-
-    def _plot_single_source(self,
-                            x: List[torch.Tensor],
-                            y: List[torch.Tensor],
-                            output_path: Optional[str] = None,
-                            z: Optional[Sequence] = None,
-                            batch_limit: Optional[int] = None,
-                            show: bool = False,
-                            title_prefix: str = ""):
-
-        batch_size = len(x)
-        if batch_limit is not None:
-            batch_size = min(batch_size, batch_limit)
-
-        fig, axs = plt.subplots(batch_size, 2, figsize=(10, 5*batch_size))
-        if batch_size == 1:
-            axs = axs.reshape(1, -1)
-
-        for i in range(batch_size):
-            # Plot input image
-            if title_prefix == "Sentinel":
-                img = x[i][:3].permute(1, 2, 0)  # Use first 3 channels for RGB
-            else:  # Buildings
-                img = x[i].squeeze()  # Remove singleton dimensions if any
-            axs[i, 0].imshow(img.cpu().numpy())
-            axs[i, 0].set_title(f"{title_prefix} Input")
-            axs[i, 0].axis('off')
-
-            # Plot ground truth
-            gt = y[i].squeeze()  # Squeeze out singleton dimensions
-            if gt.ndim > 2:
-                gt = gt[0]  # If still more than 2D, take the first slice
-            axs[i, 1].imshow(gt.cpu().numpy(), cmap='viridis')
-            axs[i, 1].set_title("Ground Truth")
-            axs[i, 1].axis('off')
-
-        plt.tight_layout()
-
-        if show:
-            plt.show()
-        if output_path is not None:
-            make_dir(output_path, use_dirname=True)
-            fig.savefig(f"{output_path}_{title_prefix.lower()}.png", bbox_inches='tight', pad_inches=0.2)
-
-        plt.close(fig)
-    
-    def plot_xyz(self,
-                 axs: Sequence,
-                 x: torch.Tensor,
-                 y: Optional[Union[torch.Tensor, np.ndarray]] = None,
-                 z: Optional[torch.Tensor] = None,
-                 plot_title: bool = True) -> None:
-        channel_groups = self.get_channel_display_groups(x.shape[1])
-
-        img_axes = axs[:len(channel_groups)]
-
-        # plot image
-        imgs = channel_groups_to_imgs(x, channel_groups)
-        plot_channel_groups(
-            img_axes, imgs, channel_groups, plot_title=plot_title)
-
-        if y is None and z is None:
-            return
-
-        # plot labels
-        class_colors = self.class_colors
-        colors = [
-            color_to_triple(c) if isinstance(c, str) else c
-            for c in class_colors
-        ]
-        colors = np.array(colors) / 255.
-        cmap = mcolors.ListedColormap(colors)
-
-        if y is not None:
-            label_ax: 'Axes' = axs[len(channel_groups)]
-            self.plot_gt(label_ax, y, num_classes=len(colors), cmap=cmap)
-            if plot_title:
-                label_ax.set_title('Ground truth')
-
-        if z is not None:
-            pred_ax = axs[-1]
-            self.plot_pred(pred_ax, z, num_classes=len(colors), cmap=cmap)
-            if plot_title:
-                pred_ax.set_title('Predicted labels')
-
-        # add a legend to the rightmost subplot
-        class_names = self.class_names
-        if class_names:
-            legend_items = [
-                mpatches.Patch(facecolor=col, edgecolor='black', label=name)
-                for col, name in zip(colors, class_names)
-            ]
-            axs[-1].legend(
-                handles=legend_items,
-                loc='center left',
-                bbox_to_anchor=(1., 0.5))
-
-    def plot_gt(self, ax: 'Axes', y: Union[torch.Tensor, np.ndarray],
-                num_classes: int, cmap: 'Colormap', **kwargs):
-        ax.imshow(
-            y,
-            vmin=0,
-            vmax=num_classes,
-            cmap=cmap,
-            interpolation='none',
-            **kwargs)
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-    def plot_pred(self, ax: 'Axes', z: Union[torch.Tensor, np.ndarray],
-                  num_classes: int, cmap: 'Colormap', **kwargs):
-        if z.ndim == 3:
-            z = z.argmax(dim=0)
-        self.plot_gt(ax, y=z, num_classes=num_classes, cmap=cmap, **kwargs)
-
-    def get_plot_ncols(self, **kwargs) -> int:
-        x = kwargs['x']
-        nb_img_channels = x.shape[1]
-        ncols = len(self.get_channel_display_groups(nb_img_channels))
-        if kwargs.get('y') is not None:
-            ncols += 1
-        if kwargs.get('z') is not None:
-            ncols += 1
-        return ncols
-
-def collate_fn(batch):
-    processed_batch = []
-    for item in batch:
-        image, label = item
-        
-        # Replace NaN values with 0 in the image
-        image = torch.nan_to_num(image, nan=0.0)
-        
-        # Check if there are still any NaN values in the label
-        if torch.isnan(label).any():
-            print(f"NaN found in label")
-            continue        
-        processed_batch.append((image, label))
-    
-    return torch.utils.data.dataloader.default_collate(processed_batch)
-
-def collate_multi_fn(batch):
-    sentinel_data = []
-    buildings_data = []
-    labels = []
-
-    for item in batch:
-        sentinel_batch, buildings_batch = item
-        
-        sentinel_item, sentinel_label = sentinel_batch
-        buildings_item, buildings_label = buildings_batch
-
-        # Replace NaN values with 0 in the image data
-        sentinel_item = torch.nan_to_num(sentinel_item, nan=0.0)
-        buildings_item = torch.nan_to_num(buildings_item, nan=0.0)
-
-        # Check if there are any NaN values in the labels
-        if torch.isnan(sentinel_label).any() or torch.isnan(buildings_label).any():
-            print(f"NaN found in label")
-            continue
-        
-        sentinel_data.append(sentinel_item)
-        buildings_data.append(buildings_item)
-        labels.append(sentinel_label)  # Use sentinel_label as they should be the same
-
-    # If all items were skipped due to NaN values, return None
-    if len(sentinel_data) == 0:
-        return None
-
-    # Stack the data and labels
-    sentinel_data = torch.stack(sentinel_data)
-    buildings_data = torch.stack(buildings_data)
-    labels = torch.stack(labels)
-
-    return ((sentinel_data, labels), (buildings_data, labels))
-
+# Classes implementing cross validation for within-city tiling
 class BaseCrossValidator:
     def __init__(self, datasets, n_splits=2, val_ratio=0.2, test_ratio=0.1):
         self.datasets = datasets
@@ -1003,22 +758,15 @@ class BaseCrossValidator:
                 test_idx = []
             
             # Create train-val splits
-            n_val = int(len(train_val_idx) * self.val_ratio / (1 - self.test_ratio))
-            
             kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=42)
             splits = list(kf.split(train_val_idx))
             
-            # Adjust splits to maintain val_ratio
             adjusted_splits = []
             for train_idx, val_idx in splits:
-                if len(val_idx) > n_val:
-                    extra = len(val_idx) - n_val
-                    train_idx = np.concatenate([train_idx, val_idx[:extra]])
-                    val_idx = val_idx[extra:]
                 adjusted_splits.append((
                     [train_val_idx[i] for i in train_idx],
                     [train_val_idx[i] for i in val_idx],
-                    test_idx  # Now this is already a list
+                    test_idx
                 ))
             
             city_splits[city] = adjusted_splits
@@ -1054,19 +802,6 @@ class BaseCrossValidator:
     def get_windows_and_labels_for_city(self, city, split_index):
         raise NotImplementedError("Subclasses must implement this method")
 
-class SingleInputCrossValidator(BaseCrossValidator):
-    def get_windows_and_labels_for_city(self, city, split_index):
-        if city not in self.datasets:
-            raise ValueError(f"City '{city}' not found in datasets.")
-
-        dataset = self.datasets[city]
-        train_idx, val_idx, test_idx = self.city_splits[city][split_index]
-
-        windows = dataset.windows
-        labels = ['train' if i in train_idx else 'val' if i in val_idx else 'test' for i in range(len(windows))]
-
-        return windows, labels
-
 class MultiInputCrossValidator(BaseCrossValidator):
     def get_windows_and_labels_for_city(self, city, split_index):
         if city not in self.datasets:
@@ -1080,11 +815,20 @@ class MultiInputCrossValidator(BaseCrossValidator):
 
         return windows, labels
         
-class CustomSemanticSegmentationLabelStore(SemanticSegmentationLabelStore):
-    @property
-    def vector_output_uri(self) -> str:
-        return self.root_uri
-        
+class SingleInputCrossValidator(BaseCrossValidator):
+    def get_windows_and_labels_for_city(self, city, split_index):
+        if city not in self.datasets:
+            raise ValueError(f"City '{city}' not found in datasets.")
+
+        dataset = self.datasets[city]
+        train_idx, val_idx, test_idx = self.city_splits[city][split_index]
+
+        windows = dataset.windows
+        labels = ['train' if i in train_idx else 'val' if i in val_idx else 'test' for i in range(len(windows))]
+
+        return windows, labels
+
+
 # Visulaization helper functions
 def show_single_tile_multi(datasets, city, window_index, show_sentinel=True, show_buildings=True, save_path=None):
     if city not in datasets:
@@ -1523,43 +1267,3 @@ def create_scenes_for_city(city_name, city_data, class_config, resolution=5):
         label_source = buildings_label_sourceSD)
 
     return sentinel_scene, buildings_scene
-
-
-### Others ###
-def make_buildings_and_roads_raster(image_path, labels_path, resolution=5, road_buffer=2):
-    gdf = gpd.read_file(labels_path)
-    gdf = gdf.to_crs('EPSG:4326')
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-
-    crs_transformer = RasterioCRSTransformer.from_uri(image_path)
-    affine_transform = Affine(resolution, 0, xmin, 0, -resolution, ymax)
-    crs_transformer.transform = affine_transform
-
-    # Query buildings
-    buildings = query_buildings_data(xmin, ymin, xmax, ymax)
-    buildings['class_id'] = 1  # Assign class_id 1 to buildings
-    print(f"Buildings data loaded successfully with {len(buildings)} total buildings.")
-
-    # Query roads
-    roads = query_roads_data(xmin, ymin, xmax, ymax)
-    roads['class_id'] = 2  # Assign class_id 2 to roads
-    print(f"Roads data loaded successfully with {len(roads)} total road segments.")
-
-    # Buffer the roads
-    roads_buffered = roads.copy()
-    roads_buffered['geometry'] = roads_buffered.geometry.buffer(road_buffer)
-
-    combined_gdf = pd.concat([buildings, roads_buffered], ignore_index=True)
-
-    buildings_vector_source = CustomGeoJSONVectorSource(
-        gdf=combined_gdf,
-        crs_transformer=crs_transformer,
-        vector_transformers=[]
-    )
-
-    rasterized_source = CustomRasterizedSource(
-        buildings_vector_source,
-        background_class_id=0
-    )
-
-    return rasterized_source, crs_transformer

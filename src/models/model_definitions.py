@@ -4,15 +4,15 @@ from affine import Affine
 import numpy as np
 from shapely.geometry import Polygon
 import geopandas as gpd
-import stackstac
 import torch.nn as nn
 import cv2
 from os.path import join
 from collections import OrderedDict
 from pytorch_lightning import LightningDataModule
 import pandas as pd
-from typing import Any, Optional, Tuple, Union, Sequence
+from typing import Optional
 import os
+import wandb
 import pytorch_lightning as pl
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
@@ -21,27 +21,20 @@ import math
 from typing import Iterator, Optional
 from torch.optim import AdamW
 import torch
-from rastervision.core.data import (ClassConfig, GeoJSONVectorSourceConfig, GeoJSONVectorSource,
-                                    RasterizedSource, Scene, StatsTransformer, ClassInferenceTransformer,
-                                    IdentityCRSTransformer, RasterioCRSTransformer,
-                                    SemanticSegmentationLabelSource)
+from rastervision.pytorch_learner.dataset.transform import TransformType
+from rastervision.core.data import ClassConfig, RasterioCRSTransformer
 
 from torchvision.models.segmentation import deeplabv3_resnet50
 from torchvision.models.segmentation.deeplabv3 import DeepLabHead
+from rastervision.core.data.label_store import SemanticSegmentationLabelStore
+from rastervision.core.data import ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer, Config, Field
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 
-from src.features.dataloaders import (ensure_tuple, MultiInputCrossValidator,
-                                  senitnel_create_full_image, CustomSlidingWindowGeoDataset, collate_multi_fn,
-                                  MergeDataset, show_single_tile_multi, get_label_source_from_merge_dataset, create_scenes_for_city, PolygonWindowGeoDataset)
-
-from rastervision.core.data import (
-    ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer,
-    VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
-)
+from src.features.dataloaders import CustomSlidingWindowGeoDataset, MergeDataset
 
 # Helper functions
 def check_nan_params(model):
@@ -81,7 +74,7 @@ def merge_geojson_files(country_directory, output_file):
     else:
         print("No valid geometries found. Merged GeoJSON file not created.")
 
-# Show predictions function
+# Show and save predictions function
 def create_predictions_and_ground_truth_plot(pred_labels, gt_labels, threshold=0.5,  class_id=1, figsize=(30, 10)):
     """
     Create a plot of smooth predictions, discrete predictions, and ground truth side by side.
@@ -130,48 +123,100 @@ def create_predictions_and_ground_truth_plot(pred_labels, gt_labels, threshold=0
     
     return fig, (ax1, ax2, ax3)
 
-def generate_and_display_predictions(model, eval_sent_scene, eval_buil_scene, device, epoch, class_config):
-        # Set up the prediction dataset
-        sent_strided_fullds = CustomSlidingWindowGeoDataset(eval_sent_scene, size=256, stride=256, padding=128, city='SD', transform=None, transform_type=TransformType.noop)
-        buil_strided_fullds = CustomSlidingWindowGeoDataset(eval_buil_scene, size=512, stride=512, padding=256, city='SD', transform=None, transform_type=TransformType.noop)
-        mergedds = MergeDataset(sent_strided_fullds, buil_strided_fullds)
+def save_predictions_as_geojson(pred_labels, city, split_index, output_dir, cities, class_config):
+    vector_output_config = CustomVectorOutputConfig(
+        class_id=1,
+        denoise=8,
+        threshold=0.5
+    )
 
-        # Generate predictions
-        predictions_iterator = MultiResPredictionsIterator(model, mergedds, device=device)
-        windows, predictions = zip(*predictions_iterator)
+    crs_transformer = RasterioCRSTransformer.from_uri(cities[city]['image_path'])
+    gdf = gpd.read_file(cities[city]['labels_path']).to_crs('epsg:3857')
+    xmin3857, ymin, xmax, ymax3857 = gdf.total_bounds
+    affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
+    crs_transformer.transform = affine_transform_buildings
 
-        # Create SemanticSegmentationLabels from predictions
-        pred_labels = SemanticSegmentationLabels.from_predictions(
-            windows,
-            predictions,
-            extent=eval_sent_scene.extent,
-            num_classes=len(class_config),
-            smooth=True
-        )
+    city_output_dir = os.path.join(output_dir, city)
+    os.makedirs(city_output_dir, exist_ok=True)  # Create directory if it doesn't exist, but don't clear it
+    label_store = SemanticSegmentationLabelStore(
+        uri=os.path.join(city_output_dir, f'split{split_index}_predictions'),
+        crs_transformer=crs_transformer,
+        class_config=class_config,
+        vector_outputs=[vector_output_config],
+        discrete_output=True
+    )
+    label_store.save(pred_labels)
 
-        gt_labels = eval_sent_scene.label_source.get_labels()
-
-        # Show predictions
-        # fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels, threshold=0.5)
-        scores = pred_labels.get_score_arr(pred_labels.extent)
-
-        # Create a figure with three subplots side by side
-        fig, ax = plt.subplots(1, 1, figsize=(15, 15))
-
-        # Plot smooth predictions
-        scores_class = scores[1]
-        im1 = ax.imshow(scores_class, cmap='viridis', vmin=0, vmax=1)
-        ax.axis('off')
-        ax.set_title(f'Smooth Predictions (Class {1} Scores)')
-        cbar1 = fig.colorbar(im1, ax=ax, fraction=0.046, pad=0.04)
-
-        plt.tight_layout()
-        fig, ax
-        # Log the figure to WandB
-        wandb.log({f"Predictions_Epoch_{epoch}": wandb.Image(fig)})
+def save_unseen_predictions_sentinel(models, cv, all_datasets, cities, class_config, device, output_dir):
+    for split_index, model in enumerate(models):
+        model.eval()
         
-        plt.close(fig)  # Close the figure to free up memory
+        # Get the validation dataset for this split
+        _, val_dataset, _, val_city_indices = cv.get_split(split_index)
         
+        for city, (dataset_index, num_samples) in val_city_indices.items():
+            if num_samples == 0:
+                continue
+            
+            print(f"Processing unseen data for {city} using model from split {split_index}")
+            
+            # Get the validation subset for this city
+            city_val_dataset = Subset(val_dataset, range(dataset_index, dataset_index + num_samples))
+            city_scene = all_datasets[city].scene
+            
+            # Use PredictionsIterator to make predictions
+            predictions_iterator = PredictionsIterator(model, city_val_dataset, device=device)
+            windows, predictions = zip(*predictions_iterator)
+            
+            # Create SemanticSegmentationLabels from predictions
+            pred_labels = SemanticSegmentationLabels.from_predictions(
+                windows,
+                predictions,
+                extent=city_scene.extent,
+                num_classes=len(class_config),
+                smooth=True
+            )
+            
+            # Save predictions
+            save_predictions_as_geojson(pred_labels, city, split_index, output_dir, cities, class_config)
+
+def save_unseen_predictions_multimodal(models, cv, multimodal_datasets, cities, class_config, device, output_dir):
+    for split_index, model in enumerate(models):
+        model.eval()
+        
+        _, val_dataset, _, val_city_indices = cv.get_split(split_index)
+        
+        for city, (val_start, val_count) in val_city_indices.items():
+            if val_count == 0:
+                continue
+            
+            print(f"Processing unseen data for {city} using model from split {split_index}")
+            
+            # Get the full dataset for this city
+            city_full_dataset = multimodal_datasets[city]
+            
+            # Get the validation indices for this city and split
+            city_val_indices = cv.city_splits[city][split_index][1]  # [1] corresponds to val_idx
+            
+            # Create a subset using only the validation indices
+            city_val_dataset = Subset(city_full_dataset, city_val_indices)
+            
+            # Get the sentinel scene for extent information
+            city_sent_scene = city_full_dataset[0].scene
+            
+            predictions_iterator = MultiResPredictionsIterator(model, city_val_dataset, device=device)
+            windows, predictions = zip(*predictions_iterator)
+            
+            pred_labels = SemanticSegmentationLabels.from_predictions(
+                windows,
+                predictions,
+                extent=city_sent_scene.extent,
+                num_classes=len(class_config),
+                smooth=True
+            )
+            
+            save_predictions_as_geojson(pred_labels, city, split_index, output_dir, cities, class_config)
+
 class CustomVectorOutputConfig(Config):
     """Config for vectorized semantic segmentation predictions."""
     class_id: int = Field(
@@ -516,9 +561,9 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         # Modified buildings encoder
         self.buildings_encoder = nn.ModuleList([
             self._make_buildings_layer(1, 2, stride=2),    # 512x512 -> 256x256
-            self._make_buildings_layer(2, 4, stride=4),   # 256x256 -> 64x64
-            self._make_buildings_layer(4, 8, stride=2),  # 64x64 -> 32x32
-            self._make_buildings_layer(8, 16, stride=1), # 32x32 -> 32x32
+            self._make_buildings_layer(2, 8, stride=4),   # 256x256 -> 64x64
+            self._make_buildings_layer(8, 16, stride=2),  # 64x64 -> 32x32
+            self._make_buildings_layer(16, 32, stride=1), # 32x32 -> 32x32
         ])
 
         # Modified main encoder
@@ -558,9 +603,9 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
 
         # Fusion layers for the encoder
         self.fusion_layers = nn.ModuleList([
-            nn.Conv2d(256 + 4, 256, kernel_size=1),    # After layer1
-            nn.Conv2d(512 + 8, 512, kernel_size=1),   # After layer2
-            nn.Conv2d(1024 + 16, 1024, kernel_size=1), # After layer3
+            nn.Conv2d(256 + 8, 256, kernel_size=1),    # After layer1
+            nn.Conv2d(512 + 16, 512, kernel_size=1),   # After layer2
+            nn.Conv2d(1024 + 32, 1024, kernel_size=1), # After layer3
         ])
         
         # Additional fusion layer to reduce dimensions of fused features
@@ -646,12 +691,13 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         loss = loss_fn(segmentation, sentinel_labels.float())
         
         preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+        mean_iou, mean_precision, mean_recall, mean_f1 = self.compute_metrics(preds, sentinel_labels)
         
         self.log('train_loss', loss)
         self.log('train_mean_iou', mean_iou)
         self.log('train_precision', mean_precision)
         self.log('train_recall', mean_recall)
+        self.log('train_f1', mean_f1)
                 
         return loss
     
@@ -668,12 +714,13 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         val_loss = loss_fn(segmentation, sentinel_labels.float())
         
         preds = torch.sigmoid(segmentation) > 0.5
-        mean_iou, mean_precision, mean_recall = self.compute_metrics(preds, sentinel_labels)
+        mean_iou, mean_precision, mean_recall, mean_f1 = self.compute_metrics(preds, sentinel_labels)
         
         self.log('val_mean_iou', mean_iou)
         self.log('val_loss', val_loss, prog_bar=True, logger=True)
         self.log('val_precision', mean_precision)
         self.log('val_recall', mean_recall)
+        self.log('val_f1', mean_f1)
     
     def test_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> None:
         sentinel_batch, _ = batch
@@ -714,10 +761,13 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
         precision = true_positives.float() / (predicted_positives.float() + 1e-10)
         recall = true_positives.float() / (actual_positives.float() + 1e-10)
         
+        f1_score = 2 * (precision * recall) / (precision + recall + 1e-10)
+        
         mean_precision = precision.mean()
         mean_recall = recall.mean()
+        mean_f1 = f1_score.mean()
         
-        return mean_iou, mean_precision, mean_recall
+        return mean_iou, mean_precision, mean_recall, mean_f1
     
     def configure_optimizers(self) -> dict:
         optimizer = torch.optim.AdamW(
@@ -741,6 +791,16 @@ class MultiResolutionDeepLabV3(pl.LightningModule):
             }
         }
 
+class ModelLoader:
+    @staticmethod
+    def load_model(model_path, model_class, device):
+        model = model_class()
+        checkpoint = torch.load(model_path, map_location=device)
+        model.load_state_dict(checkpoint['state_dict'], strict=True)
+        model = model.to(device)
+        model.eval()
+        return model
+    
 # Feature Map Visualisation class
 class FeatureMapVisualization:
     def __init__(self, model, device):
@@ -841,17 +901,17 @@ class FeatureMapVisualization:
 
         # Create optimizable inputs
         sentinel_data = torch.randn(1, 4, 256, 256, requires_grad=True, device=self.device)
-        buildings_data = torch.randn(1, 1, 256, 256, requires_grad=True, device=self.device)
+        buildings_data = torch.randn(1, 1, 512, 512, requires_grad=True, device=self.device)
 
         # Create synthetic labels (these won't be used in forward pass, but are needed for unpacking)
         sentinel_labels = torch.zeros(1, 1, 256, 256, device=self.device)
-        buildings_labels = torch.zeros(1, 1, 256, 256, device=self.device)
+        buildings_labels = torch.zeros(1, 1, 512, 512, device=self.device)
 
         # Normalization parameters (adjust these based on your data)
-        sentinel_mean = [0.485, 0.456, 0.406, 0.5]
-        sentinel_std = [0.229, 0.224, 0.225, 0.25]
-        buildings_mean = [0.5]
-        buildings_std = [0.5]
+        sentinel_mean = [2581.270, 1298.905, 1144.928, 934.346]  # NIR, R, G, B
+        sentinel_std = [586.279, 458.048, 302.029, 244.423]  # NIR, R, G, B
+        buildings_mean = [0.1]
+        buildings_std = [0.8]
 
         optimizer = optim.Adam([sentinel_data, buildings_data], lr=learning_rate)
 

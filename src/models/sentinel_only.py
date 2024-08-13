@@ -1,51 +1,23 @@
-from os.path import join
-from subprocess import check_output
 import os
+from rastervision.core.box import Box
+import math
+from subprocess import check_output
 
 os.environ['GDAL_DATA'] = check_output('pip show rasterio | grep Location | awk \'{print $NF"/rasterio/gdal_data/"}\'', shell=True).decode().strip()
-from torch.utils.data import ConcatDataset, Subset
+from torch.utils.data import Subset
 import math
 import sys
-from pathlib import Path
-from typing import Iterator, Optional
 from datetime import datetime
-from torchvision.models.segmentation import deeplabv3_resnet50
-from collections import OrderedDict
-from torch.optim.lr_scheduler import MultiStepLR
-from affine import Affine
-import geopandas as gpd
 import torch
-import torch.nn as nn
-from torch.optim import AdamW
-import tempfile
 import wandb
-import numpy as np
-import cv2
-import pandas as pd
 from ptflops import get_model_complexity_info
-import shutil
 
-# import lightning.pytorch as pl
-from torch.utils.data import ConcatDataset
-from rastervision.pytorch_learner.dataset.transform import (TransformType,
-                                                            TF_TYPE_TO_TF_FUNC)
-
-import pytorch_lightning as pl
-from pytorch_lightning.loggers import TensorBoardLogger
+from rastervision.pytorch_learner.dataset.transform import TransformType
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers.wandb import WandbLogger
-from torchvision.models.segmentation.deeplabv3 import DeepLabHead
-
 import matplotlib.pyplot as plt
-from rasterio.features import rasterize
-from shapely.geometry import Polygon
-from rastervision.pipeline.file_system import (
-    sync_to_dir, json_to_file, make_dir, zipdir, download_if_needed,
-    download_or_copy, sync_from_dir, get_local_path, unzip, is_local,
-    get_tmp_dir)
 from torch.utils.data import DataLoader
-import torch.nn.functional as F
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -53,25 +25,13 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
-from src.models.model_definitions import (SentinelDeepLabV3, PredictionsIterator, create_predictions_and_ground_truth_plot,
-                                          check_nan_params, CustomVectorOutputConfig, merge_geojson_files)
-from src.features.dataloaders import (create_sentinel_scene, cities, CustomSlidingWindowGeoDataset, collate_fn,
-                                      senitnel_create_full_image, show_windows, PolygonWindowGeoDataset,clear_directory,
+from src.models.model_definitions import (SentinelDeepLabV3, PredictionsIterator, create_predictions_and_ground_truth_plot, ModelLoader,
+                                          check_nan_params, merge_geojson_files, save_unseen_predictions_sentinel)
+from src.features.dataloaders import (create_sentinel_scene, cities, CustomSlidingWindowGeoDataset, collate_fn, PolygonWindowGeoDataset,
                                       SingleInputCrossValidator, singlesource_show_windows_for_city, show_single_tile_sentinel)
 
-from rastervision.core.data.label_store import (SemanticSegmentationLabelStore)
-from rastervision.core.data import (Scene, ClassInferenceTransformer, RasterizedSource,
-    ClassConfig, SemanticSegmentationLabels, RasterioCRSTransformer, SemanticSegmentationSmoothLabels,
-    VectorOutputConfig, Config, Field, SemanticSegmentationDiscreteLabels
-)
-from rastervision.pytorch_learner import (
-    SolverConfig, SemanticSegmentationLearnerConfig,
-    SemanticSegmentationLearner, SemanticSegmentationGeoDataConfig, SemanticSegmentationVisualizer,
-)
-from rastervision.core.data.utils import make_ss_scene
+from rastervision.core.data import ClassConfig, SemanticSegmentationLabels, SemanticSegmentationDiscreteLabels
 from rastervision.core.evaluation import SemanticSegmentationEvaluator
-from deeplnafrica.deepLNAfrica import Deeplabv3SegmentationModel, init_segm_model, CustomDeeplabv3SegmentationModel
-from rastervision.core.data.utils import get_polygons_from_uris
 
 # Define device
 if not torch.backends.mps.is_available():
@@ -123,7 +83,7 @@ sentinelGeoDataset_SJ = PolygonWindowGeoDataset(sentinel_sceneSJ, city='SanSalva
 
 # Create datasets
 train_cities = 'selSJ'
-split_index = 0 # 0 or 1
+split_index = 1 # 0 or 1
 
 def get_sentinel_datasets(train_cities):
     all_datasets = {
@@ -150,7 +110,6 @@ cv = SingleInputCrossValidator(sentinel_datasets, n_splits=2, val_ratio=0.5, tes
 # Preview a city with sliding windows
 city = 'SanJose'
 singlesource_show_windows_for_city(city, split_index, cv, sentinel_datasets)
-
 show_single_tile_sentinel(sentinel_datasets, city, 39)
 
 train_dataset, val_dataset, _, val_city_indices = cv.get_split(split_index)
@@ -171,7 +130,7 @@ hyperparameters = {
     'use_deeplnafrica': True,
     'atrous_rates': (12, 24, 36),
     'learning_rate': 1e-3,
-    'weight_decay': 0,
+    'weight_decay': 0.00001,
     'gamma': 0.9,
     'sched_step_size': 10,
     'pos_weight': 2.0
@@ -186,7 +145,7 @@ model = SentinelDeepLabV3(use_deeplnafrica = hyperparameters['use_deeplnafrica']
                     pos_weight = hyperparameters['pos_weight'])
 model.to(device)
 
-output_dir = f'../../UNITAC-trained-models/sentinel_only/{train_cities}_DLV3'
+output_dir = f'../UNITAC-trained-models/sentinel_only/{train_cities}_DLV3'
 os.makedirs(output_dir, exist_ok=True)
 
 wandb.init(project='UNITAC-finetune-sentinel-only', config=hyperparameters)
@@ -198,10 +157,10 @@ checkpoint_callback = ModelCheckpoint(
     monitor='val_mean_iou',
     dirpath=output_dir,
     filename=f'sentinel_{train_cities}_cv{split_index}-{{epoch:02d}}-{{val_loss:.4f}}',
-    save_top_k=5,
+    save_top_k=4,
     save_last=True,
     mode='max')
-early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=15)
+early_stopping_callback = EarlyStopping(monitor='val_loss', min_delta=0.00, patience=20)
 
 # Define trainer
 trainer = Trainer(
@@ -209,10 +168,9 @@ trainer = Trainer(
     callbacks=[checkpoint_callback, early_stopping_callback],
     log_every_n_steps=1,
     logger=[wandb_logger],
-    min_epochs=25,
+    min_epochs=30,
     max_epochs=250,
     num_sanity_val_steps=3,
-    # overfit_batches=0.5
 )
 
 # Train the model
@@ -221,10 +179,12 @@ trainer.fit(model, train_loader, val_loader)
 ##########################################
 ###### Individual Model Predictions ######
 ##########################################
-model_id = 'sentinel_selSJ_cv0-epoch=06-val_loss=0.3216.ckpt'
-best_model_path = os.path.join(grandparent_dir, f'UNITAC-trained-models/sentinel_only/{train_cities}_DLV3/', model_id)
+
+model_id = 'sentinel_selSJ_cv1-epoch=36-val_loss=0.2694.ckpt'
+best_model_path = os.path.join(parent_dir, f'../UNITAC-trained-models/sentinel_only/{train_cities}_DLV3/', model_id)
 # best_model_path = checkpoint_callback.best_model_path
-scene_eval = SentinelScene_SD  # Assuming this is your sentinel scene for evaluation
+scene_eval = SentinelScene_SD
+
 model = SentinelDeepLabV3.load_from_checkpoint(best_model_path)
 model.eval()
 check_nan_params(model)
@@ -247,20 +207,7 @@ gt_labels = scene_eval.label_source.get_labels()
 fig, axes = create_predictions_and_ground_truth_plot(pred_labels, gt_labels)
 plt.show()
 
-from rastervision.core.box import Box
-import math
-
-# Define the weights (number of tiles) for each city
-tiles_per_city = {
-    'SanJose': 82,
-    'GuatemalaCity': 41,
-    'SantoDomingo': 26,
-    'Tegucigalpa': 26,
-    'Panama': 20,
-    'Managua': 6
-}
-
-def calculate_sentinel_metrics(dataset, device, scene, custom_predictions=None):
+def calculate_sentinel_metrics(model, dataset, device, scene):
     predictions_iterator = PredictionsIterator(model, dataset, device=device)
     windows, predictions = zip(*predictions_iterator)
 
@@ -289,7 +236,7 @@ def calculate_sentinel_metrics(dataset, device, scene, custom_predictions=None):
         'f1': inf_eval.f1,
         'precision': inf_eval.precision,
         'recall': inf_eval.recall,
-        'num_tiles': len(windows)  # Add this line to return the number of tiles
+        'num_tiles': len(windows)
     }
 
 city_metrics = {}
@@ -297,26 +244,24 @@ excluded_cities = []
 total_tiles = 0
 
 for city, (dataset_index, num_samples) in val_city_indices.items():
-    # Skip cities with no validation samples
     if num_samples == 0:
         print(f"Skipping {city} as it has no validation samples.")
         continue
 
-    # Get the subset of the validation dataset for this city
     city_val_dataset = Subset(val_dataset, range(dataset_index, dataset_index + num_samples))
-    
-    # Get the scene for this city
     city_scene = sentinel_datasets[city].scene
-    
-    # Calculate metrics for this city
-    metrics = calculate_sentinel_metrics(city_val_dataset, device, city_scene, custom_predictions=None)
-    city_metrics[city] = metrics
-    total_tiles += tiles_per_city[city]  # Use the predefined number of tiles
+
+    try:
+        metrics = calculate_sentinel_metrics(model, city_val_dataset, device, city_scene)
+        city_metrics[city] = metrics
+        total_tiles += metrics['num_tiles']
+    except Exception as e:
+        print(f"Error calculating metrics for {city}: {str(e)}")
 
 # Print metrics for each city
 print(f"\nMetrics for split {split_index}:")
 for city, metrics in city_metrics.items():
-    print(f"\nMetrics for {city} ({tiles_per_city[city]} tiles):")
+    print(f"\nMetrics for {city} ({metrics['num_tiles']} tiles):")
     if any(math.isnan(value) for value in metrics.values()):
         print("No correct predictions made. Metrics are NaN.")
         excluded_cities.append(city)
@@ -325,124 +270,58 @@ for city, metrics in city_metrics.items():
         print(f"Precision: {metrics['precision']:.4f}")
         print(f"Recall: {metrics['recall']:.4f}")
 
-# Calculate and print weighted average metrics across all cities
+# Calculate and print weighted average metrics
 valid_metrics = {k: v for k, v in city_metrics.items() if not any(math.isnan(value) for value in v.values())}
 
 if valid_metrics:
     weighted_metrics = {
-        'f1': sum(metrics['f1'] * tiles_per_city[city] for city, metrics in valid_metrics.items()) / total_tiles,
-        'precision': sum(metrics['precision'] * tiles_per_city[city] for city, metrics in valid_metrics.items()) / total_tiles,
-        'recall': sum(metrics['recall'] * tiles_per_city[city] for city, metrics in valid_metrics.items()) / total_tiles
+        'f1': sum(metrics['f1'] * metrics['num_tiles'] for metrics in valid_metrics.values()) / total_tiles,
+        'precision': sum(metrics['precision'] * metrics['num_tiles'] for metrics in valid_metrics.values()) / total_tiles,
+        'recall': sum(metrics['recall'] * metrics['num_tiles'] for metrics in valid_metrics.values()) / total_tiles
+    }
+
+    unweighted_metrics = {
+        'f1': sum(metrics['f1'] for metrics in valid_metrics.values()) / len(valid_metrics),
+        'precision': sum(metrics['precision'] for metrics in valid_metrics.values()) / len(valid_metrics),
+        'recall': sum(metrics['recall'] for metrics in valid_metrics.values()) / len(valid_metrics)
     }
 
     print("\nWeighted average metrics across cities:")
     print(f"F1 Score: {weighted_metrics['f1']:.4f}")
     print(f"Precision: {weighted_metrics['precision']:.4f}")
     print(f"Recall: {weighted_metrics['recall']:.4f}")
+
+    print("\nUnweighted average metrics across cities:")
+    print(f"F1 Score: {unweighted_metrics['f1']:.4f}")
+    print(f"Precision: {unweighted_metrics['precision']:.4f}")
+    print(f"Recall: {unweighted_metrics['recall']:.4f}")
     
     if excluded_cities:
         print(f"\n(Note: {', '.join(excluded_cities)} {'was' if len(excluded_cities) == 1 else 'were'} excluded due to NaN metrics)")
 else:
-    print("\nUnable to calculate weighted average metrics. All cities have NaN values.")
-
+    print("\nUnable to calculate average metrics. All cities have NaN values.")
 
 ################################
 ###### Unseen Predictions ######
 ################################
 
-def load_model(model_path):
-    model = SentinelDeepLabV3()
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['state_dict'], strict=True)
-    model = model.to(device)
-    model.eval()
-    return model
+# model_paths = [
+#     os.path.join(parent_dir, 'UNITAC-trained-models/sentinel_only/selSJ_DLV3/sentinel_selSJ_cv0-epoch=23-val_loss=0.3669.ckpt'),
+#     os.path.join(parent_dir, 'UNITAC-trained-models/sentinel_only/selSJ_DLV3/sentinel_selSJ_cv1-epoch=36-val_loss=0.2694.ckpt')
+# ]
 
-model_paths_selwSJ_original = [
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/sel_DLV3/sentinel_sel_cv0-epoch=08-val_loss=0.4576.ckpt'),
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/sel_DLV3/last-v1.ckpt')
-]
+# models = [ModelLoader.load_model(path) for path in model_paths]
 
-model_paths = [
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/selSJ_DLV3/sentinel_selSJ_cv0-epoch=06-val_loss=0.3216.ckpt'),
-    os.path.join(grandparent_dir, 'UNITAC-trained-models/sentinel_only/selSJ_DLV3/sentinel_selSJ_cv1-epoch=23-val_loss=0.2417.ckpt')
-]
+# selected_cities = ['SantoDomingo', 'GuatemalaCity', 'Tegucigalpa', 'Managua', 'Panama', 'SanJose']
+# all_datasets = {city: sentinel_datasets[city] for city in selected_cities}
 
-models = [load_model(path) for path in model_paths]
+# output_dir = '../vectorised_model_predictions/sentinel_only/unseen_predictions_selSJ_final/'
+# save_unseen_predictions_sentinel(models, cv, all_datasets, cities, class_config, device, output_dir)
 
-def save_unseen_predictions(models, cv, all_datasets, cities, class_config, device, output_dir):
-    # Clear the output directory only once at the start
-    # clear_directory(output_dir)
+# merged_output_file = os.path.join(output_dir, 'combined_predictions_final.geojson')
+# merge_geojson_files(output_dir, merged_output_file)
 
-    for split_index, model in enumerate(models):
-        model.eval()
-        
-        # Get the validation dataset for this split
-        _, val_dataset, _, val_city_indices = cv.get_split(split_index)
-        
-        for city, (dataset_index, num_samples) in val_city_indices.items():
-            if num_samples == 0:
-                continue
-            
-            print(f"Processing unseen data for {city} using model from split {split_index}")
-            
-            # Get the validation subset for this city
-            city_val_dataset = Subset(val_dataset, range(dataset_index, dataset_index + num_samples))
-            city_scene = all_datasets[city].scene
-            
-            # Use PredictionsIterator to make predictions
-            predictions_iterator = PredictionsIterator(model, city_val_dataset, device=device)
-            windows, predictions = zip(*predictions_iterator)
-            
-            # Create SemanticSegmentationLabels from predictions
-            pred_labels = SemanticSegmentationLabels.from_predictions(
-                windows,
-                predictions,
-                extent=city_scene.extent,
-                num_classes=len(class_config),
-                smooth=True
-            )
-            
-            # Save predictions
-            save_predictions_as_geojson(pred_labels, city, split_index, output_dir, cities, class_config)
-
-def save_predictions_as_geojson(pred_labels, city, split_index, output_dir, cities, class_config):
-    vector_output_config = CustomVectorOutputConfig(
-        class_id=1,
-        denoise=8,
-        threshold=0.5
-    )
-
-    crs_transformer = RasterioCRSTransformer.from_uri(cities[city]['image_path'])
-    gdf = gpd.read_file(cities[city]['labels_path']).to_crs('epsg:3857')
-    xmin3857, ymin, xmax, ymax3857 = gdf.total_bounds
-    affine_transform_buildings = Affine(10, 0, xmin3857, 0, -10, ymax3857)
-    crs_transformer.transform = affine_transform_buildings
-
-    city_output_dir = os.path.join(output_dir, city)
-    os.makedirs(city_output_dir, exist_ok=True)  # Create directory if it doesn't exist, but don't clear it
-    label_store = SemanticSegmentationLabelStore(
-        uri=os.path.join(city_output_dir, f'split{split_index}_predictions'),
-        crs_transformer=crs_transformer,
-        class_config=class_config,
-        vector_outputs=[vector_output_config],
-        discrete_output=True
-    )
-    label_store.save(pred_labels)
-
-selected_cities = ['SantoDomingo', 'GuatemalaCity', 'Tegucigalpa', 'Managua', 'Panama', 'SanJose']
-all_datasets = {city: sentinel_datasets[city] for city in selected_cities}
-
-output_dir = '../../vectorised_model_predictions/sentinel_only/unseen_predictions/selSJ/'
-save_unseen_predictions(models, cv, all_datasets, cities, class_config, device, output_dir)
-
-# Merge predictions
-merged_output_file = os.path.join(output_dir, 'combined_predictions.geojson')
-merge_geojson_files(output_dir, merged_output_file)
-
-print("Predictions saved and combined successfully.")
-
-
+# print("Predictions saved and combined successfully.")
 
 # ##############################
 # ###### Model Complexity ######

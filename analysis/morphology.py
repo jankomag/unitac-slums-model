@@ -22,7 +22,7 @@ grandparent_dir = os.path.dirname(parent_dir)
 
 def query_buildings_data(xmin, ymin, xmax, ymax):
     import duckdb
-    con = duckdb.connect(os.path.join(grandparent_dir, 'data/0/data.db'))
+    con = duckdb.connect(os.path.join(parent_dir, 'data/0/data.db'))
     con.install_extension('httpfs')
     con.install_extension('spatial')
     con.load_extension('httpfs')
@@ -54,28 +54,28 @@ cities = {
     #     'use_augmentation': False
     # },
     'Tegucigalpa': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
+        'image_path': os.path.join(parent_dir, 'data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
+        'labels_path': os.path.join(parent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
         'use_augmentation': False
     },
     'SantoDomingo': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
+        'image_path': os.path.join(parent_dir, 'data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
+        'labels_path': os.path.join(parent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
         'use_augmentation': True
     },
     'GuatemalaCity': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Guatemala_PS.shp'),
+        'image_path': os.path.join(parent_dir, 'data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
+        'labels_path': os.path.join(parent_dir, 'data/SHP/Guatemala_PS.shp'),
         'use_augmentation': False
     },
     'Managua': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
+        'image_path': os.path.join(parent_dir, 'data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
+        'labels_path': os.path.join(parent_dir, 'data/SHP/Managua_PS.shp'),
         'use_augmentation': False
     },
     'Panama': {
-        'image_path': os.path.join(grandparent_dir, 'data/0/sentinel_Gee/PAN_Panama_2024.tif'),
-        'labels_path': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
+        'image_path': os.path.join(parent_dir, 'data/0/sentinel_Gee/PAN_Panama_2024.tif'),
+        'labels_path': os.path.join(parent_dir, 'data/SHP/Panama_PS.shp'),
         'use_augmentation': False
     }
     # 'SanSalvador_PS': {
@@ -235,7 +235,7 @@ for city_name, df in city_dataframes.items():
 ##################
 
 # distribution of morphometrics by city
-file_path = os.path.join(grandparent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
+file_path = os.path.join(parent_dir, 'analysis/metrics/all_cities_slum_morphometrics.csv')
 all_cities_df = pd.read_csv(file_path)
 
 # plt.style.use('ggplot')
@@ -337,7 +337,7 @@ def create_square_bbox(lat, lon, size_meters):
 def plot_buildings_and_precarious_areas(ax, lat, lon, size_meters, city_name, grandparent_dir):
     xmin, ymin, xmax, ymax = create_square_bbox(lat, lon, size_meters)
     
-    con = duckdb.connect(os.path.join(grandparent_dir, 'data/0/data.db'))
+    con = duckdb.connect(os.path.join(parent_dir, 'data/0/data.db'))
     con.install_extension('httpfs')
     con.install_extension('spatial')
     con.load_extension('httpfs')
@@ -360,7 +360,7 @@ def plot_buildings_and_precarious_areas(ax, lat, lon, size_meters, city_name, gr
         'SantoDomingo': 'Santo Domingo, Dominican Republic',
         'GuatemalaCity': 'Guatemala City, Guatemala',
         'Tegucigalpa': 'Tegucigalpa, Honduras',
-        'SanJoseCRI_': 'San Jose, Costa Rica',
+        'SanJoseCRI': 'San Jose, Costa Rica',
         'Panama': 'Panama City, Panama',
         'BelizeCity': 'Belize City, Belize (excluded from the study)',
         'Managua': 'Managua, Nicaragua',
@@ -368,12 +368,13 @@ def plot_buildings_and_precarious_areas(ax, lat, lon, size_meters, city_name, gr
     }
     
     cities = {
-        'Tegucigalpa': os.path.join(grandparent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
-        'SantoDomingo': os.path.join(grandparent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
-        'GuatemalaCity': os.path.join(grandparent_dir, 'data/SHP/Guatemala_PS.shp'),
-        'Managua': os.path.join(grandparent_dir, 'data/SHP/Managua_PS.shp'),
-        'Panama': os.path.join(grandparent_dir, 'data/SHP/Panama_PS.shp'),
-        'BelizeCity': os.path.join(grandparent_dir, 'data/SHP/BelizeCity_PS.shp')
+        'Tegucigalpa': os.path.join(parent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
+        'SantoDomingo': os.path.join(parent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
+        'GuatemalaCity': os.path.join(parent_dir, 'data/SHP/Guatemala_PS.shp'),
+        'Managua': os.path.join(parent_dir, 'data/SHP/Managua_PS.shp'),
+        'Panama': os.path.join(parent_dir, 'data/SHP/Panama_PS.shp'),
+        'BelizeCity': os.path.join(parent_dir, 'data/SHP/BelizeCity_PS.shp'),
+        'SanJoseCRI': os.path.join(parent_dir, 'data/SHP/SanJose_PS.shp')
     }
         
     precarious_areas = gpd.read_file(cities[city_name])
@@ -435,7 +436,7 @@ coordinates_list = [
     (18.506793321891678, -69.89322847545206, 'SantoDomingo'),
     (12.153548471297961, -86.25461143585959, 'Managua'),
     (8.925055642079421, -79.62752568376733, 'Panama'),
-    (17.503577109876268, -88.21419733167714, 'BelizeCity'),
+    (9.946122438272413, -84.08819439919527, 'SanJoseCRI'),
 ]
 
 size_meters = 1500

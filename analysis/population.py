@@ -179,7 +179,7 @@ sys.path.append(grandparent_dir)
 sys.path.append(parent_dir)
 
 urab_areas_folder_path = os.path.join(parent_dir, "data/1/urban_boundaries/final_boundaries")
-predictions_folder_path = os.path.join(parent_dir, "data/1/SICA_final_predictions/selSJ_DLV3")
+predictions_folder_path = os.path.join(parent_dir, "data/1/SICA_final_predictions/final_common_extent")
 
 # Combine all the GeoDataFrames into one
 gdfs = []
@@ -386,14 +386,14 @@ for index, row in tqdm(urban_areas.iterrows(), total=urban_areas.shape[0]):
 gdf_informal_settlements = gpd.GeoDataFrame(all_informal_settlements)
 
 # Save the GeoDataFrame as a GeoJSON file
-output_path = os.path.join(grandparent_dir, "data/1/SICA_final_predictions/final_preds.geojson")
+output_path = os.path.join(parent_dir, "data/1/SICA_final_predictions/final_preds_4326.geojson")
 gdf_informal_settlements.to_file(output_path, driver="GeoJSON")
 
 print(f"Saved informal settlements to: {output_path}")
 
-###########################
-#### Labels population ####
-###########################
+##############################
+#### GT Labels population ####
+##############################
 
 labels_folder_path = "../data/SHP"
 
@@ -545,7 +545,7 @@ def clean_city_name(name):
 df_sorted = df.sort_values('proportion_informal', ascending=False)
 
 # Get the top N cities overall (e.g., top 20)
-df_top = df_sorted.head(29)
+df_top = df_sorted#.head(29)
 
 # Calculate the formal population
 df_top['formal_population'] = df_top['total_population'] - df_top['informal_population']
@@ -697,7 +697,7 @@ def create_city_map(city_name, urban_areas, predictions_folder_path, padding=0.1
     plt.show()
 
 # Use the function to create a maps
-predictions_folder_path = os.path.join(grandparent_dir, "data/1/SICA_final_predictions/selSJ_DLV3")
+predictions_folder_path = os.path.join(parent_dir, "data/1/SICA_final_predictions/final_common_extent")
 create_city_map("ElProgreso", urban_areas, predictions_folder_path, padding=0.01, zoom=15)
 create_city_map("SanPedroDeMacoris", urban_areas, predictions_folder_path, padding=0.1, zoom=15)
 create_city_map("SanFranciscoDeMacoris", urban_areas, predictions_folder_path, padding=0.1, zoom=15)
@@ -778,40 +778,3 @@ for index, row in tqdm(gdf.iterrows(), total=gdf.shape[0]):
 # Create a DataFrame with the results
 results_df = pd.DataFrame(results)
 print(results_df)
-
-
-# works below
-# Use HRSL dataset
-HRSL_general = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
-try:
-    # Get the latest image from the collection
-    hrsl_image = HRSL_general.mosaic()
-
-    # Calculate total population
-    total_population = hrsl_image.reduceRegion(
-        reducer=ee.Reducer.sum(),
-        geometry=ee_geometry,
-        scale=30,
-        maxPixels=1e9
-    ).get('b1').getInfo()  # HRSL uses 'b1' as the band name
-    
-    print(f"Total population: {total_population}")
-
-    # Visualize the population data
-    map_center = ee_geometry.centroid().getInfo()['coordinates']
-    my_map = geemap.Map(center=map_center[::-1], zoom=10)
-    
-    # Add HRSL layer
-    vis_params = {
-        'min': 0,
-        'max': 100,
-        'palette': ['white', 'yellow', 'orange', 'red']
-    }
-    my_map.addLayer(hrsl_image.clip(ee_geometry), vis_params, 'HRSL Population')
-    
-    # Add city boundary
-    my_map.addLayer(ee_geometry, {'color': '00FF00'}, 'City Boundary')
-    
-    display(my_map)
-except Exception as e:
-    print(f"Error processing city: {str(e)}")
